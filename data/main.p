@@ -16,10 +16,13 @@ def main() -> int:
     x = 1 + 1 / 10
 
     var xx: dict = {}
+    var xxx: dict = {"a": 1}
 
 
     var p: *int = &x
     *p = 10
     print(p)
+
+    var ddd: list = [1, 2, 3, 4]
 
     return 1 * a

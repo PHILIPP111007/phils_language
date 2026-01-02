@@ -201,7 +201,9 @@
       "s",
       "x",
       "xx",
-      "p"
+      "xxx",
+      "p",
+      "ddd"
     ],
     "graph": [
       {
@@ -222,7 +224,8 @@
             "value": 10
           }
         ],
-        "is_pointer": false
+        "is_pointer": false,
+        "data_structure": null
       },
       {
         "node": "declaration",
@@ -242,7 +245,8 @@
             "value": 100
           }
         ],
-        "is_pointer": false
+        "is_pointer": false,
+        "data_structure": null
       },
       {
         "node": "declaration",
@@ -262,7 +266,8 @@
             "value": 0
           }
         ],
-        "is_pointer": false
+        "is_pointer": false,
+        "data_structure": null
       },
       {
         "node": "assignment",
@@ -349,7 +354,8 @@
             "value": "10 * \"asff\""
           }
         ],
-        "is_pointer": false
+        "is_pointer": false,
+        "data_structure": null
       },
       {
         "node": "declaration",
@@ -369,7 +375,8 @@
             "value": 0
           }
         ],
-        "is_pointer": false
+        "is_pointer": false,
+        "data_structure": null
       },
       {
         "node": "assignment",
@@ -469,17 +476,41 @@
         ],
         "operations": [
           {
-            "type": "NEW_VAR",
+            "type": "NEW_DICT",
             "target": "xx",
-            "var_type": "dict"
-          },
-          {
-            "type": "ASSIGN",
-            "target": "xx",
-            "value": "{}"
+            "var_type": "dict",
+            "literal": {
+              "type": "dict_literal",
+              "pairs": {},
+              "size": 0
+            }
           }
         ],
-        "is_pointer": false
+        "is_pointer": false,
+        "data_structure": "dict"
+      },
+      {
+        "node": "declaration",
+        "content": "var xxx: dict = {\"a\": 1}",
+        "symbols": [
+          "xxx"
+        ],
+        "operations": [
+          {
+            "type": "NEW_DICT",
+            "target": "xxx",
+            "var_type": "dict",
+            "literal": {
+              "type": "dict_literal",
+              "pairs": {
+                "\"a\"": 1
+              },
+              "size": 1
+            }
+          }
+        ],
+        "is_pointer": false,
+        "data_structure": "dict"
       },
       {
         "node": "declaration",
@@ -497,11 +528,11 @@
             "type": "GET_ADDRESS",
             "target": "p",
             "of": "x",
-            "operation": "&",
-            "pointed_var_type": "int"
+            "operation": "&"
           }
         ],
-        "is_pointer": true
+        "is_pointer": true,
+        "data_structure": null
       },
       {
         "node": "dereference_write",
@@ -545,6 +576,32 @@
         "dependencies": [
           "p"
         ]
+      },
+      {
+        "node": "declaration",
+        "content": "var ddd: list = [1, 2, 3, 4]",
+        "symbols": [
+          "ddd"
+        ],
+        "operations": [
+          {
+            "type": "NEW_LIST",
+            "target": "ddd",
+            "var_type": "list",
+            "literal": {
+              "type": "list_literal",
+              "items": [
+                1,
+                2,
+                3,
+                4
+              ],
+              "length": 4
+            }
+          }
+        ],
+        "is_pointer": false,
+        "data_structure": "list"
       },
       {
         "node": "return",
@@ -657,8 +714,26 @@
         "name": "xx",
         "key": "var",
         "type": "dict",
-        "value": "{}",
+        "value": {
+          "type": "dict_literal",
+          "pairs": {},
+          "size": 0
+        },
         "id": "xx",
+        "is_deleted": false
+      },
+      "xxx": {
+        "name": "xxx",
+        "key": "var",
+        "type": "dict",
+        "value": {
+          "type": "dict_literal",
+          "pairs": {
+            "\"a\"": 1
+          },
+          "size": 1
+        },
+        "id": "xxx",
         "is_deleted": false
       },
       "p": {
@@ -671,6 +746,23 @@
         "is_pointer": true,
         "pointed_type": "int",
         "points_to": "x"
+      },
+      "ddd": {
+        "name": "ddd",
+        "key": "var",
+        "type": "list",
+        "value": {
+          "type": "list_literal",
+          "items": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "length": 4
+        },
+        "id": "ddd",
+        "is_deleted": false
       }
     },
     "return_info": {
