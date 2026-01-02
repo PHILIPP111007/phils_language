@@ -1,7 +1,7 @@
 import "./module.p"
 
 
-def main() -> None:
+def main() -> int:
     var a: int = 10
     var b: int = 100
     
@@ -16,3 +16,10 @@ def main() -> None:
     x = 1 + 1 / 10
 
     var xx: dict = {}
+
+
+    var p: *int = &x
+    *p = 10
+    print(p)
+
+    return 1 * a
