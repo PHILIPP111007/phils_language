@@ -52,7 +52,6 @@
         "key": "function",
         "type": "function",
         "value": null,
-        "pointer": "func_mul_ptr_001",
         "id": "mul",
         "is_deleted": false
       },
@@ -61,7 +60,6 @@
         "key": "function",
         "type": "function",
         "value": null,
-        "pointer": "func_mul1_ptr_002",
         "id": "mul1",
         "is_deleted": false
       },
@@ -70,7 +68,6 @@
         "key": "function",
         "type": "function",
         "value": null,
-        "pointer": "func_main_ptr_003",
         "id": "main",
         "is_deleted": false
       }
@@ -132,7 +129,6 @@
         "key": "var",
         "type": "int",
         "value": null,
-        "pointer": "var_a_ptr_4601789328",
         "id": "a",
         "is_deleted": false
       },
@@ -141,7 +137,6 @@
         "key": "var",
         "type": "int",
         "value": null,
-        "pointer": "var_b_ptr_4601789328",
         "id": "b",
         "is_deleted": false
       }
@@ -586,7 +581,6 @@
         "key": "var",
         "type": "int",
         "value": 10,
-        "pointer": "var_a_ptr_4578441744",
         "id": "a",
         "is_deleted": false
       },
@@ -595,7 +589,6 @@
         "key": "var",
         "type": "int",
         "value": 100,
-        "pointer": "var_b_ptr_4578441744",
         "id": "b",
         "is_deleted": false
       },
@@ -617,7 +610,6 @@
             }
           ]
         },
-        "pointer": "var_c_ptr_4578441744",
         "id": "c",
         "is_deleted": false
       },
@@ -626,7 +618,6 @@
         "key": "var",
         "type": "str",
         "value": "10 * \"asff\"",
-        "pointer": "var_s_ptr_4578441744",
         "id": "s",
         "is_deleted": false
       },
@@ -659,7 +650,6 @@
             }
           }
         },
-        "pointer": "var_x_ptr_4578441744",
         "id": "x",
         "is_deleted": false
       },
@@ -668,7 +658,6 @@
         "key": "var",
         "type": "dict",
         "value": "{}",
-        "pointer": "var_xx_ptr_4578441744",
         "id": "xx",
         "is_deleted": false
       },
@@ -677,7 +666,6 @@
         "key": "var",
         "type": "*int",
         "value": "&x",
-        "pointer": "var_p_ptr_4578441744",
         "id": "p",
         "is_deleted": false,
         "is_pointer": true,
