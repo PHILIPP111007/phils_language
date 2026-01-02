@@ -1,0 +1,708 @@
+[
+  {
+    "level": 0,
+    "type": "module",
+    "parent_scope": null,
+    "local_variables": [],
+    "graph": [
+      {
+        "node": "function_declaration",
+        "content": "def mul(a: int, b: int) -> int:",
+        "function_name": "mul",
+        "symbol_id": "mul",
+        "parameters": [
+          {
+            "name": "a",
+            "type": "int"
+          },
+          {
+            "name": "b",
+            "type": "int"
+          }
+        ],
+        "return_type": "int",
+        "body_level": 1,
+        "is_stub": false
+      },
+      {
+        "node": "function_declaration",
+        "content": "def mul1(a: *int, b: *int) -> int:",
+        "function_name": "mul1",
+        "symbol_id": "mul1",
+        "parameters": [],
+        "return_type": "int",
+        "body_level": 1,
+        "is_stub": true,
+        "body": []
+      },
+      {
+        "node": "function_declaration",
+        "content": "def main() -> int:",
+        "function_name": "main",
+        "symbol_id": "main",
+        "parameters": [],
+        "return_type": "int",
+        "body_level": 1,
+        "is_stub": false
+      }
+    ],
+    "symbol_table": {
+      "mul": {
+        "name": "mul",
+        "key": "function",
+        "type": "function",
+        "value": null,
+        "pointer": "func_mul_ptr_001",
+        "id": "mul",
+        "is_deleted": false
+      },
+      "mul1": {
+        "name": "mul1",
+        "key": "function",
+        "type": "function",
+        "value": null,
+        "pointer": "func_mul1_ptr_002",
+        "id": "mul1",
+        "is_deleted": false
+      },
+      "main": {
+        "name": "main",
+        "key": "function",
+        "type": "function",
+        "value": null,
+        "pointer": "func_main_ptr_003",
+        "id": "main",
+        "is_deleted": false
+      }
+    }
+  },
+  {
+    "level": 1,
+    "type": "function",
+    "parent_scope": 0,
+    "function_name": "mul",
+    "parameters": [
+      {
+        "name": "a",
+        "type": "int"
+      },
+      {
+        "name": "b",
+        "type": "int"
+      }
+    ],
+    "return_type": "int",
+    "local_variables": [
+      "a",
+      "b"
+    ],
+    "graph": [
+      {
+        "node": "return",
+        "content": "return a * b",
+        "symbols": [],
+        "operations": [
+          {
+            "type": "RETURN",
+            "value": {
+              "type": "binary_operation",
+              "operator": "MULTIPLY",
+              "operator_symbol": "*",
+              "left": {
+                "type": "variable",
+                "value": "a"
+              },
+              "right": {
+                "type": "variable",
+                "value": "b"
+              }
+            },
+            "expression": "a * b"
+          }
+        ],
+        "dependencies": [
+          "a",
+          "b"
+        ]
+      }
+    ],
+    "symbol_table": {
+      "a": {
+        "name": "a",
+        "key": "var",
+        "type": "int",
+        "value": null,
+        "pointer": "var_a_ptr_4601789328",
+        "id": "a",
+        "is_deleted": false
+      },
+      "b": {
+        "name": "b",
+        "key": "var",
+        "type": "int",
+        "value": null,
+        "pointer": "var_b_ptr_4601789328",
+        "id": "b",
+        "is_deleted": false
+      }
+    },
+    "return_info": {
+      "has_return": true,
+      "return_value": {
+        "type": "binary_operation",
+        "operator": "MULTIPLY",
+        "operator_symbol": "*",
+        "left": {
+          "type": "variable",
+          "value": "a"
+        },
+        "right": {
+          "type": "variable",
+          "value": "b"
+        }
+      },
+      "return_type": "int"
+    },
+    "is_stub": false
+  },
+  {
+    "level": 1,
+    "type": "function",
+    "parent_scope": 0,
+    "function_name": "mul1",
+    "parameters": [],
+    "return_type": "int",
+    "local_variables": [],
+    "graph": [
+      {
+        "node": "pass",
+        "content": "pass",
+        "operations": [
+          {
+            "type": "PASS"
+          }
+        ]
+      }
+    ],
+    "symbol_table": {},
+    "return_info": {
+      "has_return": false,
+      "return_value": null,
+      "return_type": "int"
+    },
+    "is_stub": true
+  },
+  {
+    "level": 1,
+    "type": "function",
+    "parent_scope": 0,
+    "function_name": "main",
+    "parameters": [],
+    "return_type": "int",
+    "local_variables": [
+      "a",
+      "b",
+      "c",
+      "s",
+      "x",
+      "xx",
+      "p"
+    ],
+    "graph": [
+      {
+        "node": "declaration",
+        "content": "var a: int = 10",
+        "symbols": [
+          "a"
+        ],
+        "operations": [
+          {
+            "type": "NEW_VAR",
+            "target": "a",
+            "var_type": "int"
+          },
+          {
+            "type": "ASSIGN",
+            "target": "a",
+            "value": 10
+          }
+        ],
+        "is_pointer": false
+      },
+      {
+        "node": "declaration",
+        "content": "var b: int = 100",
+        "symbols": [
+          "b"
+        ],
+        "operations": [
+          {
+            "type": "NEW_VAR",
+            "target": "b",
+            "var_type": "int"
+          },
+          {
+            "type": "ASSIGN",
+            "target": "b",
+            "value": 100
+          }
+        ],
+        "is_pointer": false
+      },
+      {
+        "node": "declaration",
+        "content": "var c: int = 0",
+        "symbols": [
+          "c"
+        ],
+        "operations": [
+          {
+            "type": "NEW_VAR",
+            "target": "c",
+            "var_type": "int"
+          },
+          {
+            "type": "ASSIGN",
+            "target": "c",
+            "value": 0
+          }
+        ],
+        "is_pointer": false
+      },
+      {
+        "node": "assignment",
+        "content": "c = mul(a, b)",
+        "symbols": [
+          "c"
+        ],
+        "operations": [
+          {
+            "type": "ASSIGN",
+            "target": "c",
+            "value": {
+              "type": "function_call",
+              "function": "mul",
+              "arguments": [
+                {
+                  "type": "variable",
+                  "value": "a"
+                },
+                {
+                  "type": "variable",
+                  "value": "b"
+                }
+              ]
+            }
+          }
+        ],
+        "dependencies": [
+          "a",
+          "b"
+        ],
+        "expression_ast": {
+          "type": "function_call",
+          "function": "mul",
+          "arguments": [
+            {
+              "type": "variable",
+              "value": "a"
+            },
+            {
+              "type": "variable",
+              "value": "b"
+            }
+          ]
+        }
+      },
+      {
+        "node": "builtin_function_call",
+        "content": "print(c)",
+        "function": "print",
+        "arguments": [
+          "c"
+        ],
+        "return_type": "None",
+        "operations": [
+          {
+            "type": "BUILTIN_FUNCTION_CALL",
+            "function": "print",
+            "arguments": [
+              "c"
+            ],
+            "return_type": "None"
+          }
+        ],
+        "dependencies": [
+          "c"
+        ]
+      },
+      {
+        "node": "declaration",
+        "content": "var s: str = 10 * \"asff\"",
+        "symbols": [
+          "s"
+        ],
+        "operations": [
+          {
+            "type": "NEW_VAR",
+            "target": "s",
+            "var_type": "str"
+          },
+          {
+            "type": "ASSIGN",
+            "target": "s",
+            "value": "10 * \"asff\""
+          }
+        ],
+        "is_pointer": false
+      },
+      {
+        "node": "declaration",
+        "content": "var x: int = 0",
+        "symbols": [
+          "x"
+        ],
+        "operations": [
+          {
+            "type": "NEW_VAR",
+            "target": "x",
+            "var_type": "int"
+          },
+          {
+            "type": "ASSIGN",
+            "target": "x",
+            "value": 0
+          }
+        ],
+        "is_pointer": false
+      },
+      {
+        "node": "assignment",
+        "content": "x = 1 + 1 / 10",
+        "symbols": [
+          "x"
+        ],
+        "operations": [
+          {
+            "type": "ASSIGN",
+            "target": "x_left",
+            "value": {
+              "type": "literal",
+              "value": 1,
+              "data_type": "int"
+            }
+          },
+          {
+            "type": "ASSIGN",
+            "target": "x_right_left",
+            "value": {
+              "type": "literal",
+              "value": 1,
+              "data_type": "int"
+            }
+          },
+          {
+            "type": "ASSIGN",
+            "target": "x_right_right",
+            "value": {
+              "type": "literal",
+              "value": 10,
+              "data_type": "int"
+            }
+          },
+          {
+            "type": "BINARY_OPERATION",
+            "target": "x_right",
+            "operator": "DIVIDE",
+            "operator_symbol": "/",
+            "left": {
+              "type": "variable",
+              "value": "x_right_left"
+            },
+            "right": {
+              "type": "variable",
+              "value": "x_right_right"
+            }
+          },
+          {
+            "type": "BINARY_OPERATION",
+            "target": "x",
+            "operator": "ADD",
+            "operator_symbol": "+",
+            "left": {
+              "type": "variable",
+              "value": "x_left"
+            },
+            "right": {
+              "type": "variable",
+              "value": "x_right"
+            }
+          }
+        ],
+        "dependencies": [],
+        "expression_ast": {
+          "type": "binary_operation",
+          "operator": "ADD",
+          "operator_symbol": "+",
+          "left": {
+            "type": "literal",
+            "value": 1,
+            "data_type": "int"
+          },
+          "right": {
+            "type": "binary_operation",
+            "operator": "DIVIDE",
+            "operator_symbol": "/",
+            "left": {
+              "type": "literal",
+              "value": 1,
+              "data_type": "int"
+            },
+            "right": {
+              "type": "literal",
+              "value": 10,
+              "data_type": "int"
+            }
+          }
+        }
+      },
+      {
+        "node": "declaration",
+        "content": "var xx: dict = {}",
+        "symbols": [
+          "xx"
+        ],
+        "operations": [
+          {
+            "type": "NEW_VAR",
+            "target": "xx",
+            "var_type": "dict"
+          },
+          {
+            "type": "ASSIGN",
+            "target": "xx",
+            "value": "{}"
+          }
+        ],
+        "is_pointer": false
+      },
+      {
+        "node": "declaration",
+        "content": "var p: *int = &x",
+        "symbols": [
+          "p"
+        ],
+        "operations": [
+          {
+            "type": "NEW_POINTER",
+            "target": "p",
+            "pointed_type": "int"
+          },
+          {
+            "type": "GET_ADDRESS",
+            "target": "p",
+            "of": "x",
+            "operation": "&",
+            "pointed_var_type": "int"
+          }
+        ],
+        "is_pointer": true
+      },
+      {
+        "node": "dereference_write",
+        "content": "*p = 10",
+        "symbols": [
+          "p"
+        ],
+        "operations": [
+          {
+            "type": "WRITE_POINTER",
+            "pointer": "p",
+            "value": {
+              "type": "literal",
+              "value": 10,
+              "data_type": "int"
+            },
+            "operation": "*="
+          }
+        ],
+        "dependencies": [],
+        "is_dereference_write": true
+      },
+      {
+        "node": "builtin_function_call",
+        "content": "print(p)",
+        "function": "print",
+        "arguments": [
+          "p"
+        ],
+        "return_type": "None",
+        "operations": [
+          {
+            "type": "BUILTIN_FUNCTION_CALL",
+            "function": "print",
+            "arguments": [
+              "p"
+            ],
+            "return_type": "None"
+          }
+        ],
+        "dependencies": [
+          "p"
+        ]
+      },
+      {
+        "node": "return",
+        "content": "return 1 * a",
+        "symbols": [],
+        "operations": [
+          {
+            "type": "RETURN",
+            "value": {
+              "type": "binary_operation",
+              "operator": "MULTIPLY",
+              "operator_symbol": "*",
+              "left": {
+                "type": "literal",
+                "value": 1,
+                "data_type": "int"
+              },
+              "right": {
+                "type": "variable",
+                "value": "a"
+              }
+            },
+            "expression": "1 * a"
+          }
+        ],
+        "dependencies": [
+          "a"
+        ]
+      }
+    ],
+    "symbol_table": {
+      "a": {
+        "name": "a",
+        "key": "var",
+        "type": "int",
+        "value": 10,
+        "pointer": "var_a_ptr_4578441744",
+        "id": "a",
+        "is_deleted": false
+      },
+      "b": {
+        "name": "b",
+        "key": "var",
+        "type": "int",
+        "value": 100,
+        "pointer": "var_b_ptr_4578441744",
+        "id": "b",
+        "is_deleted": false
+      },
+      "c": {
+        "name": "c",
+        "key": "var",
+        "type": "int",
+        "value": {
+          "type": "function_call",
+          "function": "mul",
+          "arguments": [
+            {
+              "type": "variable",
+              "value": "a"
+            },
+            {
+              "type": "variable",
+              "value": "b"
+            }
+          ]
+        },
+        "pointer": "var_c_ptr_4578441744",
+        "id": "c",
+        "is_deleted": false
+      },
+      "s": {
+        "name": "s",
+        "key": "var",
+        "type": "str",
+        "value": "10 * \"asff\"",
+        "pointer": "var_s_ptr_4578441744",
+        "id": "s",
+        "is_deleted": false
+      },
+      "x": {
+        "name": "x",
+        "key": "var",
+        "type": "int",
+        "value": {
+          "type": "binary_operation",
+          "operator": "ADD",
+          "operator_symbol": "+",
+          "left": {
+            "type": "literal",
+            "value": 1,
+            "data_type": "int"
+          },
+          "right": {
+            "type": "binary_operation",
+            "operator": "DIVIDE",
+            "operator_symbol": "/",
+            "left": {
+              "type": "literal",
+              "value": 1,
+              "data_type": "int"
+            },
+            "right": {
+              "type": "literal",
+              "value": 10,
+              "data_type": "int"
+            }
+          }
+        },
+        "pointer": "var_x_ptr_4578441744",
+        "id": "x",
+        "is_deleted": false
+      },
+      "xx": {
+        "name": "xx",
+        "key": "var",
+        "type": "dict",
+        "value": "{}",
+        "pointer": "var_xx_ptr_4578441744",
+        "id": "xx",
+        "is_deleted": false
+      },
+      "p": {
+        "name": "p",
+        "key": "var",
+        "type": "*int",
+        "value": "&x",
+        "pointer": "var_p_ptr_4578441744",
+        "id": "p",
+        "is_deleted": false,
+        "is_pointer": true,
+        "pointed_type": "int",
+        "points_to": "x"
+      }
+    },
+    "return_info": {
+      "has_return": true,
+      "return_value": {
+        "type": "binary_operation",
+        "operator": "MULTIPLY",
+        "operator_symbol": "*",
+        "left": {
+          "type": "literal",
+          "value": 1,
+          "data_type": "int"
+        },
+        "right": {
+          "type": "variable",
+          "value": "a"
+        }
+      },
+      "return_type": "int"
+    },
+    "is_stub": false
+  }
+]
