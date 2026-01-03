@@ -944,17 +944,19 @@ class CCodeGenerator:
 
     def generate_list_struct_name(self, py_type: str) -> str:
         """Генерирует имя структуры для list типа"""
-        # Для list[int] должно быть list_int
-        # Для list[tuple[int]] должно быть list_tuple_int
-
         match = re.match(r"list\[([^\]]+)\]", py_type)
         if not match:
             return f"list_{py_type}"
 
         element_type = match.group(1)
-        # Очищаем имя типа
+
+        # Очищаем имя типа, заменяя специальные символы
         clean_element = (
-            element_type.replace("[", "_").replace("]", "").replace(",", "_")
+            element_type.replace("[", "_")
+            .replace("]", "")
+            .replace(", ", "_")
+            .replace(",", "_")
+            .replace(" ", "_")
         )
         return f"list_{clean_element}"
 
@@ -1081,25 +1083,26 @@ class CCodeGenerator:
         element_type = match.group(1)
 
         # Определяем тип элементов для C
-        if element_type.startswith("tuple["):
+        if element_type.startswith("list["):
+            # Вложенный список, например list[list[int]]
+            c_element_type = self.generate_list_struct_name(element_type) + "*"
+        elif element_type.startswith("tuple["):
             # list[tuple[...]]
             c_element_type = self.generate_tuple_struct_name(element_type)
         else:
-            # list[int] или другие простые типы
+            # Простые типы: list[int], list[str] и т.д.
             c_element_type = self.map_type_to_c(element_type)
 
         struct_name = self.generate_list_struct_name(py_type)
 
         # Генерируем структуру
-        struct_code = []
-        struct_code.append(f"typedef struct {{")
-        struct_code.append(f"    {c_element_type}* data;")
-        struct_code.append(f"    int size;")
-        struct_code.append(f"    int capacity;")
-        struct_code.append(f"}} {struct_name};")
-        struct_code.append("")
+        struct_code = f"typedef struct {{\n"
+        struct_code += f"    {c_element_type}* data;\n"
+        struct_code += f"    int size;\n"
+        struct_code += f"    int capacity;\n"
+        struct_code += f"}} {struct_name};\n"
 
-        self.generated_helpers.append("\n".join(struct_code))
+        self.generated_helpers.append(struct_code)
 
         # Генерируем функцию создания
         create_func = f"{struct_name}* create_{struct_name}(int initial_capacity) {{\n"
@@ -1147,8 +1150,15 @@ class CCodeGenerator:
         free_func = f"void free_{struct_name}({struct_name}* list) {{\n"
         free_func += f"    if (list) {{\n"
 
-        # Если элементы - tuple, нужно освободить их память
-        if element_type.startswith("tuple["):
+        # Если элементы - списки или кортежи, нужно освободить их память
+        if element_type.startswith("list["):
+            inner_list_name = self.generate_list_struct_name(element_type)
+            free_func += f"        for (int i = 0; i < list->size; i++) {{\n"
+            free_func += f"            if (list->data[i]) {{\n"
+            free_func += f"                free_{inner_list_name}(list->data[i]);\n"
+            free_func += f"            }}\n"
+            free_func += f"        }}\n"
+        elif element_type.startswith("tuple["):
             tuple_struct_name = self.generate_tuple_struct_name(element_type)
             free_func += f"        for (int i = 0; i < list->size; i++) {{\n"
             free_func += f"            free_{tuple_struct_name}(&list->data[i]);\n"
