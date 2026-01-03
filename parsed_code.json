@@ -7,26 +7,52 @@
     "graph": [
       {
         "node": "c_import",
-        "content": "cimport \"my_header.h\"",
-        "header": "my_header.h",
-        "is_system": false,
+        "content": "cimport <stdio.h>",
+        "header": "stdio.h",
+        "is_system": true,
         "operations": [
           {
             "type": "C_IMPORT",
-            "header": "my_header.h",
-            "is_system": false
+            "header": "stdio.h",
+            "is_system": true
           }
         ]
       },
       {
         "node": "c_import",
-        "content": "cimport <my_header.h>",
-        "header": "my_header.h",
+        "content": "cimport <stdlib.h>",
+        "header": "stdlib.h",
         "is_system": true,
         "operations": [
           {
             "type": "C_IMPORT",
-            "header": "my_header.h",
+            "header": "stdlib.h",
+            "is_system": true
+          }
+        ]
+      },
+      {
+        "node": "c_import",
+        "content": "cimport <string.h>",
+        "header": "string.h",
+        "is_system": true,
+        "operations": [
+          {
+            "type": "C_IMPORT",
+            "header": "string.h",
+            "is_system": true
+          }
+        ]
+      },
+      {
+        "node": "c_import",
+        "content": "cimport <stdbool.h>",
+        "header": "stdbool.h",
+        "is_system": true,
+        "operations": [
+          {
+            "type": "C_IMPORT",
+            "header": "stdbool.h",
             "is_system": true
           }
         ]
@@ -136,7 +162,9 @@
       "ddd",
       "aaa",
       "result",
-      "res"
+      "res",
+      "aaaaa",
+      "bbbbbb"
     ],
     "graph": [
       {
@@ -1113,6 +1141,115 @@
         }
       },
       {
+        "node": "declaration",
+        "content": "var aaaaa: list = [1, 2, 3]",
+        "symbols": [
+          "aaaaa"
+        ],
+        "var_name": "aaaaa",
+        "var_type": "list",
+        "is_pointer": false,
+        "operations": [
+          {
+            "type": "NEW_VAR",
+            "target": "aaaaa",
+            "var_type": "list",
+            "was_deleted": false
+          },
+          {
+            "type": "CREATE_LIST",
+            "target": "aaaaa",
+            "items": [
+              {
+                "type": "literal",
+                "value": 1,
+                "data_type": "int"
+              },
+              {
+                "type": "literal",
+                "value": 2,
+                "data_type": "int"
+              },
+              {
+                "type": "literal",
+                "value": 3,
+                "data_type": "int"
+              }
+            ],
+            "size": 3
+          }
+        ],
+        "dependencies": [],
+        "expression_ast": {
+          "type": "list_literal",
+          "items": [
+            {
+              "type": "literal",
+              "value": 1,
+              "data_type": "int"
+            },
+            {
+              "type": "literal",
+              "value": 2,
+              "data_type": "int"
+            },
+            {
+              "type": "literal",
+              "value": 3,
+              "data_type": "int"
+            }
+          ],
+          "length": 3
+        },
+        "data_structure": "list"
+      },
+      {
+        "node": "declaration",
+        "content": "var bbbbbb: int = len(aaaaa)",
+        "symbols": [
+          "bbbbbb"
+        ],
+        "var_name": "bbbbbb",
+        "var_type": "int",
+        "is_pointer": false,
+        "operations": [
+          {
+            "type": "NEW_VAR",
+            "target": "bbbbbb",
+            "var_type": "int",
+            "was_deleted": false
+          },
+          {
+            "type": "ASSIGN",
+            "target": "bbbbbb",
+            "value": {
+              "type": "function_call",
+              "function": "len",
+              "arguments": [
+                {
+                  "type": "variable",
+                  "value": "aaaaa"
+                }
+              ]
+            }
+          }
+        ],
+        "dependencies": [
+          "aaaaa"
+        ],
+        "expression_ast": {
+          "type": "function_call",
+          "function": "len",
+          "arguments": [
+            {
+              "type": "variable",
+              "value": "aaaaa"
+            }
+          ]
+        },
+        "data_structure": null
+      },
+      {
         "node": "return",
         "content": "return 0",
         "symbols": [],
@@ -1359,6 +1496,51 @@
           "arguments": []
         },
         "id": "res",
+        "is_deleted": false
+      },
+      "aaaaa": {
+        "name": "aaaaa",
+        "key": "var",
+        "type": "list",
+        "value": {
+          "type": "list_literal",
+          "items": [
+            {
+              "type": "literal",
+              "value": 1,
+              "data_type": "int"
+            },
+            {
+              "type": "literal",
+              "value": 2,
+              "data_type": "int"
+            },
+            {
+              "type": "literal",
+              "value": 3,
+              "data_type": "int"
+            }
+          ],
+          "length": 3
+        },
+        "id": "aaaaa",
+        "is_deleted": false
+      },
+      "bbbbbb": {
+        "name": "bbbbbb",
+        "key": "var",
+        "type": "int",
+        "value": {
+          "type": "function_call",
+          "function": "len",
+          "arguments": [
+            {
+              "type": "variable",
+              "value": "aaaaa"
+            }
+          ]
+        },
+        "id": "bbbbbb",
         "is_deleted": false
       }
     },

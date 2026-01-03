@@ -121,6 +121,7 @@ def main() -> int:
     recursive(a)
 
     return 0
+
 """
 
 
@@ -129,8 +130,10 @@ def main() -> int:
 ###################################################
 
 
-cimport "my_header.h"
-cimport <my_header.h>
+cimport <stdio.h>
+cimport <stdlib.h>
+cimport <string.h>
+cimport <stdbool.h>
 import "./module.p"
 
 
@@ -197,9 +200,9 @@ def main() -> int:
     else:
         print(result)
     
+
+    var aaaaa: list = [1, 2, 3]
+    var bbbbbb: int = len(aaaaa)
+    
     return 0
-
-
-
-
 
