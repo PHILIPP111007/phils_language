@@ -18,6 +18,11 @@ DATA_TYPES = [
     "list[float]",
     "list[str]",
     "list[bool]",
+    "list[tuple]",
+    "tuple[int]",
+    "tuple[float]",
+    "tuple[str]",
+    "tuple[bool]",
     "dict[str]",
     "dict[int]",
     "dict[float]",
@@ -27,7 +32,8 @@ DATA_TYPES = [
     "*int",
     "*float",
     "*str",
-    "*bool",  # указатели
+    "*bool",
+    "*tuple",  # указатели
 ]
 
 
@@ -645,6 +651,65 @@ class Parser:
 
         return [arg.strip() for arg in args]
 
+    def parse_tuple_literal(self, value: str) -> dict:
+        """Парсит литерал кортежа: (1, 2, 3)"""
+        if not (value.startswith("(") and value.endswith(")")):
+            return {"type": "unknown", "value": value}
+
+        items_str = value[1:-1].strip()
+        items = []
+
+        if items_str:
+            current_item = ""
+            depth = 0
+            in_string = False
+            string_char = None
+
+            i = 0
+            while i < len(items_str):
+                char = items_str[i]
+
+                if not in_string and char in ['"', "'"]:
+                    in_string = True
+                    string_char = char
+                    current_item += char
+                elif in_string and char == string_char:
+                    if i > 0 and items_str[i - 1] == "\\":
+                        current_item += char
+                    else:
+                        in_string = False
+                        current_item += char
+                elif not in_string and char == "(":
+                    depth += 1
+                    current_item += char
+                elif not in_string and char == ")":
+                    depth -= 1
+                    current_item += char
+                elif not in_string and char == "[":
+                    depth += 1
+                    current_item += char
+                elif not in_string and char == "]":
+                    depth -= 1
+                    current_item += char
+                elif not in_string and depth == 0 and char == ",":
+                    if current_item.strip():
+                        items.append(self.parse_expression_to_ast(current_item.strip()))
+                    current_item = ""
+                else:
+                    current_item += char
+
+                i += 1
+
+            if current_item.strip():
+                items.append(self.parse_expression_to_ast(current_item.strip()))
+
+        return {
+            "type": "tuple_literal",
+            "items": items,
+            "length": len(items),
+            "is_immutable": True,
+        }
+
     def get_builtin_return_type(self, func_name: str, args: list) -> str:
         """Определяет тип возвращаемого значения для встроенной функции"""
         if func_name == "len":
@@ -1001,6 +1066,8 @@ class Parser:
         is_pointer = pointer_symbol is not None
         var_type = f"*{base_type}" if is_pointer else base_type
 
+        base_type = base_type.replace(" ", "")
+
         # Парсим значение в AST
         value_ast = self.parse_expression_to_ast(raw_value.strip())
 
@@ -1058,7 +1125,45 @@ class Parser:
         ]
 
         # Добавляем операцию инициализации в зависимости от типа
-        if "list[" in base_type or base_type == "list":
+        if base_type.startswith("tuple["):
+            # tuple - неизменяемый массив фиксированной длины
+            element_type = self.extract_element_type(base_type, "tuple")
+            size = (
+                self.extract_tuple_size(value_ast)
+                if value_ast.get("type") == "tuple_literal"
+                else 0
+            )
+
+            operations.append(
+                {
+                    "type": "CREATE_TUPLE",
+                    "target": name,
+                    "items": value_ast.get("items", []),
+                    "size": size,
+                    "element_type": element_type,
+                    "is_immutable": True,
+                }
+            )
+        elif base_type.startswith("list["):
+            # list - изменяемый массив указателей
+            element_type = self.extract_element_type(base_type, "list")
+
+            if value_ast.get("type") == "list_literal":
+                operations.append(
+                    {
+                        "type": "CREATE_LIST",
+                        "target": name,
+                        "items": value_ast.get("items", []),
+                        "size": len(value_ast.get("items", [])),
+                        "element_type": element_type,
+                        "is_pointer_array": True,  # list хранит указатели
+                    }
+                )
+            else:
+                operations.append(
+                    {"type": "INITIALIZE", "target": name, "value": value_ast}
+                )
+        elif "list[" in base_type or base_type == "list":
             if value_ast.get("type") == "list_literal":
                 operations.append(
                     {
@@ -1142,6 +1247,18 @@ class Parser:
         )
 
         return True
+
+    def extract_element_type(self, type_str: str, container: str) -> str:
+        """Извлекает тип элементов из объявления типа"""
+        pattern = rf"{container}\[([^\]]+)\]"
+        match = re.search(pattern, type_str)
+        if match:
+            return match.group(1).strip()
+        return "any"
+
+    def extract_tuple_size(self, tuple_ast: dict) -> int:
+        """Извлекает размер кортежа из AST"""
+        return len(tuple_ast.get("items", []))
 
     def parse_delete(self, line: str, scope: dict):
         """Парсит оператор del (полное удаление)"""
@@ -1262,6 +1379,15 @@ class Parser:
         # Если пустая строка
         if not expression:
             return {"type": "empty", "value": ""}
+
+        if expression.startswith("(") and expression.endswith(")"):
+            # Проверяем, что это не просто выражение в скобках
+            if "," in expression[1:-1]:
+                return self.parse_tuple_literal(expression)
+            else:
+                # Выражение в скобках
+                inner = expression[1:-1].strip()
+                return self.parse_expression_to_ast(inner)
 
         # 1. Сначала проверяем литералы и простые конструкции
 
