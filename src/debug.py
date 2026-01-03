@@ -1129,9 +1129,14 @@ class JSONValidator:
                     )
             return
 
-        # Проверяем вызовы функций
-        func_calls = re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(", expression)
+        # Проверяем вызовы функций - ИГНОРИРУЕМ функции с @
+        func_calls = re.findall(r"(@?[a-zA-Z_][a-zA-Z0-9_]*)\s*\(", expression)
         for func_name in func_calls:
+            # Игнорируем функции, начинающиеся с @
+            if func_name.startswith("@"):
+                print(f"    Пропускаем проверку функции '{func_name}' (игнорируемая)")
+                continue
+
             if (
                 func_name not in self.functions
                 and func_name not in self.builtin_functions
@@ -1154,6 +1159,10 @@ class JSONValidator:
         for identifier in identifiers:
             # Пропускаем ключевые слова, типы данных, литералы
             if identifier in ["True", "False", "None"] or identifier.isdigit():
+                continue
+
+            # Пропускаем функции с @
+            if identifier.startswith("@"):
                 continue
 
             # Проверяем, не является ли это вызовом функции (уже обработали)
@@ -1435,6 +1444,23 @@ class JSONValidator:
         """Валидирует вызов функции"""
         func_name = node.get("function")
         arguments = node.get("arguments", [])
+
+        # ИГНОРИРОВАНИЕ: если функция начинается с @ - пропускаем стандартные проверки
+        if func_name and func_name.startswith("@"):
+            print(
+                f"✓ Вызов функции '{func_name}' - пропускаем стандартную проверку (C-code/игнорируемая функция)"
+            )
+
+            # Только базовая проверка аргументов (если нужно)
+            for arg in arguments:
+                if arg and arg.isalpha() and arg not in ["True", "False", "None"]:
+                    if not self.find_symbol_in_scope(arg, level):
+                        self.add_warning(
+                            f"аргумент '{arg}' в игнорируемой функции '{func_name}' не объявлен",
+                            scope_idx,
+                            node_idx,
+                        )
+            return  # Завершаем проверку для этой функции
 
         # Проверяем, что функция существует или является встроенной
         if func_name not in self.functions and func_name not in self.builtin_functions:
@@ -2208,12 +2234,20 @@ class JSONValidator:
                 return "None"
             else:
                 # Это может быть переменная или выражение
-                # Проверяем, не является ли это вызовом функции
+                # Проверяем, не является ли это вызовом функции с @
                 if "(" in return_value and ")" in return_value:
                     # Извлекаем имя функции
-                    func_match = re.match(r"([a-zA-Z_][a-zA-Z0-9_]*)\(", return_value)
+                    func_match = re.match(r"(@?[a-zA-Z_][a-zA-Z0-9_]*)\(", return_value)
                     if func_match:
                         func_name = func_match.group(1)
+
+                        # Игнорируем функции с @
+                        if func_name.startswith("@"):
+                            print(
+                                f"    Функция '{func_name}' игнорируется при определении типа возврата"
+                            )
+                            return "unknown"
+
                         # Получаем информацию о функции
                         func_info = None
 
@@ -2257,9 +2291,16 @@ class JSONValidator:
 
         if "(" in value and ")" in value:
             # Извлекаем имя функции
-            func_match = re.match(r"([a-zA-Z_][a-zA-Z0-9_]*)\(", value)
+            func_match = re.match(r"(@?[a-zA-Z_][a-zA-Z0-9_]*)\(", value)
             if func_match:
                 func_name = func_match.group(1)
+
+                # Игнорируем функции с @
+                if func_name.startswith("@"):
+                    print(
+                        f"    Функция '{func_name}' игнорируется при проверке совместимости типов"
+                    )
+                    return
 
                 # Получаем возвращаемый тип функции
                 func_return_type = "unknown"
@@ -2544,8 +2585,11 @@ class JSONValidator:
             self._collect_vars_from_ast(ast.get("operand"), used_vars)
 
         elif node_type == "function_call":
-            for arg in ast.get("arguments", []):
-                self._collect_vars_from_ast(arg, used_vars)
+            func_name = ast.get("function", "")
+            # Игнорируем функции с @
+            if not func_name.startswith("@"):
+                for arg in ast.get("arguments", []):
+                    self._collect_vars_from_ast(arg, used_vars)
 
     def validate_return_paths(self, scope: Dict, scope_idx: int):
         """Проверяет, что все пути выполнения функции возвращают значение"""

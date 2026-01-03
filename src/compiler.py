@@ -1,5 +1,4 @@
 import json
-import os
 from typing import Dict, List, Any
 
 
@@ -10,12 +9,12 @@ class CCodeGenerator:
         self.temp_var_counter = 0
         self.function_declarations = []
         self.c_imports = []
-        self.user_imports = {}
+        self.declared_vars = set()
 
         # Маппинг типов
         self.type_map = {
             "int": "int",
-            "float": "double",
+            "float": "double",  # В C float обычно double
             "str": "char*",
             "bool": "bool",
             "None": "void",
@@ -25,40 +24,15 @@ class CCodeGenerator:
             "set": "void*",
         }
 
-        self.operator_map = {
-            "+": "+",
-            "-": "-",
-            "*": "*",
-            "/": "/",
-            "//": "/",
-            "%": "%",
-            "**": "pow",
-            "==": "==",
-            "!=": "!=",
-            "<": "<",
-            ">": ">",
-            "<=": "<=",
-            ">=": ">=",
-            "and": "&&",
-            "or": "||",
-            "not": "!",
-            "&": "&",
-            "|": "|",
-            "^": "^",
-            "<<": "<<",
-            ">>": ">>",
-            "~": "~",
-        }
-
     def indent(self):
         return "    " * self.indent_level
 
     def add_line(self, line: str):
         self.output.append(self.indent() + line)
 
-    def generate_temp_var(self):
-        self.temp_var_counter += 1
-        return f"temp_{self.temp_var_counter}"
+    def reset_declared_vars(self):
+        """Сброс для новой функции"""
+        self.declared_vars = set()
 
     def map_type(self, type_str: str) -> str:
         if type_str.startswith("*"):
@@ -67,45 +41,53 @@ class CCodeGenerator:
             return f"{c_base_type}*"
         return self.type_map.get(type_str, type_str)
 
-    def collect_imports(self, json_data: List[Dict]):
-        """Собирает все импорты из глобального scope"""
+    def collect_imports_and_declarations(self, json_data: List[Dict]):
+        """Собирает импорты и объявления функций"""
         for scope in json_data:
             if scope["type"] == "module":
                 for node in scope.get("graph", []):
                     if node["node"] == "c_import":
                         self.c_imports.append(node)
-                    # user imports пока не обрабатываем, но можем сохранить
                     elif node["node"] == "function_declaration":
-                        # Сохраняем пользовательские функции для forward declarations
-                        func_name = node["function_name"]
-                        return_type = self.map_type(node.get("return_type", "None"))
-                        params = []
-                        for param in node.get("parameters", []):
-                            param_type = self.map_type(param["type"])
-                            params.append(f"{param_type} {param['name']}")
+                        self.add_function_declaration(node)
 
-                        if not params:
-                            params_str = "void"
-                        else:
-                            params_str = ", ".join(params)
+    def add_function_declaration(self, node: Dict):
+        """Добавляет forward declaration функции"""
+        func_name = node["function_name"]
+        return_type = self.map_type(node.get("return_type", "None"))
 
-                        declaration = f"{return_type} {func_name}({params_str});"
-                        self.function_declarations.append(declaration)
+        # Параметры
+        params = []
+        for param in node.get("parameters", []):
+            param_type = self.map_type(param["type"])
+            param_name = param["name"]
+            params.append(f"{param_type} {param_name}")
+
+        # Пустые параметры -> void
+        if not params:
+            params_str = "void"
+        else:
+            params_str = ", ".join(params)
+
+        declaration = f"{return_type} {func_name}({params_str});"
+        self.function_declarations.append(declaration)
 
     def generate_c_imports(self):
-        """Генерирует #include директивы из cimport"""
-
-        # Пользовательские cimport
+        """Генерирует #include директивы"""
+        seen = set()
         for c_import in self.c_imports:
             header = c_import["header"]
             is_system = c_import["is_system"]
 
-            if is_system:
-                self.add_line(f"#include <{header}>")
-            else:
-                self.add_line(f'#include "{header}"')
+            if header not in seen:
+                seen.add(header)
+                if is_system:
+                    self.add_line(f"#include <{header}>")
+                else:
+                    self.add_line(f'#include "{header}"')
 
-        self.add_line("")
+        if seen:
+            self.add_line("")
 
     def generate_forward_declarations(self):
         """Генерирует forward declarations функций"""
@@ -117,11 +99,13 @@ class CCodeGenerator:
     def generate_from_json(self, json_data: List[Dict]) -> str:
         """Генерирует C код из JSON AST"""
         self.output = []
+        self.c_imports = []
+        self.function_declarations = []
 
-        # Собираем импорты и объявления функций
-        self.collect_imports(json_data)
+        # Собираем импорты и объявления
+        self.collect_imports_and_declarations(json_data)
 
-        # Генерируем заголовок с импортами
+        # Генерируем заголовок
         self.generate_c_imports()
 
         # Генерируем forward declarations
@@ -136,6 +120,7 @@ class CCodeGenerator:
 
     def generate_function(self, func_scope: Dict):
         """Генерирует код функции"""
+        self.reset_declared_vars()
         func_name = func_scope["function_name"]
         return_type = self.map_type(func_scope.get("return_type", "None"))
 
@@ -145,6 +130,7 @@ class CCodeGenerator:
             param_type = self.map_type(param["type"])
             param_name = param["name"]
             params.append(f"{param_type} {param_name}")
+            self.declared_vars.add(param_name)
 
         if not params:
             params_str = "void"
@@ -155,30 +141,9 @@ class CCodeGenerator:
         self.add_line(f"{return_type} {func_name}({params_str}) {{")
         self.indent_level += 1
 
-        # Локальные переменные (декларируем их в начале функции)
-        local_vars = func_scope.get("local_variables", [])
-        symbol_table = func_scope.get("symbol_table", {})
-
-        for var_name in local_vars:
-            var_info = symbol_table.get(var_name)
-            if var_info and var_info.get("key") == "var":
-                var_type = self.map_type(var_info.get("type", "int"))
-
-                # Если есть начальное значение
-                if "value" in var_info and var_info["value"]:
-                    value = self.generate_expression(var_info["value"])
-                    self.add_line(f"{var_type} {var_name} = {value};")
-                else:
-                    self.add_line(f"{var_type} {var_name};")
-
-        # Генерируем тело функции
+        # Генерируем ВСЕ узлы из графа
         for node in func_scope.get("graph", []):
             self.generate_node(node)
-
-        # Если функция не имеет явного return, добавляем по умолчанию
-        has_return = func_scope.get("return_info", {}).get("has_return", False)
-        if return_type != "void" and not has_return:
-            self.add_line(f"return 0;")
 
         self.indent_level -= 1
         self.add_line("}")
@@ -206,60 +171,90 @@ class CCodeGenerator:
             self.generate_for_loop(node)
         elif node_type == "print":
             self.generate_print(node)
-        elif node_type == "dereference_write":
-            self.generate_dereference_write(node)
-        elif node_type == "dereference_read":
-            self.generate_dereference_read(node)
+        else:
+            # Для отладки: выводим информацию о неподдерживаемом узле
+            print(f"Warning: Unsupported node type: {node_type}")
 
     def generate_declaration(self, node: Dict):
+        """Генерирует объявление переменной"""
         var_name = node["var_name"]
         var_type = self.map_type(node["var_type"])
-        is_pointer = node.get("is_pointer", False)
 
-        if "expression_ast" in node:
-            value = self.generate_expression(node["expression_ast"])
-            self.add_line(f"{var_type} {var_name} = {value};")
+        # Проверяем, не объявлена ли уже переменная
+        if var_name in self.declared_vars:
+            # Если уже объявлена (как параметр), НЕ объявляем заново
+            # Просто присваиваем значение
+            if "expression_ast" in node:
+                value = self.generate_expression(node["expression_ast"])
+                self.add_line(f"{var_name} = {value};")
         else:
-            self.add_line(f"{var_type} {var_name};")
+            # Новая переменная
+            self.declared_vars.add(var_name)
+
+            if "expression_ast" in node:
+                value = self.generate_expression(node["expression_ast"])
+                self.add_line(f"{var_type} {var_name} = {value};")
+            else:
+                self.add_line(f"{var_type} {var_name};")
 
     def generate_assignment(self, node: Dict):
-        var_name = node["symbols"][0]
-        if "expression_ast" in node:
-            value = self.generate_expression(node["expression_ast"])
-            self.add_line(f"{var_name} = {value};")
-
-    def generate_function_call(self, node: Dict):
-        func_name = node["function"]
-        args = node.get("arguments", [])
-
-        # Для простоты считаем, что аргументы - это строки с именами переменных
-        # В реальности нужно парсить AST аргументов
-        args_str = ", ".join(args)
-        self.add_line(f"{func_name}({args_str});")
+        """Генерирует присваивание"""
+        if "symbols" in node and node["symbols"]:
+            var_name = node["symbols"][0]
+            if "expression_ast" in node:
+                value = self.generate_expression(node["expression_ast"])
+                self.add_line(f"{var_name} = {value};")
 
     def generate_builtin_function_call(self, node: Dict):
+        """Генерирует вызов встроенной функции"""
         func_name = node["function"]
         args = node.get("arguments", [])
 
-        # Специальная обработка встроенных функций
+        # Преобразуем аргументы в строки
+        arg_strings = []
+        for arg in args:
+            if isinstance(arg, str):
+                arg_strings.append(arg)
+            else:
+                # Если аргумент сложный, генерируем выражение
+                # (в вашем JSON аргументы представлены как строки)
+                arg_strings.append(str(arg))
+
+        args_str = ", ".join(arg_strings)
+
         if func_name == "print":
-            # В C используем printf
-            if args:
-                # Простая реализация: предполагаем, что аргумент - переменная
-                arg = args[0]
-                # Определяем тип для форматирования
-                # В реальности нужно анализировать тип переменной
-                self.add_line(f'printf("%d\\n", {arg});')
+            # Для print используем printf
+            # Нужно определить формат в зависимости от типа
+            if args_str:
+                self.add_line(f'printf("%d\\n", {args_str});')
             else:
                 self.add_line('printf("\\n");')
-        elif func_name == "len":
-            # Для длины массива/строки - нужно знать тип
-            pass  # Пока пропускаем
         else:
-            args_str = ", ".join(args)
+            # Другие встроенные функции
             self.add_line(f"{func_name}({args_str});")
 
+    def generate_function_call(self, node: Dict):
+        """Генерирует вызов функции"""
+        func_name = node["function"]
+
+        if func_name.startswith("@"):
+            func_name = func_name[1:]
+
+        args = node.get("arguments", [])
+
+        # Преобразуем аргументы в строки
+        arg_strings = []
+        for arg in args:
+            if isinstance(arg, str):
+                arg_strings.append(arg)
+            else:
+                arg_strings.append(str(arg))
+
+        args_str = ", ".join(arg_strings)
+        self.add_line(f"{func_name}({args_str});")
+
     def generate_return(self, node: Dict):
+        """Генерирует return"""
         if "operations" in node and node["operations"]:
             operation = node["operations"][0]
             if "value" in operation:
@@ -267,9 +262,12 @@ class CCodeGenerator:
                 self.add_line(f"return {value};")
             else:
                 self.add_line("return;")
+        else:
+            self.add_line("return;")
 
     def generate_if_statement(self, node: Dict):
-        condition = self.generate_expression(node["condition_ast"])
+        """Генерирует if statement"""
+        condition = self.generate_expression(node.get("condition_ast", {}))
         self.add_line(f"if ({condition}) {{")
         self.indent_level += 1
 
@@ -281,7 +279,9 @@ class CCodeGenerator:
 
         # elif блоки
         for elif_block in node.get("elif_blocks", []):
-            elif_condition = self.generate_expression(elif_block["condition_ast"])
+            elif_condition = self.generate_expression(
+                elif_block.get("condition_ast", {})
+            )
             self.add_line(f"else if ({elif_condition}) {{")
             self.indent_level += 1
 
@@ -303,6 +303,7 @@ class CCodeGenerator:
             self.add_line("}")
 
     def generate_while_loop(self, node: Dict):
+        """Генерирует while loop"""
         condition = self.generate_expression(node.get("condition", {}))
         self.add_line(f"while ({condition}) {{")
         self.indent_level += 1
@@ -314,10 +315,10 @@ class CCodeGenerator:
         self.add_line("}")
 
     def generate_for_loop(self, node: Dict):
+        """Генерирует for loop"""
         loop_var = node.get("loop_variable", "i")
         iterable = node.get("iterable", {})
 
-        # Простая реализация для range()
         if iterable.get("type") == "RANGE_CALL":
             args = iterable.get("arguments", {})
             start = args.get("start", "0")
@@ -336,33 +337,13 @@ class CCodeGenerator:
             self.add_line("}")
 
     def generate_print(self, node: Dict):
+        """Генерирует print"""
         args = node.get("arguments", [])
         if args:
-            # Простая реализация для одного аргумента
-            arg = args[0]
-            self.add_line(f'printf("%d\\n", {arg});')
+            for arg in args:
+                self.add_line(f'printf("%d\\n", {arg});')
         else:
             self.add_line('printf("\\n");')
-
-    def generate_dereference_write(self, node: Dict):
-        # *p = value
-        pointer = node.get("symbols", [""])[0]
-        operations = node.get("operations", [])
-        if operations:
-            for op in operations:
-                if op["type"] == "WRITE_POINTER":
-                    value = self.generate_expression(op["value"])
-                    self.add_line(f"*{pointer} = {value};")
-
-    def generate_dereference_read(self, node: Dict):
-        # var = *p
-        operations = node.get("operations", [])
-        if operations:
-            for op in operations:
-                if op["type"] == "READ_POINTER":
-                    target = op.get("target", "")
-                    pointer = op.get("from", "")
-                    self.add_line(f"{target} = *{pointer};")
 
     def generate_expression(self, ast: Dict) -> str:
         """Генерирует C выражение из AST"""
@@ -390,36 +371,46 @@ class CCodeGenerator:
         elif node_type == "binary_operation":
             left = self.generate_expression(ast.get("left", {}))
             right = self.generate_expression(ast.get("right", {}))
-            operator = self.operator_map.get(
-                ast.get("operator_symbol", ""), ast.get("operator_symbol", "")
-            )
+            operator = ast.get("operator_symbol", "")
 
             # Специальная обработка для pow()
-            if operator == "pow":
+            if operator == "**":
                 return f"pow({left}, {right})"
 
             return f"({left} {operator} {right})"
 
         elif node_type == "function_call":
             func_name = ast.get("function", "")
-            args = [self.generate_expression(arg) for arg in ast.get("arguments", [])]
-            args_str = ", ".join(args)
+            args = ast.get("arguments", [])
+
+            print(f"DEBUG generate_expression: вызов функции '{func_name}'")
+            print(
+                f"  Начинается с @: {func_name.startswith('@') if func_name else False}"
+            )
+
+            # УДАЛЯЕМ @ из имени функции для C кода
+            if func_name.startswith("@"):  # C - code
+                original_name = func_name
+                func_name = func_name[1:]  # Удаляем @
+                print(f"  Преобразовано '{original_name}' -> '{func_name}'")
+
+            # Генерируем аргументы
+            arg_strings = []
+            for arg in args:
+                arg_strings.append(self.generate_expression(arg))
+
+            args_str = ", ".join(arg_strings)
+
             return f"{func_name}({args_str})"
-
-        elif node_type == "address_of":
-            variable = ast.get("variable", "")
-            return f"&{variable}"
-
-        elif node_type == "dereference":
-            pointer = ast.get("pointer", "")
-            return f"*{pointer}"
 
         elif node_type == "unary_operation":
             operand = self.generate_expression(ast.get("operand", {}))
-            operator = self.operator_map.get(
-                ast.get("operator_symbol", ""), ast.get("operator_symbol", "")
-            )
+            operator = ast.get("operator_symbol", "")
             return f"{operator}({operand})"
 
-        # Для других типов
-        return str(ast.get("value", ""))
+        ast_value = str(ast.get("value", ""))
+        if ast_value.startswith("@"):  # C - code
+            ast_value = ast_value[1:]
+
+        # Для неизвестных типов
+        return ast_value

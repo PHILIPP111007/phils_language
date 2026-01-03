@@ -1,10 +1,12 @@
+import sys
 import json
+
 from src.parser import Parser
 from src.debug import JSONValidator
 from src.compiler import CCodeGenerator
 
 
-def main(base_path: str, json_path: str, output_path: str) -> int:
+def main(base_path: str, json_path: str, c_path: str):
     with open("/Users/phil/GitHub/phils_language/data/main.p", "r") as file:
         code = file.read()
 
@@ -42,21 +44,23 @@ def main(base_path: str, json_path: str, output_path: str) -> int:
     if not result["errors"]:
         print("\nOK")
 
-    if result["errors"]:
-        return 1
-
     generator = CCodeGenerator()
     c_code = generator.generate_from_json(data)
 
-    with open(output_path, "w") as f:
+    with open(c_path, "w") as f:
         f.write(c_code)
-
-    return 0
 
 
 if __name__ == "__main__":
     base_path = "/Users/phil/GitHub/phils_language/data/"
     json_path = "/Users/phil/GitHub/phils_language/data/parsed_code.json"
-    output_path = "/Users/phil/GitHub/phils_language/data/generated_code.c"
+    c_path = "/Users/phil/GitHub/phils_language/data/generated_code.c"
+    output_path = "/Users/phil/GitHub/phils_language/data/generated_code"
 
-    main(base_path=base_path, json_path=json_path, output_path=output_path)
+    main(base_path=base_path, json_path=json_path, c_path=c_path)
+
+    command = f"gcc {c_path} -o {output_path}"
+
+    # os.system(command)
+
+    sys.exit(0)
