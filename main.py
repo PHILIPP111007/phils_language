@@ -7,8 +7,8 @@ from src.debug import JSONValidator
 from src.compiler import CCodeGenerator
 
 
-def main(base_path: str, json_path: str, c_path: str):
-    with open("/Users/phil/GitHub/phils_language/data/main.p", "r") as file:
+def main(base_path: str, p_path: str, json_path: str, c_path: str):
+    with open(p_path, "r") as file:
         code = file.read()
 
     # PARSER
@@ -53,12 +53,13 @@ def main(base_path: str, json_path: str, c_path: str):
 
 
 if __name__ == "__main__":
-    base_path = "/Users/phil/GitHub/phils_language/data/"
-    json_path = "/Users/phil/GitHub/phils_language/data/parsed_code.json"
-    c_path = "/Users/phil/GitHub/phils_language/data/generated_code.c"
-    output_path = "/Users/phil/GitHub/phils_language/data/generated_code"
+    p_path = "/Users/phil/GitHub/phils_language/examples/main.p"
+    base_path = "/Users/phil/GitHub/phils_language/examples/"
+    json_path = "/Users/phil/GitHub/phils_language/examples/parsed_code.json"
+    c_path = "/Users/phil/GitHub/phils_language/examples/generated_code.c"
+    output_path = "/Users/phil/GitHub/phils_language/examples/generated_code"
 
-    main(base_path=base_path, json_path=json_path, c_path=c_path)
+    main(base_path=base_path, p_path=p_path, json_path=json_path, c_path=c_path)
 
     command = f"gcc {c_path} -o {output_path}"
 
