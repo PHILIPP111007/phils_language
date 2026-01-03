@@ -215,3 +215,18 @@ def main() -> float:
 
     return a
 
+
+
+def main() -> int:
+    
+    var t1: tuple[int] = (1, 2, 3)
+    var t2: tuple[str] = ("1", "2",)
+
+    var l1: list[int] = [1, 2, 3]
+    var l2: list[str] = ["a", "b", "c"]
+    var l3: list[tuple] = [(1, 2), (3, 4)]  # list of tuples
+
+    var result: list[list[int]] = [ [1, 2], [1, 2] ]
+
+    return 0
+
