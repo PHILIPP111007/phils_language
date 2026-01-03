@@ -6,34 +6,40 @@
     "local_variables": [],
     "graph": [
       {
-        "node": "function_declaration",
-        "content": "def mul(a: int, b: int) -> int:",
-        "function_name": "mul",
-        "symbol_id": "mul",
-        "parameters": [
+        "node": "c_import",
+        "content": "cimport \"my_header.h\"",
+        "header": "my_header.h",
+        "is_system": false,
+        "operations": [
           {
-            "name": "a",
-            "type": "int"
-          },
-          {
-            "name": "b",
-            "type": "int"
+            "type": "C_IMPORT",
+            "header": "my_header.h",
+            "is_system": false
           }
-        ],
-        "return_type": "int",
-        "body_level": 1,
-        "is_stub": false
+        ]
+      },
+      {
+        "node": "c_import",
+        "content": "cimport <my_header.h>",
+        "header": "my_header.h",
+        "is_system": true,
+        "operations": [
+          {
+            "type": "C_IMPORT",
+            "header": "my_header.h",
+            "is_system": true
+          }
+        ]
       },
       {
         "node": "function_declaration",
-        "content": "def mul1(a: *int, b: *int) -> int:",
-        "function_name": "mul1",
-        "symbol_id": "mul1",
+        "content": "def func() -> str:",
+        "function_name": "func",
+        "symbol_id": "func",
         "parameters": [],
-        "return_type": "int",
+        "return_type": "str",
         "body_level": 1,
-        "is_stub": true,
-        "body": []
+        "is_stub": false
       },
       {
         "node": "function_declaration",
@@ -47,20 +53,12 @@
       }
     ],
     "symbol_table": {
-      "mul": {
-        "name": "mul",
+      "func": {
+        "name": "func",
         "key": "function",
         "type": "function",
         "value": null,
-        "id": "mul",
-        "is_deleted": false
-      },
-      "mul1": {
-        "name": "mul1",
-        "key": "function",
-        "type": "function",
-        "value": null,
-        "id": "mul1",
+        "id": "func",
         "is_deleted": false
       },
       "main": {
@@ -77,115 +75,42 @@
     "level": 1,
     "type": "function",
     "parent_scope": 0,
-    "function_name": "mul",
-    "parameters": [
-      {
-        "name": "a",
-        "type": "int"
-      },
-      {
-        "name": "b",
-        "type": "int"
-      }
-    ],
-    "return_type": "int",
-    "local_variables": [
-      "a",
-      "b"
-    ],
+    "function_name": "func",
+    "parameters": [],
+    "return_type": "str",
+    "local_variables": [],
     "graph": [
       {
         "node": "return",
-        "content": "return a * b",
+        "content": "return \"qepfko\"",
         "symbols": [],
         "operations": [
           {
             "type": "RETURN",
             "value": {
-              "type": "binary_operation",
-              "operator": "MULTIPLY",
-              "operator_symbol": "*",
-              "left": {
-                "type": "variable",
-                "value": "a"
-              },
-              "right": {
-                "type": "variable",
-                "value": "b"
-              }
+              "type": "literal",
+              "value": "qepfko",
+              "data_type": "str"
             },
-            "expression": "a * b"
+            "expression": "\"qepfko\""
           }
         ],
         "dependencies": [
-          "a",
-          "b"
-        ]
-      }
-    ],
-    "symbol_table": {
-      "a": {
-        "name": "a",
-        "key": "var",
-        "type": "int",
-        "value": null,
-        "id": "a",
-        "is_deleted": false
-      },
-      "b": {
-        "name": "b",
-        "key": "var",
-        "type": "int",
-        "value": null,
-        "id": "b",
-        "is_deleted": false
-      }
-    },
-    "return_info": {
-      "has_return": true,
-      "return_value": {
-        "type": "binary_operation",
-        "operator": "MULTIPLY",
-        "operator_symbol": "*",
-        "left": {
-          "type": "variable",
-          "value": "a"
-        },
-        "right": {
-          "type": "variable",
-          "value": "b"
-        }
-      },
-      "return_type": "int"
-    },
-    "is_stub": false
-  },
-  {
-    "level": 1,
-    "type": "function",
-    "parent_scope": 0,
-    "function_name": "mul1",
-    "parameters": [],
-    "return_type": "int",
-    "local_variables": [],
-    "graph": [
-      {
-        "node": "pass",
-        "content": "pass",
-        "operations": [
-          {
-            "type": "PASS"
-          }
+          "qepfko"
         ]
       }
     ],
     "symbol_table": {},
     "return_info": {
-      "has_return": false,
-      "return_value": null,
-      "return_type": "int"
+      "has_return": true,
+      "return_value": {
+        "type": "literal",
+        "value": "qepfko",
+        "data_type": "str"
+      },
+      "return_type": "str"
     },
-    "is_stub": true
+    "is_stub": false
   },
   {
     "level": 1,
@@ -197,13 +122,17 @@
     "local_variables": [
       "a",
       "b",
+      "eee",
       "c",
       "s",
       "x",
       "xx",
       "xxx",
       "p",
-      "ddd"
+      "ddd",
+      "aaa",
+      "result",
+      "res"
     ],
     "graph": [
       {
@@ -212,19 +141,32 @@
         "symbols": [
           "a"
         ],
+        "var_name": "a",
+        "var_type": "int",
+        "is_pointer": false,
         "operations": [
           {
             "type": "NEW_VAR",
             "target": "a",
-            "var_type": "int"
+            "var_type": "int",
+            "was_deleted": false
           },
           {
             "type": "ASSIGN",
             "target": "a",
-            "value": 10
+            "value": {
+              "type": "literal",
+              "value": 10,
+              "data_type": "int"
+            }
           }
         ],
-        "is_pointer": false,
+        "dependencies": [],
+        "expression_ast": {
+          "type": "literal",
+          "value": 10,
+          "data_type": "int"
+        },
         "data_structure": null
       },
       {
@@ -233,19 +175,68 @@
         "symbols": [
           "b"
         ],
+        "var_name": "b",
+        "var_type": "int",
+        "is_pointer": false,
         "operations": [
           {
             "type": "NEW_VAR",
             "target": "b",
-            "var_type": "int"
+            "var_type": "int",
+            "was_deleted": false
           },
           {
             "type": "ASSIGN",
             "target": "b",
-            "value": 100
+            "value": {
+              "type": "literal",
+              "value": 100,
+              "data_type": "int"
+            }
           }
         ],
+        "dependencies": [],
+        "expression_ast": {
+          "type": "literal",
+          "value": 100,
+          "data_type": "int"
+        },
+        "data_structure": null
+      },
+      {
+        "node": "declaration",
+        "content": "var eee: str = func()",
+        "symbols": [
+          "eee"
+        ],
+        "var_name": "eee",
+        "var_type": "str",
         "is_pointer": false,
+        "operations": [
+          {
+            "type": "NEW_VAR",
+            "target": "eee",
+            "var_type": "str",
+            "was_deleted": false
+          },
+          {
+            "type": "ASSIGN",
+            "target": "eee",
+            "value": {
+              "type": "function_call",
+              "function": "func",
+              "arguments": []
+            }
+          }
+        ],
+        "dependencies": [
+          "func"
+        ],
+        "expression_ast": {
+          "type": "function_call",
+          "function": "func",
+          "arguments": []
+        },
         "data_structure": null
       },
       {
@@ -254,65 +245,33 @@
         "symbols": [
           "c"
         ],
+        "var_name": "c",
+        "var_type": "int",
+        "is_pointer": false,
         "operations": [
           {
             "type": "NEW_VAR",
             "target": "c",
-            "var_type": "int"
+            "var_type": "int",
+            "was_deleted": false
           },
           {
             "type": "ASSIGN",
             "target": "c",
-            "value": 0
-          }
-        ],
-        "is_pointer": false,
-        "data_structure": null
-      },
-      {
-        "node": "assignment",
-        "content": "c = mul(a, b)",
-        "symbols": [
-          "c"
-        ],
-        "operations": [
-          {
-            "type": "ASSIGN",
-            "target": "c",
             "value": {
-              "type": "function_call",
-              "function": "mul",
-              "arguments": [
-                {
-                  "type": "variable",
-                  "value": "a"
-                },
-                {
-                  "type": "variable",
-                  "value": "b"
-                }
-              ]
+              "type": "literal",
+              "value": 0,
+              "data_type": "int"
             }
           }
         ],
-        "dependencies": [
-          "a",
-          "b"
-        ],
+        "dependencies": [],
         "expression_ast": {
-          "type": "function_call",
-          "function": "mul",
-          "arguments": [
-            {
-              "type": "variable",
-              "value": "a"
-            },
-            {
-              "type": "variable",
-              "value": "b"
-            }
-          ]
-        }
+          "type": "literal",
+          "value": 0,
+          "data_type": "int"
+        },
+        "data_structure": null
       },
       {
         "node": "builtin_function_call",
@@ -342,19 +301,52 @@
         "symbols": [
           "s"
         ],
+        "var_name": "s",
+        "var_type": "str",
+        "is_pointer": false,
         "operations": [
           {
             "type": "NEW_VAR",
             "target": "s",
-            "var_type": "str"
+            "var_type": "str",
+            "was_deleted": false
           },
           {
             "type": "ASSIGN",
             "target": "s",
-            "value": "10 * \"asff\""
+            "value": {
+              "type": "binary_operation",
+              "operator": "MULTIPLY",
+              "operator_symbol": "*",
+              "left": {
+                "type": "literal",
+                "value": 10,
+                "data_type": "int"
+              },
+              "right": {
+                "type": "literal",
+                "value": "asff",
+                "data_type": "str"
+              }
+            }
           }
         ],
-        "is_pointer": false,
+        "dependencies": [],
+        "expression_ast": {
+          "type": "binary_operation",
+          "operator": "MULTIPLY",
+          "operator_symbol": "*",
+          "left": {
+            "type": "literal",
+            "value": 10,
+            "data_type": "int"
+          },
+          "right": {
+            "type": "literal",
+            "value": "asff",
+            "data_type": "str"
+          }
+        },
         "data_structure": null
       },
       {
@@ -363,19 +355,32 @@
         "symbols": [
           "x"
         ],
+        "var_name": "x",
+        "var_type": "int",
+        "is_pointer": false,
         "operations": [
           {
             "type": "NEW_VAR",
             "target": "x",
-            "var_type": "int"
+            "var_type": "int",
+            "was_deleted": false
           },
           {
             "type": "ASSIGN",
             "target": "x",
-            "value": 0
+            "value": {
+              "type": "literal",
+              "value": 0,
+              "data_type": "int"
+            }
           }
         ],
-        "is_pointer": false,
+        "dependencies": [],
+        "expression_ast": {
+          "type": "literal",
+          "value": 0,
+          "data_type": "int"
+        },
         "data_structure": null
       },
       {
@@ -474,19 +479,29 @@
         "symbols": [
           "xx"
         ],
+        "var_name": "xx",
+        "var_type": "dict",
+        "is_pointer": false,
         "operations": [
           {
-            "type": "NEW_DICT",
+            "type": "NEW_VAR",
             "target": "xx",
             "var_type": "dict",
-            "literal": {
-              "type": "dict_literal",
-              "pairs": {},
-              "size": 0
-            }
+            "was_deleted": false
+          },
+          {
+            "type": "CREATE_DICT",
+            "target": "xx",
+            "pairs": {},
+            "size": 0
           }
         ],
-        "is_pointer": false,
+        "dependencies": [],
+        "expression_ast": {
+          "type": "dict_literal",
+          "pairs": {},
+          "size": 0
+        },
         "data_structure": "dict"
       },
       {
@@ -495,21 +510,41 @@
         "symbols": [
           "xxx"
         ],
+        "var_name": "xxx",
+        "var_type": "dict",
+        "is_pointer": false,
         "operations": [
           {
-            "type": "NEW_DICT",
+            "type": "NEW_VAR",
             "target": "xxx",
             "var_type": "dict",
-            "literal": {
-              "type": "dict_literal",
-              "pairs": {
-                "\"a\"": 1
-              },
-              "size": 1
-            }
+            "was_deleted": false
+          },
+          {
+            "type": "CREATE_DICT",
+            "target": "xxx",
+            "pairs": {
+              "a": {
+                "type": "literal",
+                "value": 1,
+                "data_type": "int"
+              }
+            },
+            "size": 1
           }
         ],
-        "is_pointer": false,
+        "dependencies": [],
+        "expression_ast": {
+          "type": "dict_literal",
+          "pairs": {
+            "a": {
+              "type": "literal",
+              "value": 1,
+              "data_type": "int"
+            }
+          },
+          "size": 1
+        },
         "data_structure": "dict"
       },
       {
@@ -518,11 +553,15 @@
         "symbols": [
           "p"
         ],
+        "var_name": "p",
+        "var_type": "*int",
+        "is_pointer": true,
         "operations": [
           {
-            "type": "NEW_POINTER",
+            "type": "NEW_VAR",
             "target": "p",
-            "pointed_type": "int"
+            "var_type": "*int",
+            "was_deleted": false
           },
           {
             "type": "GET_ADDRESS",
@@ -531,7 +570,14 @@
             "operation": "&"
           }
         ],
-        "is_pointer": true,
+        "dependencies": [
+          "x"
+        ],
+        "expression_ast": {
+          "type": "address_of",
+          "variable": "x",
+          "value": "&x"
+        },
         "data_structure": null
       },
       {
@@ -583,53 +629,466 @@
         "symbols": [
           "ddd"
         ],
+        "var_name": "ddd",
+        "var_type": "list",
+        "is_pointer": false,
         "operations": [
           {
-            "type": "NEW_LIST",
+            "type": "NEW_VAR",
             "target": "ddd",
             "var_type": "list",
-            "literal": {
-              "type": "list_literal",
-              "items": [
-                1,
-                2,
-                3,
-                4
-              ],
-              "length": 4
-            }
+            "was_deleted": false
+          },
+          {
+            "type": "CREATE_LIST",
+            "target": "ddd",
+            "items": [
+              {
+                "type": "literal",
+                "value": 1,
+                "data_type": "int"
+              },
+              {
+                "type": "literal",
+                "value": 2,
+                "data_type": "int"
+              },
+              {
+                "type": "literal",
+                "value": 3,
+                "data_type": "int"
+              },
+              {
+                "type": "literal",
+                "value": 4,
+                "data_type": "int"
+              }
+            ],
+            "size": 4
           }
         ],
-        "is_pointer": false,
+        "dependencies": [],
+        "expression_ast": {
+          "type": "list_literal",
+          "items": [
+            {
+              "type": "literal",
+              "value": 1,
+              "data_type": "int"
+            },
+            {
+              "type": "literal",
+              "value": 2,
+              "data_type": "int"
+            },
+            {
+              "type": "literal",
+              "value": 3,
+              "data_type": "int"
+            },
+            {
+              "type": "literal",
+              "value": 4,
+              "data_type": "int"
+            }
+          ],
+          "length": 4
+        },
         "data_structure": "list"
       },
       {
+        "node": "declaration",
+        "content": "var aaa: float = 1.001",
+        "symbols": [
+          "aaa"
+        ],
+        "var_name": "aaa",
+        "var_type": "float",
+        "is_pointer": false,
+        "operations": [
+          {
+            "type": "NEW_VAR",
+            "target": "aaa",
+            "var_type": "float",
+            "was_deleted": false
+          },
+          {
+            "type": "ASSIGN",
+            "target": "aaa",
+            "value": {
+              "type": "literal",
+              "value": 1.001,
+              "data_type": "float"
+            }
+          }
+        ],
+        "dependencies": [],
+        "expression_ast": {
+          "type": "literal",
+          "value": 1.001,
+          "data_type": "float"
+        },
+        "data_structure": null
+      },
+      {
+        "node": "declaration",
+        "content": "var result: str = \"\"",
+        "symbols": [
+          "result"
+        ],
+        "var_name": "result",
+        "var_type": "str",
+        "is_pointer": false,
+        "operations": [
+          {
+            "type": "NEW_VAR",
+            "target": "result",
+            "var_type": "str",
+            "was_deleted": false
+          },
+          {
+            "type": "ASSIGN",
+            "target": "result",
+            "value": {
+              "type": "literal",
+              "value": "",
+              "data_type": "str"
+            }
+          }
+        ],
+        "dependencies": [],
+        "expression_ast": {
+          "type": "literal",
+          "value": "",
+          "data_type": "str"
+        },
+        "data_structure": null
+      },
+      {
+        "node": "if_statement",
+        "content": "if x > 20:",
+        "condition": {
+          "type": "binary_operation",
+          "operator": "GREATER_THAN",
+          "operator_symbol": ">",
+          "left": {
+            "type": "variable",
+            "value": "x"
+          },
+          "right": {
+            "type": "literal",
+            "value": 20,
+            "data_type": "int"
+          }
+        },
+        "condition_ast": {
+          "type": "binary_operation",
+          "operator": "GREATER_THAN",
+          "operator_symbol": ">",
+          "left": {
+            "type": "variable",
+            "value": "x"
+          },
+          "right": {
+            "type": "literal",
+            "value": 20,
+            "data_type": "int"
+          }
+        },
+        "body_level": 2,
+        "body": [
+          {
+            "node": "assignment",
+            "content": "result = \"\u0431\u043e\u043b\u044c\u0448\u0435 20\"",
+            "symbols": [
+              "result"
+            ],
+            "operations": [
+              {
+                "type": "ASSIGN",
+                "target": "result",
+                "value": {
+                  "type": "literal",
+                  "value": "\u0431\u043e\u043b\u044c\u0448\u0435 20",
+                  "data_type": "str"
+                }
+              }
+            ],
+            "dependencies": [],
+            "expression_ast": {
+              "type": "literal",
+              "value": "\u0431\u043e\u043b\u044c\u0448\u0435 20",
+              "data_type": "str"
+            }
+          }
+        ],
+        "elif_blocks": [
+          {
+            "node": "elif_statement",
+            "content": "elif x > 10:",
+            "condition": {
+              "type": "binary_operation",
+              "operator": "GREATER_THAN",
+              "operator_symbol": ">",
+              "left": {
+                "type": "variable",
+                "value": "x"
+              },
+              "right": {
+                "type": "literal",
+                "value": 10,
+                "data_type": "int"
+              }
+            },
+            "condition_ast": {
+              "type": "binary_operation",
+              "operator": "GREATER_THAN",
+              "operator_symbol": ">",
+              "left": {
+                "type": "variable",
+                "value": "x"
+              },
+              "right": {
+                "type": "literal",
+                "value": 10,
+                "data_type": "int"
+              }
+            },
+            "body_level": 2,
+            "body": [
+              {
+                "node": "assignment",
+                "content": "result = \"\u0431\u043e\u043b\u044c\u0448\u0435 10\"",
+                "symbols": [
+                  "result"
+                ],
+                "operations": [
+                  {
+                    "type": "ASSIGN",
+                    "target": "result",
+                    "value": {
+                      "type": "literal",
+                      "value": "\u0431\u043e\u043b\u044c\u0448\u0435 10",
+                      "data_type": "str"
+                    }
+                  }
+                ],
+                "dependencies": [],
+                "expression_ast": {
+                  "type": "literal",
+                  "value": "\u0431\u043e\u043b\u044c\u0448\u0435 10",
+                  "data_type": "str"
+                }
+              }
+            ]
+          },
+          {
+            "node": "elif_statement",
+            "content": "elif x > 0:",
+            "condition": {
+              "type": "binary_operation",
+              "operator": "GREATER_THAN",
+              "operator_symbol": ">",
+              "left": {
+                "type": "variable",
+                "value": "x"
+              },
+              "right": {
+                "type": "literal",
+                "value": 0,
+                "data_type": "int"
+              }
+            },
+            "condition_ast": {
+              "type": "binary_operation",
+              "operator": "GREATER_THAN",
+              "operator_symbol": ">",
+              "left": {
+                "type": "variable",
+                "value": "x"
+              },
+              "right": {
+                "type": "literal",
+                "value": 0,
+                "data_type": "int"
+              }
+            },
+            "body_level": 2,
+            "body": [
+              {
+                "node": "assignment",
+                "content": "result = \"\u043f\u043e\u043b\u043e\u0436\u0438\u0442\u0435\u043b\u044c\u043d\u043e\u0435\"",
+                "symbols": [
+                  "result"
+                ],
+                "operations": [
+                  {
+                    "type": "ASSIGN",
+                    "target": "result",
+                    "value": {
+                      "type": "literal",
+                      "value": "\u043f\u043e\u043b\u043e\u0436\u0438\u0442\u0435\u043b\u044c\u043d\u043e\u0435",
+                      "data_type": "str"
+                    }
+                  }
+                ],
+                "dependencies": [],
+                "expression_ast": {
+                  "type": "literal",
+                  "value": "\u043f\u043e\u043b\u043e\u0436\u0438\u0442\u0435\u043b\u044c\u043d\u043e\u0435",
+                  "data_type": "str"
+                }
+              }
+            ]
+          }
+        ],
+        "else_block": {
+          "node": "else_statement",
+          "content": "else:",
+          "body_level": 2,
+          "body": [
+            {
+              "node": "assignment",
+              "content": "result = \"\u043c\u0435\u043d\u044c\u0448\u0435 \u0438\u043b\u0438 \u0440\u0430\u0432\u043d\u043e 0\"",
+              "symbols": [
+                "result"
+              ],
+              "operations": [
+                {
+                  "type": "ASSIGN",
+                  "target": "result",
+                  "value": {
+                    "type": "literal",
+                    "value": "\u043c\u0435\u043d\u044c\u0448\u0435 \u0438\u043b\u0438 \u0440\u0430\u0432\u043d\u043e 0",
+                    "data_type": "str"
+                  }
+                }
+              ],
+              "dependencies": [],
+              "expression_ast": {
+                "type": "literal",
+                "value": "\u043c\u0435\u043d\u044c\u0448\u0435 \u0438\u043b\u0438 \u0440\u0430\u0432\u043d\u043e 0",
+                "data_type": "str"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "node": "if_statement",
+        "content": "if a > x:",
+        "condition": {
+          "type": "binary_operation",
+          "operator": "GREATER_THAN",
+          "operator_symbol": ">",
+          "left": {
+            "type": "variable",
+            "value": "a"
+          },
+          "right": {
+            "type": "variable",
+            "value": "x"
+          }
+        },
+        "condition_ast": {
+          "type": "binary_operation",
+          "operator": "GREATER_THAN",
+          "operator_symbol": ">",
+          "left": {
+            "type": "variable",
+            "value": "a"
+          },
+          "right": {
+            "type": "variable",
+            "value": "x"
+          }
+        },
+        "body_level": 2,
+        "body": [
+          {
+            "node": "declaration",
+            "content": "var res: str = func()",
+            "symbols": [
+              "res"
+            ],
+            "var_name": "res",
+            "var_type": "str",
+            "is_pointer": false,
+            "operations": [
+              {
+                "type": "NEW_VAR",
+                "target": "res",
+                "var_type": "str",
+                "was_deleted": false
+              },
+              {
+                "type": "ASSIGN",
+                "target": "res",
+                "value": {
+                  "type": "function_call",
+                  "function": "func",
+                  "arguments": []
+                }
+              }
+            ],
+            "dependencies": [
+              "func"
+            ],
+            "expression_ast": {
+              "type": "function_call",
+              "function": "func",
+              "arguments": []
+            },
+            "data_structure": null
+          }
+        ],
+        "elif_blocks": [],
+        "else_block": {
+          "node": "else_statement",
+          "content": "else:",
+          "body_level": 2,
+          "body": [
+            {
+              "node": "builtin_function_call",
+              "content": "print(result)",
+              "function": "print",
+              "arguments": [
+                "result"
+              ],
+              "return_type": "None",
+              "operations": [
+                {
+                  "type": "BUILTIN_FUNCTION_CALL",
+                  "function": "print",
+                  "arguments": [
+                    "result"
+                  ],
+                  "return_type": "None"
+                }
+              ],
+              "dependencies": [
+                "result"
+              ]
+            }
+          ]
+        }
+      },
+      {
         "node": "return",
-        "content": "return 1 * a",
+        "content": "return 0",
         "symbols": [],
         "operations": [
           {
             "type": "RETURN",
             "value": {
-              "type": "binary_operation",
-              "operator": "MULTIPLY",
-              "operator_symbol": "*",
-              "left": {
-                "type": "literal",
-                "value": 1,
-                "data_type": "int"
-              },
-              "right": {
-                "type": "variable",
-                "value": "a"
-              }
+              "type": "literal",
+              "value": 0,
+              "data_type": "int"
             },
-            "expression": "1 * a"
+            "expression": "0"
           }
         ],
-        "dependencies": [
-          "a"
-        ]
+        "dependencies": []
       }
     ],
     "symbol_table": {
@@ -637,7 +1096,11 @@
         "name": "a",
         "key": "var",
         "type": "int",
-        "value": 10,
+        "value": {
+          "type": "literal",
+          "value": 10,
+          "data_type": "int"
+        },
         "id": "a",
         "is_deleted": false
       },
@@ -645,8 +1108,24 @@
         "name": "b",
         "key": "var",
         "type": "int",
-        "value": 100,
+        "value": {
+          "type": "literal",
+          "value": 100,
+          "data_type": "int"
+        },
         "id": "b",
+        "is_deleted": false
+      },
+      "eee": {
+        "name": "eee",
+        "key": "var",
+        "type": "str",
+        "value": {
+          "type": "function_call",
+          "function": "func",
+          "arguments": []
+        },
+        "id": "eee",
         "is_deleted": false
       },
       "c": {
@@ -654,18 +1133,9 @@
         "key": "var",
         "type": "int",
         "value": {
-          "type": "function_call",
-          "function": "mul",
-          "arguments": [
-            {
-              "type": "variable",
-              "value": "a"
-            },
-            {
-              "type": "variable",
-              "value": "b"
-            }
-          ]
+          "type": "literal",
+          "value": 0,
+          "data_type": "int"
         },
         "id": "c",
         "is_deleted": false
@@ -674,7 +1144,21 @@
         "name": "s",
         "key": "var",
         "type": "str",
-        "value": "10 * \"asff\"",
+        "value": {
+          "type": "binary_operation",
+          "operator": "MULTIPLY",
+          "operator_symbol": "*",
+          "left": {
+            "type": "literal",
+            "value": 10,
+            "data_type": "int"
+          },
+          "right": {
+            "type": "literal",
+            "value": "asff",
+            "data_type": "str"
+          }
+        },
         "id": "s",
         "is_deleted": false
       },
@@ -729,7 +1213,11 @@
         "value": {
           "type": "dict_literal",
           "pairs": {
-            "\"a\"": 1
+            "a": {
+              "type": "literal",
+              "value": 1,
+              "data_type": "int"
+            }
           },
           "size": 1
         },
@@ -740,12 +1228,15 @@
         "name": "p",
         "key": "var",
         "type": "*int",
-        "value": "&x",
+        "value": {
+          "type": "address_of",
+          "variable": "x",
+          "value": "&x"
+        },
         "id": "p",
         "is_deleted": false,
         "is_pointer": true,
-        "pointed_type": "int",
-        "points_to": "x"
+        "pointed_type": "int"
       },
       "ddd": {
         "name": "ddd",
@@ -754,32 +1245,75 @@
         "value": {
           "type": "list_literal",
           "items": [
-            1,
-            2,
-            3,
-            4
+            {
+              "type": "literal",
+              "value": 1,
+              "data_type": "int"
+            },
+            {
+              "type": "literal",
+              "value": 2,
+              "data_type": "int"
+            },
+            {
+              "type": "literal",
+              "value": 3,
+              "data_type": "int"
+            },
+            {
+              "type": "literal",
+              "value": 4,
+              "data_type": "int"
+            }
           ],
           "length": 4
         },
         "id": "ddd",
+        "is_deleted": false
+      },
+      "aaa": {
+        "name": "aaa",
+        "key": "var",
+        "type": "float",
+        "value": {
+          "type": "literal",
+          "value": 1.001,
+          "data_type": "float"
+        },
+        "id": "aaa",
+        "is_deleted": false
+      },
+      "result": {
+        "name": "result",
+        "key": "var",
+        "type": "str",
+        "value": {
+          "type": "literal",
+          "value": "\u043c\u0435\u043d\u044c\u0448\u0435 \u0438\u043b\u0438 \u0440\u0430\u0432\u043d\u043e 0",
+          "data_type": "str"
+        },
+        "id": "result",
+        "is_deleted": false
+      },
+      "res": {
+        "name": "res",
+        "key": "var",
+        "type": "str",
+        "value": {
+          "type": "function_call",
+          "function": "func",
+          "arguments": []
+        },
+        "id": "res",
         "is_deleted": false
       }
     },
     "return_info": {
       "has_return": true,
       "return_value": {
-        "type": "binary_operation",
-        "operator": "MULTIPLY",
-        "operator_symbol": "*",
-        "left": {
-          "type": "literal",
-          "value": 1,
-          "data_type": "int"
-        },
-        "right": {
-          "type": "variable",
-          "value": "a"
-        }
+        "type": "literal",
+        "value": 0,
+        "data_type": "int"
       },
       "return_type": "int"
     },
