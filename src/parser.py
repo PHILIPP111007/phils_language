@@ -652,56 +652,86 @@ class Parser:
         return [arg.strip() for arg in args]
 
     def parse_tuple_literal(self, value: str) -> dict:
-        """Парсит литерал кортежа: (1, 2, 3)"""
+        """Парсит литерал кортежа"""
+        value = value.strip()
+
+        # Проверяем, что это действительно кортеж
         if not (value.startswith("(") and value.endswith(")")):
             return {"type": "unknown", "value": value}
 
-        items_str = value[1:-1].strip()
+        # Проверяем, что это не выражение в скобках
+        inner = value[1:-1].strip()
+        if "," not in inner:
+            # Это выражение в скобках, а не кортеж
+            inner_ast = self.parse_expression_to_ast(inner)
+            return {
+                "type": "tuple_literal",
+                "items": [inner_ast],
+                "length": 1,
+                "is_immutable": True,
+            }
+
+        # Парсим элементы кортежа
         items = []
+        current_item = ""
+        depth = 0
+        in_string = False
+        string_char = None
 
-        if items_str:
-            current_item = ""
-            depth = 0
-            in_string = False
-            string_char = None
+        i = 0
+        while i < len(inner):
+            char = inner[i]
 
-            i = 0
-            while i < len(items_str):
-                char = items_str[i]
-
-                if not in_string and char in ['"', "'"]:
-                    in_string = True
-                    string_char = char
+            # Обработка строк
+            if not in_string and char in ['"', "'"]:
+                in_string = True
+                string_char = char
+                current_item += char
+            elif in_string and char == string_char:
+                # Проверяем экранирование
+                if i > 0 and inner[i - 1] == "\\":
                     current_item += char
-                elif in_string and char == string_char:
-                    if i > 0 and items_str[i - 1] == "\\":
-                        current_item += char
-                    else:
-                        in_string = False
-                        current_item += char
-                elif not in_string and char == "(":
-                    depth += 1
-                    current_item += char
-                elif not in_string and char == ")":
-                    depth -= 1
-                    current_item += char
-                elif not in_string and char == "[":
-                    depth += 1
-                    current_item += char
-                elif not in_string and char == "]":
-                    depth -= 1
-                    current_item += char
-                elif not in_string and depth == 0 and char == ",":
-                    if current_item.strip():
-                        items.append(self.parse_expression_to_ast(current_item.strip()))
-                    current_item = ""
                 else:
+                    in_string = False
                     current_item += char
+            # Обработка скобок
+            elif not in_string and char == "(":
+                depth += 1
+                current_item += char
+            elif not in_string and char == ")":
+                depth -= 1
+                current_item += char
+            elif not in_string and char == "[":
+                depth += 1
+                current_item += char
+            elif not in_string and char == "]":
+                depth -= 1
+                current_item += char
+            elif not in_string and char == "{":
+                depth += 1
+                current_item += char
+            elif not in_string and char == "}":
+                depth -= 1
+                current_item += char
+            # Разделитель элементов
+            elif not in_string and depth == 0 and char == ",":
+                if current_item.strip():
+                    item_ast = self.parse_expression_to_ast(current_item.strip())
+                    items.append(item_ast)
+                current_item = ""
+            else:
+                current_item += char
 
-                i += 1
+            i += 1
 
-            if current_item.strip():
-                items.append(self.parse_expression_to_ast(current_item.strip()))
+        # Последний элемент
+        if current_item.strip():
+            item_ast = self.parse_expression_to_ast(current_item.strip())
+            items.append(item_ast)
+
+        # Особый случай: кортеж из одного элемента должен иметь запятую
+        if len(items) == 1 and not inner.endswith(","):
+            print(f"Warning: кортеж из одного элемента должен иметь запятую: {value}")
 
         return {
             "type": "tuple_literal",
@@ -1054,22 +1084,81 @@ class Parser:
         return "any"  # Тип по умолчанию
 
     def parse_var(self, line: str, scope: dict):
-        """Парсит объявление переменной"""
-        # Обновленный паттерн для поддержки обобщенных типов
-        pattern = r"var\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(\*)?\s*([a-zA-Z\[\]]+(?:\[[a-zA-Z\[\]]+\])*)\s*=\s*(.+)"
+        """Парсит объявление переменной с поддержкой tuple и list"""
+        # Упрощенный паттерн для захвата всей строки
+        pattern = r"var\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.+)"
         match = re.match(pattern, line)
 
         if not match:
             return False
 
-        name, pointer_symbol, base_type, raw_value = match.groups()
-        is_pointer = pointer_symbol is not None
-        var_type = f"*{base_type}" if is_pointer else base_type
+        name, type_and_value = match.groups()
 
-        base_type = base_type.replace(" ", "")
+        # Разделяем тип и значение
+        if "=" not in type_and_value:
+            return False
 
-        # Парсим значение в AST
-        value_ast = self.parse_expression_to_ast(raw_value.strip())
+        # Ищем последний = перед значением (но не внутри <> или [])
+        parts = type_and_value.split("=", 1)
+        if len(parts) != 2:
+            return False
+
+        var_type_str, value_str = parts[0].strip(), parts[1].strip()
+
+        # Обрабатываем разные варианты типов
+        is_pointer = var_type_str.startswith("*")
+        if is_pointer:
+            var_type_str = var_type_str[1:].strip()
+
+        # Определяем базовый тип
+        var_type = var_type_str
+        is_tuple_uniform = False  # tuple[T]
+        is_tuple_fixed = False  # tuple[T1, T2, ...]
+        element_type = None
+        tuple_element_types = []
+
+        # Проверяем tuple[T]
+        tuple_uniform_pattern = r"tuple\[([a-zA-Z_][a-zA-Z0-9_]*)\]"
+        tuple_uniform_match = re.match(tuple_uniform_pattern, var_type_str)
+
+        if tuple_uniform_match:
+            is_tuple_uniform = True
+            element_type = tuple_uniform_match.group(1)
+            print(f"DEBUG: Обнаружен tuple[{element_type}]")
+
+        # Проверяем tuple[T1, T2, ...]
+        elif var_type_str.startswith("tuple["):
+            # Извлекаем содержимое скобок
+            bracket_content = var_type_str[6:-1]  # убираем "tuple[" и "]"
+            if "," in bracket_content:
+                is_tuple_fixed = True
+                # Разделяем по запятым, но учитываем вложенные скобки
+                tuple_element_types = []
+                current_type = ""
+                depth = 0
+
+                for char in bracket_content:
+                    if char == "[":
+                        depth += 1
+                        current_type += char
+                    elif char == "]":
+                        depth -= 1
+                        current_type += char
+                    elif char == "," and depth == 0:
+                        tuple_element_types.append(current_type.strip())
+                        current_type = ""
+                    else:
+                        current_type += char
+
+                if current_type:
+                    tuple_element_types.append(current_type.strip())
+
+                print(
+                    f"DEBUG: Обнаружен tuple с фиксированными типами: {tuple_element_types}"
+                )
+
+        # Парсим значение
+        value_ast = self.parse_expression_to_ast(value_str)
 
         # Проверяем существование переменной
         existing_symbol = scope["symbol_table"].get_symbol_for_validation(name)
@@ -1115,6 +1204,7 @@ class Parser:
             creation_op_type = "NEW_VAR"
             node_type = "declaration"
 
+        # Создаем базовые операции
         operations = [
             {
                 "type": creation_op_type,
@@ -1124,46 +1214,93 @@ class Parser:
             }
         ]
 
-        # Добавляем операцию инициализации в зависимости от типа
-        if base_type.startswith("tuple["):
-            # tuple - неизменяемый массив фиксированной длины
-            element_type = self.extract_element_type(base_type, "tuple")
-            size = (
-                self.extract_tuple_size(value_ast)
-                if value_ast.get("type") == "tuple_literal"
-                else 0
-            )
+        # Обработка в зависимости от типа
+        if is_tuple_uniform:
+            # tuple[T] - универсальный кортеж
+            if value_ast.get("type") == "tuple_literal":
+                items = value_ast.get("items", [])
 
-            operations.append(
-                {
-                    "type": "CREATE_TUPLE",
-                    "target": name,
-                    "items": value_ast.get("items", []),
-                    "size": size,
-                    "element_type": element_type,
-                    "is_immutable": True,
-                }
-            )
-        elif base_type.startswith("list["):
-            # list - изменяемый массив указателей
-            element_type = self.extract_element_type(base_type, "list")
+                # Проверяем типы элементов (опционально)
+                for i, item in enumerate(items):
+                    if item.get("type") == "literal":
+                        item_type = item.get("data_type", "")
+                        if element_type == "int" and item_type not in ["int", "float"]:
+                            print(
+                                f"Warning: элемент {i} кортежа '{name}' должен быть {element_type}, а не {item_type}"
+                            )
+                        elif element_type == "str" and item_type != "str":
+                            print(
+                                f"Warning: элемент {i} кортежа '{name}' должен быть {element_type}, а не {item_type}"
+                            )
 
-            if value_ast.get("type") == "list_literal":
                 operations.append(
                     {
-                        "type": "CREATE_LIST",
+                        "type": "CREATE_TUPLE_UNIFORM",
                         "target": name,
-                        "items": value_ast.get("items", []),
-                        "size": len(value_ast.get("items", [])),
+                        "items": items,
+                        "size": len(items),
                         "element_type": element_type,
-                        "is_pointer_array": True,  # list хранит указатели
+                        "is_immutable": True,
+                        "is_uniform": True,  # Все элементы одного типа
                     }
                 )
             else:
                 operations.append(
                     {"type": "INITIALIZE", "target": name, "value": value_ast}
                 )
-        elif "list[" in base_type or base_type == "list":
+
+        elif is_tuple_fixed:
+            # tuple[T1, T2, ...] - кортеж с фиксированными типами
+            if value_ast.get("type") == "tuple_literal":
+                items = value_ast.get("items", [])
+
+                # Проверяем соответствие количества элементов
+                if len(items) != len(tuple_element_types):
+                    print(
+                        f"Error: кортеж '{name}' должен содержать {len(tuple_element_types)} элементов, а не {len(items)}"
+                    )
+                    return False
+
+                operations.append(
+                    {
+                        "type": "CREATE_TUPLE_FIXED",
+                        "target": name,
+                        "items": items,
+                        "size": len(items),
+                        "element_types": tuple_element_types,
+                        "is_immutable": True,
+                        "is_uniform": False,  # Элементы разных типов
+                    }
+                )
+            else:
+                operations.append(
+                    {"type": "INITIALIZE", "target": name, "value": value_ast}
+                )
+
+        elif var_type_str.startswith("list["):
+            # list[T]
+            match = re.match(r"list\[([^\]]+)\]", var_type_str)
+            if match:
+                element_type = match.group(1)
+
+                if value_ast.get("type") == "list_literal":
+                    operations.append(
+                        {
+                            "type": "CREATE_LIST",
+                            "target": name,
+                            "items": value_ast.get("items", []),
+                            "size": len(value_ast.get("items", [])),
+                            "element_type": element_type,
+                            "is_pointer_array": True,
+                        }
+                    )
+                else:
+                    operations.append(
+                        {"type": "INITIALIZE", "target": name, "value": value_ast}
+                    )
+
+        elif var_type_str in ["list", "dict", "set"]:
+            # Простые структуры данных
             if value_ast.get("type") == "list_literal":
                 operations.append(
                     {
@@ -1171,16 +1308,10 @@ class Parser:
                         "target": name,
                         "items": value_ast.get("items", []),
                         "size": len(value_ast.get("items", [])),
-                        "element_type": self.extract_list_element_type(base_type),
+                        "element_type": "any",
                     }
                 )
-            else:
-                operations.append(
-                    {"type": "INITIALIZE", "target": name, "value": value_ast}
-                )
-        elif base_type in ["dict", "set"]:
-            # Обработка словарей и множеств
-            if value_ast.get("type") == "dict_literal":
+            elif value_ast.get("type") == "dict_literal":
                 operations.append(
                     {
                         "type": "CREATE_DICT",
@@ -1202,8 +1333,9 @@ class Parser:
                 operations.append(
                     {"type": "INITIALIZE", "target": name, "value": value_ast}
                 )
+
         elif is_pointer:
-            # Для указателей
+            # Указатели
             if value_ast.get("type") == "address_of":
                 operations.append(
                     {
@@ -1221,12 +1353,28 @@ class Parser:
                 operations.append(
                     {"type": "ASSIGN_POINTER", "target": name, "value": value_ast}
                 )
+
         else:
-            # Обычное присваивание
+            # Обычные переменные
             operations.append({"type": "ASSIGN", "target": name, "value": value_ast})
 
-        dependencies = self.extract_dependencies_from_ast(value_ast)
+        # Собираем зависимости
+        dependencies = []
+        if value_ast:
+            dependencies = self.extract_dependencies_from_ast(value_ast)
 
+        # Определяем структуру данных
+        data_structure = None
+        if is_tuple_uniform or is_tuple_fixed:
+            data_structure = "tuple"
+        elif var_type_str.startswith("list["):
+            data_structure = "list"
+        elif var_type_str in ["list", "dict", "set"]:
+            data_structure = var_type_str
+        elif is_pointer:
+            data_structure = "pointer"
+
+        # Создаем узел
         scope["graph"].append(
             {
                 "node": node_type,
@@ -1238,10 +1386,14 @@ class Parser:
                 "operations": operations,
                 "dependencies": dependencies,
                 "expression_ast": value_ast,
-                "data_structure": "list"
-                if "list[" in base_type or base_type == "list"
-                else base_type
-                if base_type in ["list", "dict", "set"]
+                "data_structure": data_structure,
+                "tuple_info": {
+                    "is_uniform": is_tuple_uniform,
+                    "is_fixed": is_tuple_fixed,
+                    "element_type": element_type if is_tuple_uniform else None,
+                    "element_types": tuple_element_types if is_tuple_fixed else None,
+                }
+                if is_tuple_uniform or is_tuple_fixed
                 else None,
             }
         )

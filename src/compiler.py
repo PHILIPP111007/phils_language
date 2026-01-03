@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Dict, List, Any, Optional
 
 
@@ -14,7 +15,12 @@ class CCodeGenerator:
         self.variable_scopes = []  # Стек scope'ов
         self.current_scope_level = 0
 
-        # Маппинг типов Python -> C
+        # Структуры для типов
+        self.generated_structs = set()
+        self.generated_helpers = []
+        self.helper_declarations = []  # Декларации helper-функций
+
+        # Расширенный маппинг типов Python -> C
         self.type_map = {
             "int": "int",
             "float": "double",
@@ -26,7 +32,11 @@ class CCodeGenerator:
             "dict": "void*",
             "set": "void*",
             "function": "void*",
+            "tuple": "void*",
         }
+
+        # Поддержка обобщенных типов
+        self.generic_type_map = {}  # Кэш для сгенерированных типов
 
         # Поддерживаемые операции
         self.operator_map = {
@@ -55,6 +65,9 @@ class CCodeGenerator:
         self.temp_var_counter = 0
         self.variable_scopes = [{}]  # Глобальный scope
         self.current_scope_level = 0
+        self.generated_structs.clear()
+        self.generated_helpers.clear()
+        self.generic_type_map.clear()
 
     def indent(self) -> str:
         """Возвращает отступ для текущего уровня"""
@@ -67,21 +80,6 @@ class CCodeGenerator:
     def add_empty_line(self):
         """Добавляет пустую строку"""
         self.output.append("")
-
-    def map_type_to_c(self, py_type: str, is_pointer: bool = False) -> str:
-        """Преобразует тип Python в тип C"""
-        if py_type.startswith("*"):
-            # Уже указатель
-            base_type = py_type[1:]
-            c_base_type = self.type_map.get(base_type, "void")
-            return f"{c_base_type}*"
-        elif py_type == "pointer":
-            return "void*"
-        else:
-            c_type = self.type_map.get(py_type, "int")
-            if is_pointer:
-                return f"{c_type}*"
-            return c_type
 
     def enter_scope(self):
         """Вход в новый scope (увеличение вложенности)"""
@@ -101,6 +99,50 @@ class CCodeGenerator:
         if self.current_scope_level < len(self.variable_scopes):
             return self.variable_scopes[self.current_scope_level]
         return {}
+
+    def map_type_to_c(self, py_type: str, is_pointer: bool = False) -> str:
+        """Преобразует тип Python в тип C"""
+        if py_type.startswith("*"):
+            base_type = py_type[1:]
+            c_base_type = self.map_type_to_c(base_type)
+            return f"{c_base_type}*"
+        elif py_type == "pointer":
+            return "void*"
+        elif py_type.startswith("tuple["):
+            # Генерируем структуру для кортежа
+            self.generate_tuple_struct(py_type)
+            struct_name = self.generate_tuple_struct_name(py_type)
+
+            match = re.match(r"tuple\[([^\]]+)\]", py_type)
+            if match:
+                inner = match.group(1)
+                if "," not in inner:
+                    # tuple[T] - универсальный
+                    c_type = struct_name
+                else:
+                    # tuple[T1, T2, ...] - фиксированный
+                    c_type = struct_name
+
+                if is_pointer:
+                    return f"{c_type}*"
+                return c_type
+            return "void*"
+        elif py_type.startswith("list["):
+            # Генерируем структуру для list
+            self.generate_list_struct(py_type)
+            struct_name = self.generate_list_struct_name(py_type)
+
+            # list всегда указатель на структуру
+            c_type = f"{struct_name}*"
+
+            if is_pointer:
+                return f"{c_type}*"
+            return c_type
+        else:
+            c_type = self.type_map.get(py_type, "int")
+            if is_pointer:
+                return f"{c_type}*"
+            return c_type
 
     def declare_variable(self, name: str, var_type: str, is_pointer: bool = False):
         """Объявляет переменную в текущем scope"""
@@ -155,18 +197,7 @@ class CCodeGenerator:
 
     def compile(self, json_data: List[Dict]) -> str:
         """Основной метод компиляции"""
-        self.reset()
-
-        # Обрабатываем каждый scope
-        for scope in json_data:
-            scope_type = scope.get("type", "")
-
-            if scope_type == "module":
-                self.generate_module_scope(scope)
-            elif scope_type == "function":
-                self.generate_function_scope(scope)
-
-        return "\n".join(self.output)
+        return self.generate_from_json(json_data)
 
     def generate_module_scope(self, scope: Dict):
         """Генерирует код для модульного scope"""
@@ -360,74 +391,231 @@ class CCodeGenerator:
         self.add_line(f"{c_type} {target} = {c_func_name}({args_str});")
 
     def generate_declaration(self, node: Dict):
-        """Генерирует объявление переменной"""
+        """Генерирует объявление переменной с поддержкой tuple и list"""
         var_name = node.get("var_name", "")
         var_type = node.get("var_type", "")
-        is_pointer = node.get("is_pointer", False)
         operations = node.get("operations", [])
 
-        # Проверяем, была ли переменная ранее удалена
-        was_deleted = False
-        for op in operations:
-            if op.get("type") == "NEW_VAR":
-                was_deleted = op.get("was_deleted", False)
-                break
+        if var_type.startswith("tuple["):
+            struct_name = self.generate_tuple_struct_name(var_type)
 
-        # Объявляем переменную
-        self.declare_variable(var_name, var_type, is_pointer)
+            # Проверяем тип кортежа
+            match = re.match(r"tuple\[([^\]]+)\]", var_type)
+            if match:
+                elements_str = match.group(1)
 
-        # Генерируем C тип
-        c_type = self.map_type_to_c(var_type, is_pointer)
+                if "," not in elements_str:
+                    # tuple[T] - универсальный
+                    element_type = elements_str.strip()
+                    c_element_type = self.map_type_to_c(element_type)
 
-        # Если переменная была удалена, это переобъявление
-        if was_deleted:
-            self.add_line(f"// Переобъявление {var_name} после удаления")
+                    # Ищем операцию CREATE_TUPLE_UNIFORM
+                    for op in operations:
+                        if op.get("type") == "CREATE_TUPLE_UNIFORM":
+                            items = op.get("items", [])
+                            size = op.get("size", 0)
 
-        # Добавляем объявление
-        self.add_line(f"{c_type} {var_name};")
+                            if items and size > 0:
+                                # Вариант 1: Создаем временный массив
+                                temp_array_name = f"temp_{var_name}"
+                                self.add_line(
+                                    f"{c_element_type} {temp_array_name}[{size}] = {{"
+                                )
+                                self.indent_level += 1
+                                for i, item_ast in enumerate(items):
+                                    item_expr = self.generate_expression(item_ast)
+                                    self.add_line(
+                                        f"{item_expr}{',' if i < size - 1 else ''}"
+                                    )
+                                self.indent_level -= 1
+                                self.add_line(f"}};")
 
-        # Обрабатываем инициализацию
-        expression_ast = node.get("expression_ast")
-        if expression_ast:
-            expr = self.generate_expression(expression_ast)
-            self.add_line(f"{var_name} = {expr};")
+                                # Создаем кортеж из массива
+                                self.add_line(
+                                    f"{struct_name} {var_name} = create_{struct_name}({temp_array_name}, {size});"
+                                )
+
+                                # Добавляем автоматическую очистку в конце функции (опционально)
+                                # self.add_line(f"atexit((void(*)())free_{struct_name}, &{var_name});")
+
+                            elif size == 0:
+                                # Пустой кортеж
+                                self.add_line(f"{struct_name} {var_name};")
+                                self.add_line(f"{var_name}.data = NULL;")
+                                self.add_line(f"{var_name}.size = 0;")
+
+                            break
+
+                    # Объявляем переменную
+                    self.declare_variable(var_name, var_type)
+
+                else:
+                    # Получаем C тип
+                    c_type = self.map_type_to_c(var_type)
+
+                    # Объявляем переменную
+                    self.declare_variable(var_name, var_type)
+
+                    # Генерируем объявление
+                    if var_type.startswith("list["):
+                        # Для list создаем указатель на структуру
+                        struct_name = self.generate_list_struct_name(var_type)
+
+                        # Проверяем инициализацию
+                        has_initialization = False
+                        for op in operations:
+                            if op.get("type") == "CREATE_LIST":
+                                has_initialization = True
+                                size = op.get("size", 0)
+
+                                # Создаем список
+                                self.add_line(
+                                    f"{c_type} {var_name} = create_{struct_name}({max(size, 4)});"
+                                )
+
+                                # Добавляем элементы
+                                items = op.get("items", [])
+                                for item_ast in items:
+                                    item_expr = self.generate_expression(item_ast)
+                                    self.add_line(
+                                        f"append_{struct_name}({var_name}, {item_expr});"
+                                    )
+                                break
+
+                        if not has_initialization:
+                            self.add_line(f"{c_type} {var_name} = NULL;")
+
+                    elif var_type.startswith("tuple["):
+                        # Для tuple
+                        struct_name = self.generate_tuple_struct_name(var_type)
+
+                        # Проверяем инициализацию
+                        has_initialization = False
+                        for op in operations:
+                            if op.get("type") == "CREATE_TUPLE":
+                                has_initialization = True
+                                items = op.get("items", [])
+                                if items:
+                                    # Создаем вызов функции создания
+                                    args = [
+                                        self.generate_expression(item) for item in items
+                                    ]
+                                    self.add_line(
+                                        f"{c_type} {var_name} = create_{struct_name}({', '.join(args)});"
+                                    )
+                                else:
+                                    self.add_line(f"{c_type} {var_name};")
+                                break
+
+                        if not has_initialization:
+                            self.add_line(f"{c_type} {var_name};")
+
+                    else:
+                        # Обычные переменные
+                        self.add_line(f"{c_type} {var_name};")
+
+                        # Инициализация если есть
+                        expression_ast = node.get("expression_ast")
+                        if expression_ast:
+                            expr = self.generate_expression(expression_ast)
+                            self.add_line(f"{var_name} = {expr};")
+
+        elif var_type.startswith("list["):
+            # Генерируем структуру для list
+            self.map_type_to_c(var_type)
+            struct_name = self.generate_list_struct_name(var_type)
+
+            # Проверяем, есть ли инициализация
+            list_initialized = False
+
+            # Ищем операцию CREATE_LIST
+            for op in operations:
+                if op.get("type") == "CREATE_LIST":
+                    items = op.get("items", [])
+                    initial_capacity = op.get("size", 4)
+
+                    # Создаем list
+                    self.add_line(
+                        f"{struct_name}* {var_name} = create_{struct_name}({initial_capacity});"
+                    )
+
+                    # Добавляем элементы
+                    for item_ast in items:
+                        item_expr = self.generate_expression(item_ast)
+                        self.add_line(f"append_{struct_name}({var_name}, {item_expr});")
+
+                    list_initialized = True
+                    break
+
+            # Если нет инициализации, создаем пустой list
+            if not list_initialized:
+                self.add_line(f"{struct_name}* {var_name} = create_{struct_name}(4);")
+
+            # Объявляем переменную в scope
+            self.declare_variable(var_name, var_type)
+
+        else:
+            # Обычные переменные
+            c_type = self.map_type_to_c(var_type)
+            self.add_line(f"{c_type} {var_name};")
+
+            # Инициализация если есть
+            expression_ast = node.get("expression_ast")
+            if expression_ast:
+                expr = self.generate_expression(expression_ast)
+                self.add_line(f"{var_name} = {expr};")
+
+            # Объявляем переменную в scope
+            self.declare_variable(var_name, var_type)
 
     def generate_delete(self, node: Dict):
-        """Генерирует код для del (полное удаление)"""
+        """Генерирует код для del с поддержкой tuple и list"""
         symbols = node.get("symbols", [])
 
         for target in symbols:
-            # Помечаем переменную как удаленную
             self.mark_variable_deleted(target, "full")
-
-            # Получаем информацию о переменной
             var_info = self.get_variable_info(target)
 
             if not var_info:
                 self.add_line(f"// ERROR: Переменная '{target}' не найдена для del")
                 continue
 
-            self.add_line(f"// del {target} (полное удаление)")
+            self.add_line(f"// del {target}")
 
-            # Обрабатываем в зависимости от типа переменной
-            if var_info["is_pointer"]:
-                # Для указателей - освобождаем память если не NULL
+            py_type = var_info.get("py_type", "")
+            c_type = var_info.get("c_type", "")
+
+            if py_type.startswith("list["):
+                # Для list вызываем функцию очистки
+                struct_name = self.generate_list_struct_name(py_type)
+                self.add_line(f"if ({target}) {{")
+                self.indent_level += 1
+                self.add_line(f"free_{struct_name}({target});")
+                self.indent_level -= 1
+                self.add_line("}")
+                self.add_line(f"{target} = NULL;")
+
+            elif py_type.startswith("tuple["):
+                # Для tuple вызываем функцию очистки
+                struct_name = self.generate_tuple_struct_name(py_type)
+                self.add_line(f"free_{struct_name}(&{target});")
+
+            elif var_info["is_pointer"]:
                 self.add_line(f"if ({target} != NULL) {{")
                 self.indent_level += 1
                 self.add_line(f"free({target});")
                 self.indent_level -= 1
                 self.add_line("}")
-
-            # Обнуляем переменную
-            c_type = var_info["c_type"]
-            if c_type in ["int", "float", "double", "long"]:
-                self.add_line(f"{target} = 0;")
-            elif c_type == "bool":
-                self.add_line(f"{target} = false;")
-            elif "char*" in c_type or c_type.endswith("*"):
                 self.add_line(f"{target} = NULL;")
             else:
-                self.add_line(f"// {target} обнулена")
+                if c_type in ["int", "float", "double", "long"]:
+                    self.add_line(f"{target} = 0;")
+                elif c_type == "bool":
+                    self.add_line(f"{target} = false;")
+                elif "char*" in c_type or c_type.endswith("*"):
+                    self.add_line(f"{target} = NULL;")
+                else:
+                    self.add_line(f"// {target} обнулена")
 
     def generate_del_pointer(self, node: Dict):
         """Генерирует код для del_pointer (удаление только указателя)"""
@@ -735,31 +923,433 @@ class CCodeGenerator:
                 self.add_line(decl)
             self.add_empty_line()
 
+    def generate_tuple_struct_name(self, py_type: str) -> str:
+        """Генерирует корректное имя структуры для tuple"""
+        # Извлекаем содержимое скобок
+        match = re.match(r"tuple\[([^\]]+)\]", py_type)
+        if not match:
+            return "tuple_unknown"
+
+        inner = match.group(1)
+
+        # Если это tuple[T] (один тип)
+        if "," not in inner:
+            # Просто tuple_int, tuple_str и т.д.
+            return f"tuple_{inner}"
+
+        # Если это tuple[T1, T2, ...]
+        # Заменяем запятые на подчеркивания и убираем пробелы
+        clean_inner = inner.replace(", ", "_").replace(",", "_")
+        return f"tuple_{clean_inner}"
+
+    def generate_list_struct_name(self, py_type: str) -> str:
+        """Генерирует имя структуры для list типа"""
+        # Для list[int] должно быть list_int
+        # Для list[tuple[int]] должно быть list_tuple_int
+
+        match = re.match(r"list\[([^\]]+)\]", py_type)
+        if not match:
+            return f"list_{py_type}"
+
+        element_type = match.group(1)
+        # Очищаем имя типа
+        clean_element = (
+            element_type.replace("[", "_").replace("]", "").replace(",", "_")
+        )
+        return f"list_{clean_element}"
+
+    def generate_tuple_struct(self, py_type: str):
+        """Генерирует структуру C для tuple типа"""
+        if py_type in self.generated_structs:
+            return
+
+        self.generated_structs.add(py_type)
+
+        match = re.match(r"tuple\[([^\]]+)\]", py_type)
+        if not match:
+            return
+
+        inner = match.group(1)
+        struct_name = self.generate_tuple_struct_name(py_type)
+
+        # Если это tuple[T] (один тип) - например, tuple[int]
+        if "," not in inner:
+            element_type = inner
+            c_element_type = self.map_type_to_c(element_type)
+
+            # Универсальная структура для tuple[T]
+            struct_code = []
+            struct_code.append(f"typedef struct {{")
+            struct_code.append(f"    {c_element_type}* data;")
+            struct_code.append(f"    int size;")
+            struct_code.append(f"}} {struct_name};")
+            struct_code.append("")
+
+            # Добавляем структуру
+            self.generated_helpers.append("\n".join(struct_code))
+
+            # Функция создания
+            create_func = f"{struct_name} create_{struct_name}({c_element_type} arr[], int size) {{\n"
+            create_func += f"    {struct_name} t;\n"
+            create_func += f"    t.size = size;\n"
+            create_func += f"    t.data = malloc(size * sizeof({c_element_type}));\n"
+            create_func += f"    if (!t.data) {{\n"
+            create_func += (
+                f'        fprintf(stderr, "Memory allocation failed for tuple\\n");\n'
+            )
+            create_func += f"        exit(1);\n"
+            create_func += f"    }}\n"
+            create_func += f"    for (int i = 0; i < size; i++) {{\n"
+            create_func += f"        t.data[i] = arr[i];\n"
+            create_func += f"    }}\n"
+            create_func += f"    return t;\n"
+            create_func += f"}}\n"
+
+            self.generated_helpers.append(create_func)
+
+            # Функция очистки
+            free_func = f"void free_{struct_name}({struct_name}* t) {{\n"
+            free_func += f"    if (t && t->data) {{\n"
+            free_func += f"        free(t->data);\n"
+            free_func += f"        t->data = NULL;\n"
+            free_func += f"    }}\n"
+            free_func += f"}}\n"
+
+            self.generated_helpers.append(free_func)
+
+            # Forward declarations
+            self.helper_declarations.append(
+                f"typedef struct {struct_name} {struct_name};"
+            )
+            self.helper_declarations.append(
+                f"{struct_name} create_{struct_name}({c_element_type} arr[], int size);"
+            )
+            self.helper_declarations.append(
+                f"void free_{struct_name}({struct_name}* t);"
+            )
+
+        else:
+            # tuple[T1, T2, ...] - фиксированный
+            element_types = [t.strip() for t in inner.split(",")]
+            c_element_types = [self.map_type_to_c(t) for t in element_types]
+
+            # Фиксированная структура
+            struct_code = []
+            struct_code.append(f"typedef struct {{")
+            struct_code.append(f"    int size;")
+            for i, c_type in enumerate(c_element_types):
+                struct_code.append(f"    {c_type} item_{i};")
+            struct_code.append(f"}} {struct_name};")
+            struct_code.append("")
+
+            self.generated_helpers.append("\n".join(struct_code))
+
+            # Функция создания
+            create_func = f"{struct_name} create_{struct_name}("
+            params = [f"{c_type} arg_{i}" for i, c_type in enumerate(c_element_types)]
+            create_func += ", ".join(params)
+            create_func += f") {{\n"
+            create_func += f"    {struct_name} t;\n"
+            create_func += f"    t.size = {len(element_types)};\n"
+            for i in range(len(element_types)):
+                create_func += f"    t.item_{i} = arg_{i};\n"
+            create_func += f"    return t;\n"
+            create_func += f"}}\n"
+
+            self.generated_helpers.append(create_func)
+
+            # Forward declarations
+            self.helper_declarations.append(
+                f"typedef struct {struct_name} {struct_name};"
+            )
+            self.helper_declarations.append(
+                f"{struct_name} create_{struct_name}({', '.join(params)});"
+            )
+
+    def generate_list_struct(self, py_type: str):
+        """Генерирует структуру C для list типа"""
+        if py_type in self.generated_structs:
+            return
+
+        self.generated_structs.add(py_type)
+
+        # Извлекаем тип элементов
+        match = re.match(r"list\[([^\]]+)\]", py_type)
+        if not match:
+            return
+
+        element_type = match.group(1)
+
+        # Определяем тип элементов для C
+        if element_type.startswith("tuple["):
+            # list[tuple[...]]
+            c_element_type = self.generate_tuple_struct_name(element_type)
+        else:
+            # list[int] или другие простые типы
+            c_element_type = self.map_type_to_c(element_type)
+
+        struct_name = self.generate_list_struct_name(py_type)
+
+        # Генерируем структуру
+        struct_code = []
+        struct_code.append(f"typedef struct {{")
+        struct_code.append(f"    {c_element_type}* data;")
+        struct_code.append(f"    int size;")
+        struct_code.append(f"    int capacity;")
+        struct_code.append(f"}} {struct_name};")
+        struct_code.append("")
+
+        self.generated_helpers.append("\n".join(struct_code))
+
+        # Генерируем функцию создания
+        create_func = f"{struct_name}* create_{struct_name}(int initial_capacity) {{\n"
+        create_func += f"    {struct_name}* list = malloc(sizeof({struct_name}));\n"
+        create_func += f"    if (!list) {{\n"
+        create_func += (
+            f'        fprintf(stderr, "Memory allocation failed for list\\n");\n'
+        )
+        create_func += f"        exit(1);\n"
+        create_func += f"    }}\n"
+        create_func += (
+            f"    list->data = malloc(initial_capacity * sizeof({c_element_type}));\n"
+        )
+        create_func += f"    if (!list->data) {{\n"
+        create_func += (
+            f'        fprintf(stderr, "Memory allocation failed for list data\\n");\n'
+        )
+        create_func += f"        free(list);\n"
+        create_func += f"        exit(1);\n"
+        create_func += f"    }}\n"
+        create_func += f"    list->size = 0;\n"
+        create_func += f"    list->capacity = initial_capacity;\n"
+        create_func += f"    return list;\n"
+        create_func += f"}}\n"
+
+        # Генерируем функцию добавления
+        append_func = f"void append_{struct_name}({struct_name}* list, {c_element_type} value) {{\n"
+        append_func += f"    if (list->size >= list->capacity) {{\n"
+        append_func += (
+            f"        list->capacity = list->capacity == 0 ? 4 : list->capacity * 2;\n"
+        )
+        append_func += f"        list->data = realloc(list->data, list->capacity * sizeof({c_element_type}));\n"
+        append_func += f"        if (!list->data) {{\n"
+        append_func += (
+            f'            fprintf(stderr, "Memory reallocation failed for list\\n");\n'
+        )
+        append_func += f"            exit(1);\n"
+        append_func += f"        }}\n"
+        append_func += f"    }}\n"
+        append_func += f"    list->data[list->size] = value;\n"
+        append_func += f"    list->size++;\n"
+        append_func += f"}}\n"
+
+        # Генерируем функцию очистки
+        free_func = f"void free_{struct_name}({struct_name}* list) {{\n"
+        free_func += f"    if (list) {{\n"
+
+        # Если элементы - tuple, нужно освободить их память
+        if element_type.startswith("tuple["):
+            tuple_struct_name = self.generate_tuple_struct_name(element_type)
+            free_func += f"        for (int i = 0; i < list->size; i++) {{\n"
+            free_func += f"            free_{tuple_struct_name}(&list->data[i]);\n"
+            free_func += f"        }}\n"
+
+        free_func += f"        free(list->data);\n"
+        free_func += f"        free(list);\n"
+        free_func += f"    }}\n"
+        free_func += f"}}\n"
+
+        # Добавляем в helpers
+        self.generated_helpers.append(create_func)
+        self.generated_helpers.append(append_func)
+        self.generated_helpers.append(free_func)
+
+        # Добавляем forward declarations
+        self.helper_declarations.append(f"typedef struct {struct_name} {struct_name};")
+        self.helper_declarations.append(
+            f"{struct_name}* create_{struct_name}(int initial_capacity);"
+        )
+        self.helper_declarations.append(
+            f"void append_{struct_name}({struct_name}* list, {c_element_type} value);"
+        )
+        self.helper_declarations.append(
+            f"void free_{struct_name}({struct_name}* list);"
+        )
+
+    def generate_helpers(self):
+        """Генерирует вспомогательные функции и структуры"""
+        if self.generated_helpers:
+            self.add_line("// Вспомогательные структуры и функции")
+            for helper in self.generated_helpers:
+                self.output.append(helper)
+            self.add_empty_line()
+
+    def generate_helpers_section(self):
+        """Генерирует секцию с вспомогательными функциями и структурами"""
+        if not self.generated_helpers:
+            return
+
+        # Добавляем заголовок
+        self.add_line("// =========================================")
+        self.add_line("// Вспомогательные структуры и функции")
+        self.add_line("// =========================================")
+        self.add_empty_line()
+
+        # Просто добавляем все сгенерированные helpers в output
+        for helper in self.generated_helpers:
+            lines = helper.split("\n")
+            for line in lines:
+                if line.strip():
+                    self.output.append(line)
+            self.output.append("")  # Пустая строка между определениями
+
     def generate_from_json(self, json_data: List[Dict]) -> str:
-        """Генерирует C код из JSON AST (альтернативный интерфейс)"""
-        self.output = []
-        self.indent_level = 0
-        self.variable_scopes = [{}]
-        self.current_scope_level = 0
+        """Генерирует C код из JSON AST"""
+        self.reset()
+
+        # Сначала собираем все типы, которые нужны
+        self.collect_types_from_ast(json_data)
 
         # Собираем импорты и объявления
         self.collect_imports_and_declarations(json_data)
 
-        # Генерируем заголовок
+        # 1. Генерируем заголовок
         self.generate_c_imports()
 
-        # Генерируем forward declarations
+        # 2. Генерируем forward declarations функций (если есть)
         self.generate_forward_declarations()
 
-        # Генерируем код для каждой функции
+        # 3. Генерируем вспомогательные структуры и функции
+        # ВАЖНО: Это ДОЛЖНО быть здесь, перед main!
+        self.generate_helpers_section()
+
+        # 4. Генерируем код для каждой функции
         for scope in json_data:
             if scope.get("type") == "function" and not scope.get("is_stub", False):
                 self.generate_function_scope(scope)
 
         return "\n".join(self.output)
 
+    def collect_types_from_ast(self, json_data: List[Dict]):
+        """Собирает все типы из AST для генерации структур"""
+
+        def process_node(node):
+            if not isinstance(node, dict):
+                return
+
+            # Обрабатываем declaration узлы
+            if node.get("node") == "declaration":
+                var_type = node.get("var_type", "")
+                if var_type:
+                    # Для tuple[int] генерируем только универсальную структуру
+                    if var_type.startswith("tuple["):
+                        # Проверяем, есть ли tuple_info
+                        tuple_info = node.get("tuple_info", {})
+                        if tuple_info.get("is_uniform", False):
+                            # Это tuple[T] - генерируем универсальную структуру
+                            print(f"DEBUG: Найден tuple[int]: {var_type}")
+                            self.map_type_to_c(
+                                var_type
+                            )  # Это вызовет generate_tuple_struct()
+                        elif tuple_info.get("is_fixed", False):
+                            # Это tuple[T1, T2, ...] - генерируем фиксированную структуру
+                            self.map_type_to_c(var_type)
+
+                    elif var_type.startswith("list["):
+                        print(f"DEBUG: Найден list: {var_type}")
+                        self.map_type_to_c(var_type)
+
+            # Обрабатываем expression_ast
+            expression_ast = node.get("expression_ast")
+            if expression_ast:
+                self._process_ast_for_types(expression_ast)
+
+            # Обрабатываем операции
+            operations = node.get("operations", [])
+            for op in operations:
+                if isinstance(op, dict):
+                    if op.get("type") in [
+                        "CREATE_TUPLE_UNIFORM",
+                        "CREATE_TUPLE_FIXED",
+                        "CREATE_LIST",
+                    ]:
+                        items = op.get("items", [])
+                        for item in items:
+                            if isinstance(item, dict):
+                                self._process_ast_for_types(item)
+
+        # Проходим по всем scope и узлам
+        for scope in json_data:
+            if scope.get("type") in ["module", "function"]:
+                # Обрабатываем graph узлы
+                for node in scope.get("graph", []):
+                    process_node(node)
+
+    def _process_ast_for_types(self, ast):
+        """Вспомогательный метод для обработки AST и сбора типов"""
+        if not isinstance(ast, dict):
+            return
+
+        node_type = ast.get("type", "")
+
+        if node_type == "tuple_literal":
+            # Определяем тип tuple на основе элементов
+            items = ast.get("items", [])
+            if items:
+                # Проверяем, все ли элементы одного типа
+                element_types = set()
+                for item in items:
+                    if isinstance(item, dict):
+                        if item.get("type") == "literal":
+                            data_type = item.get("data_type", "int")
+                            element_types.add(data_type)
+
+                # Если все элементы одного типа - это tuple[T]
+                if len(element_types) == 1:
+                    element_type = next(iter(element_types))
+                    py_type = f"tuple[{element_type}]"
+                    self.map_type_to_c(py_type)
+                else:
+                    # Разные типы - это tuple[T1, T2, ...]
+                    element_types_list = []
+                    for item in items:
+                        if isinstance(item, dict) and item.get("type") == "literal":
+                            data_type = item.get("data_type", "int")
+                            element_types_list.append(data_type)
+
+                    if element_types_list:
+                        py_type = f"tuple[{', '.join(element_types_list)}]"
+                        self.map_type_to_c(py_type)
+
+        elif node_type == "list_literal":
+            items = ast.get("items", [])
+            if items:
+                # Определяем тип первого элемента
+                first_item = items[0]
+                if isinstance(first_item, dict):
+                    if first_item.get("type") == "tuple_literal":
+                        element_type = "tuple"
+                    elif first_item.get("type") == "list_literal":
+                        element_type = "list"
+                    else:
+                        element_type = "int"
+                else:
+                    element_type = "int"
+
+                py_type = f"list[{element_type}]"
+                self.map_type_to_c(py_type)
+
+        # Рекурсивно обрабатываем вложенные структуры
+        for key, value in ast.items():
+            if isinstance(value, dict):
+                self._process_ast_for_types(value)
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        self._process_ast_for_types(item)
+
     def generate_expression(self, ast: Dict) -> str:
-        """Генерирует C выражение из AST"""
+        """Генерирует C выражение из AST с поддержкой tuple и list"""
         if not ast:
             return "0"
 
@@ -781,7 +1371,6 @@ class CCodeGenerator:
         elif node_type == "variable":
             var_name = ast.get("value", "")
 
-            # Проверяем, объявлена ли переменная
             if not self.is_variable_declared(var_name):
                 print(f"WARNING: Использование необъявленной переменной '{var_name}'")
 
@@ -795,13 +1384,10 @@ class CCodeGenerator:
             left = self.generate_expression(left_ast)
             right = self.generate_expression(right_ast)
 
-            # Обработка специальных операторов
             if operator == "**":
                 return f"pow({left}, {right})"
 
-            # Маппинг операторов
             c_operator = self.operator_map.get(operator, operator)
-
             return f"({left} {c_operator} {right})"
 
         elif node_type == "unary_operation":
@@ -816,36 +1402,75 @@ class CCodeGenerator:
         elif node_type == "function_call":
             func_name = ast.get("function", "")
 
-            # Удаляем @ из имени функции для C кода
             if func_name.startswith("@"):
                 func_name = func_name[1:]
 
-            # Проверяем, является ли встроенной функцией
             builtin_funcs = ["len", "str", "int", "bool", "range"]
             if func_name in builtin_funcs:
                 c_func_name = f"builtin_{func_name}"
             else:
                 c_func_name = func_name
 
-            # Генерируем аргументы
             args = ast.get("arguments", [])
-            arg_strings = []
-            for arg_ast in args:
-                arg_strings.append(self.generate_expression(arg_ast))
-
+            arg_strings = [self.generate_expression(arg_ast) for arg_ast in args]
             args_str = ", ".join(arg_strings)
             return f"{c_func_name}({args_str})"
 
-        # Добавляем обработку других типов AST
-
-        elif node_type == "list_literal":
-            # Для списков генерируем массив
+        elif node_type == "tuple_literal":
+            # Для tuple литералов генерируем временную структуру
             items = ast.get("items", [])
             if items:
                 item_strs = [self.generate_expression(item) for item in items]
-                return f"{{{', '.join(item_strs)}}}"
-            else:
-                return "{}"
+
+                # Создаем временный tuple
+                temp_name = self.generate_temporary_var("tuple")
+                struct_name = f"tuple_{len(items)}_{'_'.join(['item' for _ in items])}"
+
+                # Регистрируем тип
+                elements_type = ", ".join(["int" for _ in items])  # Упрощенно
+                py_type = f"tuple[{elements_type}]"
+                self.generate_tuple_struct(py_type)
+
+                return f"create_{self.generate_tuple_struct_name(py_type)}({', '.join(item_strs)})"
+            return "{}"
+
+        elif node_type == "list_literal":
+            # Для list литералов генерируем создание списка
+            items = ast.get("items", [])
+            if items:
+                # Определяем тип элементов
+                if items:
+                    first_item = items[0]
+                    if isinstance(first_item, dict):
+                        if first_item.get("type") == "tuple_literal":
+                            element_type = "tuple"
+                        elif first_item.get("type") == "list_literal":
+                            element_type = "list"
+                        else:
+                            element_type = "int"  # По умолчанию
+                    else:
+                        element_type = "int"
+                else:
+                    element_type = "int"
+
+                py_type = f"list[{element_type}]"
+                struct_name = self.generate_list_struct_name(py_type)
+
+                # Генерируем код для создания списка
+                temp_name = self.generate_temporary_var("list")
+                self.generate_list_struct(py_type)
+
+                # Создаем список
+                code_parts = []
+                code_parts.append(f"create_{struct_name}({len(items)})")
+
+                # Добавляем элементы
+                for item_ast in items:
+                    item_expr = self.generate_expression(item_ast)
+                    code_parts.append(f"append_{struct_name}({temp_name}, {item_expr})")
+
+                return temp_name
+            return "NULL"
 
         elif node_type == "address_of":
             variable = ast.get("variable", "")
