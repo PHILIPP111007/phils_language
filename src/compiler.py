@@ -113,7 +113,6 @@ class CCodeGenerator:
             "is_deleted": False,
             "delete_type": None,  # "full" или "pointer"
         }
-        print(f"DEBUG: Объявлена переменная '{name}' типа {c_type}")
 
     def mark_variable_deleted(self, name: str, delete_type: str = "full") -> bool:
         """Помечает переменную как удаленную"""
