@@ -59,7 +59,9 @@
         "type": "function",
         "value": null,
         "id": "func",
-        "is_deleted": false
+        "is_deleted": false,
+        "parameters": [],
+        "return_type": "str"
       },
       "main": {
         "name": "main",
@@ -67,7 +69,9 @@
         "type": "function",
         "value": null,
         "id": "main",
-        "is_deleted": false
+        "is_deleted": false,
+        "parameters": [],
+        "return_type": "int"
       }
     }
   },
@@ -136,8 +140,23 @@
     ],
     "graph": [
       {
+        "node": "function_declaration",
+        "content": "def recursive(a: int) -> int:",
+        "function_name": "recursive",
+        "symbol_id": "recursive",
+        "parameters": [
+          {
+            "name": "a",
+            "type": "int"
+          }
+        ],
+        "return_type": "int",
+        "body_level": 2,
+        "is_stub": false
+      },
+      {
         "node": "declaration",
-        "content": "var a: int = 10",
+        "content": "var a: int = 1",
         "symbols": [
           "a"
         ],
@@ -156,7 +175,7 @@
             "target": "a",
             "value": {
               "type": "literal",
-              "value": 10,
+              "value": 1,
               "data_type": "int"
             }
           }
@@ -164,10 +183,30 @@
         "dependencies": [],
         "expression_ast": {
           "type": "literal",
-          "value": 10,
+          "value": 1,
           "data_type": "int"
         },
         "data_structure": null
+      },
+      {
+        "node": "function_call",
+        "content": "recursive(a)",
+        "function": "recursive",
+        "arguments": [
+          "a"
+        ],
+        "operations": [
+          {
+            "type": "FUNCTION_CALL",
+            "function": "recursive",
+            "arguments": [
+              "a"
+            ]
+          }
+        ],
+        "dependencies": [
+          "a"
+        ]
       },
       {
         "node": "declaration",
@@ -1092,13 +1131,28 @@
       }
     ],
     "symbol_table": {
+      "recursive": {
+        "name": "recursive",
+        "key": "function",
+        "type": "function",
+        "value": null,
+        "id": "recursive",
+        "is_deleted": false,
+        "parameters": [
+          {
+            "name": "a",
+            "type": "int"
+          }
+        ],
+        "return_type": "int"
+      },
       "a": {
         "name": "a",
         "key": "var",
         "type": "int",
         "value": {
           "type": "literal",
-          "value": 10,
+          "value": 1,
           "data_type": "int"
         },
         "id": "a",
@@ -1314,6 +1368,181 @@
         "type": "literal",
         "value": 0,
         "data_type": "int"
+      },
+      "return_type": "int"
+    },
+    "is_stub": false
+  },
+  {
+    "level": 2,
+    "type": "function",
+    "parent_scope": 1,
+    "function_name": "recursive",
+    "parameters": [
+      {
+        "name": "a",
+        "type": "int"
+      }
+    ],
+    "return_type": "int",
+    "local_variables": [
+      "a"
+    ],
+    "graph": [
+      {
+        "node": "if_statement",
+        "content": "if a < 100:",
+        "condition": {
+          "type": "binary_operation",
+          "operator": "LESS_THAN",
+          "operator_symbol": "<",
+          "left": {
+            "type": "variable",
+            "value": "a"
+          },
+          "right": {
+            "type": "literal",
+            "value": 100,
+            "data_type": "int"
+          }
+        },
+        "condition_ast": {
+          "type": "binary_operation",
+          "operator": "LESS_THAN",
+          "operator_symbol": "<",
+          "left": {
+            "type": "variable",
+            "value": "a"
+          },
+          "right": {
+            "type": "literal",
+            "value": 100,
+            "data_type": "int"
+          }
+        },
+        "body_level": 3,
+        "body": [
+          {
+            "node": "assignment",
+            "content": "a = a + 1",
+            "symbols": [
+              "a"
+            ],
+            "operations": [
+              {
+                "type": "ASSIGN",
+                "target": "a_left",
+                "value": {
+                  "type": "variable",
+                  "value": "a"
+                }
+              },
+              {
+                "type": "ASSIGN",
+                "target": "a_right",
+                "value": {
+                  "type": "literal",
+                  "value": 1,
+                  "data_type": "int"
+                }
+              },
+              {
+                "type": "BINARY_OPERATION",
+                "target": "a",
+                "operator": "ADD",
+                "operator_symbol": "+",
+                "left": {
+                  "type": "variable",
+                  "value": "a_left"
+                },
+                "right": {
+                  "type": "variable",
+                  "value": "a_right"
+                }
+              }
+            ],
+            "dependencies": [
+              "a"
+            ],
+            "expression_ast": {
+              "type": "binary_operation",
+              "operator": "ADD",
+              "operator_symbol": "+",
+              "left": {
+                "type": "variable",
+                "value": "a"
+              },
+              "right": {
+                "type": "literal",
+                "value": 1,
+                "data_type": "int"
+              }
+            }
+          },
+          {
+            "node": "return",
+            "content": "return recursive(a)",
+            "symbols": [],
+            "operations": [
+              {
+                "type": "RETURN",
+                "value": {
+                  "type": "function_call",
+                  "function": "recursive",
+                  "arguments": [
+                    {
+                      "type": "variable",
+                      "value": "a"
+                    }
+                  ]
+                },
+                "expression": "recursive(a)"
+              }
+            ],
+            "dependencies": [
+              "recursive",
+              "a"
+            ]
+          }
+        ],
+        "elif_blocks": [],
+        "else_block": null
+      }
+    ],
+    "symbol_table": {
+      "a": {
+        "name": "a",
+        "key": "var",
+        "type": "int",
+        "value": {
+          "type": "binary_operation",
+          "operator": "ADD",
+          "operator_symbol": "+",
+          "left": {
+            "type": "variable",
+            "value": "a"
+          },
+          "right": {
+            "type": "literal",
+            "value": 1,
+            "data_type": "int"
+          }
+        },
+        "id": "a",
+        "is_deleted": false
+      }
+    },
+    "return_info": {
+      "has_return": true,
+      "return_value": {
+        "type": "function_call",
+        "function": "recursive",
+        "arguments": [
+          {
+            "type": "variable",
+            "value": "a"
+          }
+        ]
       },
       "return_type": "int"
     },

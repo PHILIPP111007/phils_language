@@ -106,13 +106,27 @@ def main() -> int:
 
     return 0
 
+
+
+
+
+def main() -> int:
+    def recursive(a: int) -> int:
+        if a < 100:
+            a = a + 1
+            return recursive(a)
+        return a
+    
+    var a: int = 1
+    recursive(a)
+
+    return 0
 """
 
 
 
 
-
-
+###################################################
 
 
 cimport "my_header.h"
@@ -126,7 +140,17 @@ def func() -> str:
 
 
 def main() -> int:
-    var a: int = 10
+
+
+    def recursive(a: int) -> int:
+        if a < 100:
+            a = a + 1
+            return recursive(a)
+    
+    var a: int = 1
+    recursive(a)
+
+
     var b: int = 100
 
     var eee: str = func()
@@ -174,3 +198,8 @@ def main() -> int:
         print(result)
     
     return 0
+
+
+
+
+
