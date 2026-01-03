@@ -1,0 +1,63 @@
+[
+  {
+    "level": 0,
+    "type": "module",
+    "parent_scope": null,
+    "local_variables": [],
+    "graph": [
+      {
+        "node": "c_import",
+        "content": "cimport <stdio.h>",
+        "header": "stdio.h",
+        "is_system": true,
+        "operations": [
+          {
+            "type": "C_IMPORT",
+            "header": "stdio.h",
+            "is_system": true
+          }
+        ]
+      },
+      {
+        "node": "c_import",
+        "content": "cimport <stdlib.h>",
+        "header": "stdlib.h",
+        "is_system": true,
+        "operations": [
+          {
+            "type": "C_IMPORT",
+            "header": "stdlib.h",
+            "is_system": true
+          }
+        ]
+      },
+      {
+        "node": "c_import",
+        "content": "cimport <string.h>",
+        "header": "string.h",
+        "is_system": true,
+        "operations": [
+          {
+            "type": "C_IMPORT",
+            "header": "string.h",
+            "is_system": true
+          }
+        ]
+      },
+      {
+        "node": "c_import",
+        "content": "cimport <stdbool.h>",
+        "header": "stdbool.h",
+        "is_system": true,
+        "operations": [
+          {
+            "type": "C_IMPORT",
+            "header": "stdbool.h",
+            "is_system": true
+          }
+        ]
+      }
+    ],
+    "symbol_table": {}
+  }
+]

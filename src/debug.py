@@ -1,0 +1,2937 @@
+import json
+from typing import Dict, List, Optional
+import re
+
+
+DATA_TYPES = ["int", "float", "str", "function", "None", "dict", "list", "set"]
+
+
+class JSONValidator:
+    def __init__(self):
+        self.errors = []
+        self.warnings = []
+        self.scope_symbols = {}  # {scope_level: {var_name: var_info}}
+        self.all_scopes = []  # Сохраняем все scopes для поиска родительских
+        self.functions = {}  # {func_name: func_info}
+        self.source_map = {}  # Сопоставление узлов с исходными строками
+        self.builtin_functions = {
+            "print": {"return_type": "None", "min_args": 0, "max_args": None},
+            "len": {"return_type": "int", "min_args": 1, "max_args": 1},
+            "str": {"return_type": "str", "min_args": 1, "max_args": 1},
+            "int": {"return_type": "int", "min_args": 1, "max_args": 1},
+            "bool": {"return_type": "bool", "min_args": 1, "max_args": 1},
+            "range": {"return_type": "range", "min_args": 1, "max_args": 3},
+        }
+        # Для отслеживания состояния переменных
+        self.variable_history = {}  # {(scope_level, var_name): [{"action": "declare"/"assign"/"delete", "node_id": str}]}
+        self.variable_states = {}  # {(scope_level, var_name): "active"/"deleted"}
+
+    def validate(self, json_data: List[Dict]) -> list[Dict]:
+        """Основной метод валидации"""
+        self.errors = []
+        self.warnings = []
+        self.scope_symbols = {}
+        self.functions = {}
+        self.all_scopes = json_data
+        self.source_map = {}
+        self.variable_history = {}  # Оставляем, но не используем
+        self.variable_states = {}  # Оставляем, но не используем
+
+        # Собираем информацию о всех узлах и их строках
+        self.build_source_map(json_data)
+
+        if not isinstance(json_data, list):
+            self.add_error("JSON должен быть списком scope'ов")
+            return self.get_report()
+
+        # Собираем информацию о всех scope'ах и символах
+        self.collect_symbols(json_data)
+
+        # ЗАКОММЕНТИРОВАТЬ: не строим историю переменных
+        # self.build_variable_history(json_data)
+
+        # Проверяем каждый scope
+        for scope_idx, scope in enumerate(json_data):
+            self.validate_scope(scope, scope_idx, json_data)
+
+        return self.get_report()
+
+    def collect_symbols(self, json_data: List[Dict]):
+        """Собирает информацию о всех символах в системе"""
+        for scope_idx, scope in enumerate(json_data):
+            level = scope.get("level", 0)
+
+            if "symbol_table" in scope and scope["symbol_table"]:
+                if level not in self.scope_symbols:
+                    self.scope_symbols[level] = {}
+
+                for symbol_name, symbol_info in scope["symbol_table"].items():
+                    # Сохраняем функции отдельно
+                    if symbol_info.get("key") == "function":
+                        self.functions[symbol_name] = symbol_info
+                    else:
+                        # Сохраняем обычные переменные
+                        self.scope_symbols[level][symbol_name] = symbol_info
+
+    def build_source_map(self, json_data: List[Dict]):
+        """Строит карту соответствия узлов исходным строкам"""
+        # Счетчик глобальных строк
+        global_line_counter = 1
+
+        for scope_idx, scope in enumerate(json_data):
+            level = scope.get("level", 0)
+            graph = scope.get("graph", [])
+
+            for node_idx, node in enumerate(graph):
+                node_id = f"{scope_idx}.{node_idx}"
+                content = node.get("content", "")
+
+                # Сохраняем информацию о строке
+                self.source_map[node_id] = {
+                    "content": content,
+                    "scope_idx": scope_idx,
+                    "scope_level": level,
+                    "scope_type": scope.get("type", "unknown"),
+                    "node_idx": node_idx,
+                    "global_line_number": global_line_counter,
+                }
+
+                # Увеличиваем счетчик только если строка не пустая
+                if content.strip():
+                    global_line_counter += 1
+
+    def build_variable_history(self, json_data: List[Dict]):
+        """Строит историю операций с переменными С УЧЕТОМ ПОРЯДКА СТРОК"""
+        # Сначала собираем все узлы в правильном порядке
+        all_nodes = []
+
+        for scope_idx, scope in enumerate(json_data):
+            level = scope.get("level", 0)
+            graph = scope.get("graph", [])
+
+            for node_idx, node in enumerate(graph):
+                node_id = f"{scope_idx}.{node_idx}"
+                all_nodes.append(
+                    {
+                        "scope_idx": scope_idx,
+                        "node_idx": node_idx,
+                        "node_id": node_id,
+                        "level": level,
+                        "node": node,
+                        "scope": scope,
+                    }
+                )
+
+        # Сортируем по scope_idx и node_idx для сохранения порядка
+        all_nodes.sort(key=lambda x: (x["scope_idx"], x["node_idx"]))
+
+        # Глобальный счетчик времени для всех операций
+        global_timestamp = 0
+
+        for node_info in all_nodes:
+            scope_idx = node_info["scope_idx"]
+            node_idx = node_info["node_idx"]
+            node_id = node_info["node_id"]
+            level = node_info["level"]
+            node = node_info["node"]
+            node_type = node.get("node", "unknown")
+
+            if node_type == "declaration":
+                symbols = node.get("symbols", [])
+                for symbol in symbols:
+                    key = (level, symbol)
+                    if key not in self.variable_history:
+                        self.variable_history[key] = []
+                    self.variable_history[key].append(
+                        {
+                            "action": "declare",
+                            "node_id": node_id,
+                            "content": node.get("content", ""),
+                            "timestamp": global_timestamp,
+                            "unique_id": f"{node_id}_{symbol}",
+                        }
+                    )
+                    global_timestamp += 1
+                    # При объявлении переменная активна
+                    self.variable_states[key] = "active"
+
+            elif node_type == "assignment":
+                symbols = node.get("symbols", [])
+                for symbol in symbols:
+                    key = (level, symbol)
+                    if key not in self.variable_history:
+                        self.variable_history[key] = []
+                    self.variable_history[key].append(
+                        {
+                            "action": "assign",
+                            "node_id": node_id,
+                            "content": node.get("content", ""),
+                            "timestamp": global_timestamp,
+                            "unique_id": f"{node_id}_{symbol}",
+                        }
+                    )
+                    global_timestamp += 1
+
+            elif node_type == "delete":
+                symbols = node.get("symbols", [])
+                for symbol in symbols:
+                    key = (level, symbol)
+                    if key not in self.variable_history:
+                        self.variable_history[key] = []
+                    self.variable_history[key].append(
+                        {
+                            "action": "delete",
+                            "node_id": node_id,
+                            "content": node.get("content", ""),
+                            "timestamp": global_timestamp,
+                            "unique_id": f"{node_id}_{symbol}",
+                        }
+                    )
+                    global_timestamp += 1
+                    # Переменная помечается как удаленная
+                    self.variable_states[key] = "deleted"
+
+            elif node_type == "del_pointer":  # НОВОЕ
+                symbols = node.get("symbols", [])
+                for symbol in symbols:
+                    key = (level, symbol)
+                    if key not in self.variable_history:
+                        self.variable_history[key] = []
+                    self.variable_history[key].append(
+                        {
+                            "action": "delete_pointer",
+                            "node_id": node_id,
+                            "content": node.get("content", ""),
+                            "timestamp": global_timestamp,
+                            "unique_id": f"{node_id}_{symbol}",
+                        }
+                    )
+                    global_timestamp += 1
+                    # При del_pointer помечаем как удаленный указатель, но данные остаются
+                    self.variable_states[key] = "pointer_deleted"
+
+            elif node_type == "builtin_function_call":
+                func_name = node.get("function", "")
+                args = node.get("arguments", [])
+                dependencies = node.get("dependencies", [])
+
+                # Используем dependencies из узла
+                for dep in dependencies:
+                    if dep and dep.isalpha() and dep not in ["True", "False", "None"]:
+                        key = (level, dep)
+                        if key not in self.variable_history:
+                            self.variable_history[key] = []
+                        self.variable_history[key].append(
+                            {
+                                "action": "use_in_function",
+                                "function": func_name,
+                                "node_id": node_id,
+                                "content": node.get("content", ""),
+                                "timestamp": global_timestamp,
+                                "unique_id": f"{node_id}_{dep}",
+                            }
+                        )
+                        global_timestamp += 1
+
+            elif node_type == "function_call":
+                args = node.get("arguments", [])
+                dependencies = node.get("dependencies", [])
+                for dep in dependencies:
+                    if dep and dep.isalpha() and dep not in ["True", "False", "None"]:
+                        key = (level, dep)
+                        if key not in self.variable_history:
+                            self.variable_history[key] = []
+                        self.variable_history[key].append(
+                            {
+                                "action": "use_in_function",
+                                "node_id": node_id,
+                                "content": node.get("content", ""),
+                                "timestamp": global_timestamp,
+                                "unique_id": f"{node_id}_{dep}",
+                            }
+                        )
+                        global_timestamp += 1
+
+    def get_variable_state(self, var_name: str, level: int) -> str:
+        """Получает текущее состояние переменной"""
+        key = (level, var_name)
+        return self.variable_states.get(key, "unknown")
+
+    def is_variable_deleted(self, var_name: str, level: int) -> bool:
+        """Проверяет, удалена ли переменная"""
+        state = self.get_variable_state(var_name, level)
+        return state == "deleted"
+
+    def get_last_variable_action(self, var_name: str, level: int) -> Optional[Dict]:
+        """Получает последнее действие с переменной"""
+        key = (level, var_name)
+        if key in self.variable_history and self.variable_history[key]:
+            return self.variable_history[key][-1]
+        return None
+
+    def add_error(self, message: str, scope_idx: int = None, node_idx: int = None):
+        """Добавляет ошибку с информацией о строке"""
+        full_message = message
+
+        if scope_idx is not None and node_idx is not None:
+            node_id = f"{scope_idx}.{node_idx}"
+            if node_id in self.source_map:
+                content = self.source_map[node_id]["content"]
+                if content:
+                    full_message = f"Строка '{content}': {message}"
+
+        self.errors.append(
+            {
+                "message": full_message,
+                "scope_idx": scope_idx,
+                "node_idx": node_idx,
+                "line_number": self.get_line_number(scope_idx, node_idx),
+            }
+        )
+
+    # TODO
+    def add_warning(self, message: str, scope_idx: int = None, node_idx: int = None):
+        """Добавляет предупреждение с информацией о строке"""
+        full_message = message
+
+        if scope_idx is not None and node_idx is not None:
+            node_id = f"{scope_idx}.{node_idx}"
+            if node_id in self.source_map:
+                content = self.source_map[node_id]["content"]
+                if content:
+                    full_message = f"Строка '{content}': {message}"
+
+        self.warnings.append(
+            {
+                "message": full_message,
+                "scope_idx": scope_idx,
+                "node_idx": node_idx,
+                "line_number": self.get_line_number(scope_idx, node_idx),
+            }
+        )
+
+    def get_line_number(self, scope_idx: int, node_idx: int) -> Optional[int]:
+        """Получает номер строки исходного кода для узла"""
+        if scope_idx is None or node_idx is None:
+            return None
+
+        node_id = f"{scope_idx}.{node_idx}"
+        if node_id in self.source_map:
+            content = self.source_map[node_id]["content"]
+            if content:
+                # Считаем строки в исходном коде
+                # Для простоты, можно использовать индекс узла + 1
+                return node_idx + 1
+
+        return None
+
+    def validate_scope(self, scope: Dict, scope_idx: int, all_scopes: List[Dict]):
+        """Валидирует отдельный scope"""
+        level = scope.get("level", 0)
+        scope_type = scope.get("type", "unknown")
+
+        required_fields = ["level", "type", "local_variables", "graph", "symbol_table"]
+        for field in required_fields:
+            if field not in scope:
+                self.add_error(
+                    f"Scope {scope_idx} (level {level}, type {scope_type}) отсутствует поле '{field}'",
+                    scope_idx,
+                    None,
+                )
+
+        self.validate_symbol_table(scope, scope_idx)
+
+        # Проверка на повторное объявление в local_variables
+        self.check_duplicate_declarations_in_scope(scope, scope_idx)
+
+        if "graph" in scope:
+            self.validate_graph(scope, scope_idx)
+
+            # Дополнительные проверки после валидации графа
+            self.check_unused_variables(scope, scope_idx)
+            self.check_loop_conditions(scope, scope_idx)
+            self.check_memory_leaks(scope, scope_idx)
+
+            # Проверка деления на ноль для каждого узла
+            graph = scope.get("graph", [])
+            for node_idx, node in enumerate(graph):
+                self.check_division_by_zero(node, node_idx, scope_idx, level)
+
+        if scope_type == "function":
+            # Старая проверка наличия return
+            self.validate_function_return(scope, scope_idx)
+            # НОВАЯ проверка типа возвращаемого значения
+            self.validate_function_return_type(scope, scope_idx)
+            # Проверка всех путей возврата
+            self.validate_return_paths(scope, scope_idx)
+
+        self.validate_loops(scope, scope_idx)
+
+    def check_duplicate_declarations_in_scope(self, scope: Dict, scope_idx: int):
+        """Проверяет дублирование переменных в local_variables"""
+        local_vars = scope.get("local_variables", [])
+        seen = {}
+
+        for i, var_name in enumerate(local_vars):
+            if var_name in seen:
+                # Нашли дубликат
+                first_occurrence = seen[var_name]
+                self.add_warning(
+                    f"переменная '{var_name}' дублируется в local_variables (первое упоминание на позиции {first_occurrence})",
+                    scope_idx,
+                    None,
+                )
+            else:
+                seen[var_name] = i
+
+    def validate_symbol_table(self, scope: Dict, scope_idx: int):
+        """Валидирует таблицу символов scope'а"""
+        symbol_table = scope.get("symbol_table", {})
+        local_vars = scope.get("local_variables", [])
+
+        for var_name in local_vars:
+            if var_name not in symbol_table:
+                self.add_warning(
+                    f"переменная '{var_name}' в local_variables отсутствует в symbol_table",
+                    scope_idx,
+                    None,
+                )
+
+        for symbol_name, symbol_info in symbol_table.items():
+            self.validate_symbol(symbol_info, scope_idx, symbol_name)
+
+    def validate_symbol(self, symbol_info: Dict, scope_idx: int, symbol_name: str):
+        """Валидирует отдельный символ"""
+        required_fields = ["name", "key", "type", "id"]
+        for field in required_fields:
+            if field not in symbol_info:
+                self.add_error(
+                    f"у символа '{symbol_name}' отсутствует поле '{field}'",
+                    scope_idx,
+                    None,
+                )
+
+        if symbol_info.get("name") != symbol_name:
+            self.add_warning(
+                f"имя символа '{symbol_name}' не совпадает с полем 'name': {symbol_info.get('name')}",
+                scope_idx,
+                None,
+            )
+
+        var_type = symbol_info.get("type", "")
+        if var_type not in DATA_TYPES and not var_type.startswith("*"):
+            self.add_warning(
+                f"символ '{symbol_name}' имеет неизвестный тип '{var_type}'",
+                scope_idx,
+                None,
+            )
+
+        if symbol_info.get("key") == "const":
+            if "value" not in symbol_info:
+                self.add_error(
+                    f"константа '{symbol_name}' не имеет значения", scope_idx, None
+                )
+
+    def validate_graph(self, scope: Dict, scope_idx: int):
+        """Валидирует граф операций"""
+        graph = scope.get("graph", [])
+        symbol_table = scope.get("symbol_table", {})
+        level = scope.get("level", 0)
+
+        # Отслеживаем состояние переменных в процессе валидации
+        variable_states = {}  # {var_name: "active"/"deleted"/"pointer_deleted"}
+
+        for node_idx, node in enumerate(graph):
+            node_type = node.get("node", "unknown")
+            content = node.get("content", "")
+
+            self.validate_node_types(node, node_idx, scope_idx, level)
+
+            if node_type == "declaration":
+                symbols = node.get("symbols", [])
+                for symbol in symbols:
+                    if symbol in variable_states:
+                        if variable_states[symbol] == "deleted":
+                            # Переменная была удалена, можно переобъявлять
+                            variable_states[symbol] = "active"
+                        else:
+                            # Переменная уже активна - ошибка
+                            self.add_error(
+                                f"повторное объявление переменной '{symbol}' без предварительного удаления",
+                                scope_idx,
+                                node_idx,
+                            )
+                    else:
+                        # Новая переменная
+                        variable_states[symbol] = "active"
+
+                self.validate_declaration(
+                    node, node_idx, scope_idx, symbol_table, level
+                )
+
+            elif node_type == "redeclaration":
+                symbols = node.get("symbols", [])
+                for symbol in symbols:
+                    if symbol in variable_states:
+                        if variable_states[symbol] == "deleted":
+                            # Разрешено: переменная была удалена
+                            variable_states[symbol] = "active"
+                        else:
+                            # Ошибка: переменная активна
+                            self.add_error(
+                                f"недопустимое переобъявление переменной '{symbol}' без предварительного удаления",
+                                scope_idx,
+                                node_idx,
+                            )
+                    else:
+                        # Переменная не была объявлена в этом scope
+                        # Может быть объявлена в родительском scope
+                        self.add_warning(
+                            f"переобъявление переменной '{symbol}', не объявленной в текущем scope",
+                            scope_idx,
+                            node_idx,
+                        )
+                        variable_states[symbol] = "active"
+
+                self.validate_declaration(
+                    node, node_idx, scope_idx, symbol_table, level
+                )
+
+            elif node_type in ["assignment", "declaration", "return", "while_loop"]:
+                self.validate_node_types(node, node_idx, scope_idx, level)
+
+            elif node_type == "delete":
+                symbols = node.get("symbols", [])
+                for symbol in symbols:
+                    if symbol in variable_states:
+                        if variable_states[symbol] == "deleted":
+                            # Уже удалена
+                            self.add_error(
+                                f"переменная '{symbol}' уже была удалена",
+                                scope_idx,
+                                node_idx,
+                            )
+                        else:
+                            # Помечаем как удаленную
+                            variable_states[symbol] = "deleted"
+                            print(f"    Переменная '{symbol}' помечена как удаленная")
+                    else:
+                        # Переменная не была объявлена в этом scope
+                        self.add_error(
+                            f"переменная '{symbol}' не была объявлена перед удалением",
+                            scope_idx,
+                            node_idx,
+                        )
+
+                self.validate_delete(node, node_idx, scope_idx, symbol_table, level)
+
+            elif node_type == "del_pointer":
+                symbols = node.get("symbols", [])
+                for symbol in symbols:
+                    if symbol in variable_states:
+                        if variable_states[symbol] in ["deleted", "pointer_deleted"]:
+                            # Уже удалена
+                            self.add_error(
+                                f"указатель '{symbol}' уже был удален",
+                                scope_idx,
+                                node_idx,
+                            )
+                        else:
+                            # Помечаем как удаленный указатель
+                            variable_states[symbol] = "pointer_deleted"
+                            print(
+                                f"    Указатель '{symbol}' помечен как удаленный (данные сохранены)"
+                            )
+                    else:
+                        # Переменная не была объявлена в этом scope
+                        self.add_error(
+                            f"указатель '{symbol}' не был объявлен перед del_pointer",
+                            scope_idx,
+                            node_idx,
+                        )
+
+                self.validate_del_pointer(
+                    node, node_idx, scope_idx, symbol_table, level
+                )
+
+            elif node_type == "builtin_function_call":
+                # Проверяем аргументы
+                func_name = node.get("function", "")
+                dependencies = node.get("dependencies", [])
+
+                for dep in dependencies:
+                    if dep and dep.isalpha() and dep not in ["True", "False", "None"]:
+                        # Проверяем в текущем scope
+                        if dep in variable_states:
+                            if variable_states[dep] == "deleted":
+                                self.add_error(
+                                    f"использование удаленной переменной '{dep}' в аргументе функции '{func_name}'",
+                                    scope_idx,
+                                    node_idx,
+                                )
+                            elif variable_states[dep] == "pointer_deleted":
+                                self.add_warning(
+                                    f"использование удаленного указателя '{dep}' в аргументе функции '{func_name}' (данные могут быть доступны)",
+                                    scope_idx,
+                                    node_idx,
+                                )
+                        else:
+                            # Проверяем в родительских scope'ах
+                            parent_scope = self.get_parent_scope(level)
+                            found = False
+                            current_level = level
+
+                            while not found and parent_scope is not None:
+                                parent_vars = parent_scope.get("local_variables", [])
+                                if dep in parent_vars:
+                                    found = True
+                                    break
+
+                                current_level = parent_scope.get("level", 0)
+                                parent_scope = self.get_parent_scope(current_level)
+
+                            if not found:
+                                self.add_error(
+                                    f"использование необъявленной переменной '{dep}' в аргументе функции '{func_name}'",
+                                    scope_idx,
+                                    node_idx,
+                                )
+
+                self.validate_builtin_function_call(
+                    node, node_idx, scope_idx, symbol_table, level
+                )
+
+            elif node_type == "print":
+                dependencies = node.get("dependencies", [])
+                for dep in dependencies:
+                    if dep and dep.isalpha() and dep not in ["True", "False", "None"]:
+                        # Проверяем в текущем scope
+                        if dep in variable_states:
+                            if variable_states[dep] == "deleted":
+                                self.add_error(
+                                    f"использование удаленной переменной '{dep}' в print",
+                                    scope_idx,
+                                    node_idx,
+                                )
+                            elif variable_states[dep] == "pointer_deleted":
+                                self.add_warning(
+                                    f"использование удаленного указателя '{dep}' в print (данные могут быть доступны)",
+                                    scope_idx,
+                                    node_idx,
+                                )
+                        else:
+                            # Проверяем в родительских scope'ах
+                            parent_scope = self.get_parent_scope(level)
+                            found = False
+                            current_level = level
+
+                            while not found and parent_scope is not None:
+                                parent_vars = parent_scope.get("local_variables", [])
+                                if dep in parent_vars:
+                                    found = True
+                                    break
+
+                                current_level = parent_scope.get("level", 0)
+                                parent_scope = self.get_parent_scope(current_level)
+
+                            if not found:
+                                self.add_error(
+                                    f"использование необъявленной переменной '{dep}' в print",
+                                    scope_idx,
+                                    node_idx,
+                                )
+
+                self.validate_print(node, node_idx, scope_idx, symbol_table, level)
+
+            elif node_type == "assignment":
+                symbols = node.get("symbols", [])
+                for symbol in symbols:
+                    if symbol in variable_states:
+                        if variable_states[symbol] == "deleted":
+                            self.add_error(
+                                f"присваивание полностью удаленной переменной '{symbol}' (требуется переобъявление)",
+                                scope_idx,
+                                node_idx,
+                            )
+                        elif variable_states[symbol] == "pointer_deleted":
+                            self.add_warning(
+                                f"присваивание удаленному указателю '{symbol}' (данные могут быть доступны)",
+                                scope_idx,
+                                node_idx,
+                            )
+                    else:
+                        # Проверяем в родительских scope'ах
+                        parent_scope = self.get_parent_scope(level)
+                        found = False
+                        current_level = level
+
+                        while not found and parent_scope is not None:
+                            parent_vars = parent_scope.get("local_variables", [])
+                            if symbol in parent_vars:
+                                found = True
+                                break
+
+                            current_level = parent_scope.get("level", 0)
+                            parent_scope = self.get_parent_scope(current_level)
+
+                        if not found:
+                            self.add_error(
+                                f"присваивание необъявленной переменной '{symbol}'",
+                                scope_idx,
+                                node_idx,
+                            )
+
+                self.validate_assignment(node, node_idx, scope_idx, symbol_table, level)
+
+            elif node_type == "dereference_write":
+                symbols = node.get("symbols", [])
+                for symbol in symbols:
+                    if symbol in variable_states:
+                        if variable_states[symbol] == "deleted":
+                            self.add_error(
+                                f"запись через полностью удаленный указатель '{symbol}'",
+                                scope_idx,
+                                node_idx,
+                            )
+                        elif variable_states[symbol] == "pointer_deleted":
+                            self.add_warning(
+                                f"запись через удаленный указатель '{symbol}' (данные могут быть доступны)",
+                                scope_idx,
+                                node_idx,
+                            )
+                    else:
+                        self.add_warning(
+                            f"запись через необъявленный указатель '{symbol}'",
+                            scope_idx,
+                            node_idx,
+                        )
+
+                self.validate_dereference_write(
+                    node, node_idx, scope_idx, symbol_table, level
+                )
+
+            elif node_type == "dereference_read":
+                symbols = node.get("symbols", [])
+                for symbol in symbols:
+                    if symbol in variable_states:
+                        if variable_states[symbol] == "deleted":
+                            self.add_error(
+                                f"чтение в полностью удаленную переменную '{symbol}'",
+                                scope_idx,
+                                node_idx,
+                            )
+                        elif variable_states[symbol] == "pointer_deleted":
+                            self.add_warning(
+                                f"чтение в переменную '{symbol}', которая была удалена через del_pointer",
+                                scope_idx,
+                                node_idx,
+                            )
+                    else:
+                        self.add_warning(
+                            f"чтение в необъявленную переменную '{symbol}'",
+                            scope_idx,
+                            node_idx,
+                        )
+
+                self.validate_dereference_read(
+                    node, node_idx, scope_idx, symbol_table, level
+                )
+
+            elif node_type == "augmented_assignment":
+                symbols = node.get("symbols", [])
+                for symbol in symbols:
+                    if symbol in variable_states:
+                        if variable_states[symbol] == "deleted":
+                            self.add_error(
+                                f"составное присваивание удаленной переменной '{symbol}'",
+                                scope_idx,
+                                node_idx,
+                            )
+                        elif variable_states[symbol] == "pointer_deleted":
+                            self.add_warning(
+                                f"составное присваивание удаленному указателю '{symbol}'",
+                                scope_idx,
+                                node_idx,
+                            )
+                    else:
+                        self.add_error(
+                            f"составное присваивание необъявленной переменной '{symbol}'",
+                            scope_idx,
+                            node_idx,
+                        )
+
+                self.validate_augmented_assignment(
+                    node, node_idx, scope_idx, symbol_table, level
+                )
+
+            elif node_type in [
+                "function_declaration",
+                "function_call",
+                "function_call_assignment",
+                "return",
+                "while_loop",
+                "for_loop",
+            ]:
+                # Вызываем соответствующие методы валидации
+                if node_type == "function_declaration":
+                    self.validate_function_declaration(
+                        node, node_idx, scope_idx, symbol_table, level
+                    )
+                elif node_type in ["function_call", "function_call_assignment"]:
+                    self.validate_function_call(
+                        node, node_idx, scope_idx, symbol_table, level
+                    )
+                elif node_type == "return":
+                    self.validate_return(node, node_idx, scope_idx, symbol_table, level)
+                elif node_type in ["while_loop", "for_loop"]:
+                    self.validate_loop_node(
+                        node, node_idx, scope_idx, symbol_table, level
+                    )
+
+    def validate_node_types(
+        self, node: Dict, node_idx: int, scope_idx: int, level: int
+    ):
+        """Валидирует типы в узле"""
+        node_type = node.get("node", "")
+
+        if node_type == "assignment":
+            self.validate_assignment_types(node, node_idx, scope_idx, level)
+        elif node_type == "declaration":
+            self.validate_declaration_types(node, node_idx, scope_idx, level)
+        elif node_type == "return":
+            self.validate_return_types(node, node_idx, scope_idx, level)
+        elif node_type == "while_loop":
+            self.validate_while_condition_types(node, node_idx, scope_idx, level)
+        elif node_type == "if_statement":
+            self.validate_if_condition_types(node, node_idx, scope_idx, level)
+        elif node_type in ["binary_operation", "unary_operation"]:
+            self.validate_operation_types(node, node_idx, scope_idx, level)
+
+    def validate_assignment_types(
+        self, node: Dict, node_idx: int, scope_idx: int, level: int
+    ):
+        """Валидирует типы в присваивании"""
+        symbols = node.get("symbols", [])
+        expression_ast = node.get("expression_ast")
+
+        if not symbols or not expression_ast:
+            return
+
+        target_var = symbols[0]
+        target_info = self.get_symbol_info(target_var, level)
+
+        if not target_info:
+            return
+
+        target_type = target_info.get("type", "")
+        value_type = self.get_type_from_ast(expression_ast, scope_idx, node_idx, level)
+
+        # Проверяем совместимость типов
+        if not self.are_types_compatible(target_type, value_type):
+            self.add_error(
+                f"нельзя присвоить значение типа '{value_type}' переменной типа '{target_type}'",
+                scope_idx,
+                node_idx,
+            )
+
+        # Рекурсивно проверяем типы в AST
+        self.validate_ast_types(expression_ast, node_idx, scope_idx, level)
+
+    def validate_declaration_types(
+        self, node: Dict, node_idx: int, scope_idx: int, level: int
+    ):
+        """Валидирует типы при объявлении"""
+        content = node.get("content", "")
+
+        if not content:
+            return
+
+        # Парсим строку объявления
+        patterns = [
+            r"var\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)",
+            r"const\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)",
+        ]
+
+        for pattern in patterns:
+            match = re.match(pattern, content)
+            if match:
+                var_name, var_type, value = match.groups()
+
+                # Для выражений с операциями используем более сложную логику
+                if any(op in value for op in ["+", "-", "*", "/", "(", ")"]):
+                    # Определяем тип выражения
+                    if var_type == "int":
+                        # Проверяем, что это числовое выражение
+                        if '"' in value or "'" in value:
+                            self.add_error(
+                                f"нельзя присвоить строку переменной типа int",
+                                scope_idx,
+                                node_idx,
+                            )
+                        elif "True" in value or "False" in value:
+                            self.add_error(
+                                f"нельзя присвоить bool переменной типа int",
+                                scope_idx,
+                                node_idx,
+                            )
+                    elif var_type == "str":
+                        # Проверяем, что выражение возвращает строку
+                        if value.isdigit():
+                            self.add_warning(
+                                f"присвоение числа строковой переменной",
+                                scope_idx,
+                                node_idx,
+                            )
+                else:
+                    # Простое значение
+                    value_type = self.guess_type_from_value(value)
+
+                    # Проверяем совместимость типов
+                    if not self.are_types_compatible(var_type, value_type):
+                        self.add_warning(
+                            f"инициализация переменной '{var_name}' типа '{var_type}' "
+                            f"значением типа '{value_type}' может вызвать проблемы",
+                            scope_idx,
+                            node_idx,
+                        )
+                break
+
+    def validate_return_types(
+        self, node: Dict, node_idx: int, scope_idx: int, level: int
+    ):
+        """Валидирует типы возвращаемых значений"""
+        return
+        # Получаем текущую функцию
+        current_scope = self.get_scope_by_level(level)
+        if not current_scope or current_scope.get("type") != "function":
+            return
+
+        declared_return_type = current_scope.get("return_type", "None")
+        return_value_ast = node.get("operations", [{}])[0].get("value")
+
+        if not return_value_ast:
+            return
+
+        actual_return_type = self.get_type_from_ast(
+            return_value_ast, scope_idx, node_idx, level
+        )
+
+        if not self.are_types_compatible(declared_return_type, actual_return_type):
+            self.add_error(
+                f"функция объявлена как возвращающая '{declared_return_type}', "
+                f"но возвращает значение типа '{actual_return_type}'",
+                scope_idx,
+                node_idx,
+            )
+
+    def validate_while_condition_types(
+        self, node: Dict, node_idx: int, scope_idx: int, level: int
+    ):
+        """Валидирует типы в условии while"""
+        condition_ast = node.get("condition_ast")
+
+        if condition_ast:
+            condition_type = self.get_type_from_ast(
+                condition_ast, scope_idx, node_idx, level
+            )
+
+            # Условие должно быть bool
+            if condition_type not in ["bool", "unknown"] and condition_type != "bool":
+                self.add_error(
+                    f"условие цикла while должно быть bool, получено: {condition_type}",
+                    scope_idx,
+                    node_idx,
+                )
+
+            # Рекурсивно проверяем AST условия
+            self.validate_ast_types(condition_ast, node_idx, scope_idx, level)
+
+    def validate_if_condition_types(
+        self, node: Dict, node_idx: int, scope_idx: int, level: int
+    ):
+        """Валидирует типы в условии if/elif"""
+        condition_ast = node.get("condition_ast")
+
+        if condition_ast:
+            condition_type = self.get_type_from_ast(
+                condition_ast, scope_idx, node_idx, level
+            )
+
+            # Условие должно быть bool
+            if condition_type not in ["bool", "unknown"] and condition_type != "bool":
+                self.add_error(
+                    f"условие if должно быть bool, получено: {condition_type}",
+                    scope_idx,
+                    node_idx,
+                )
+
+            # Рекурсивно проверяем AST условия
+            self.validate_ast_types(condition_ast, node_idx, scope_idx, level)
+
+        # Проверяем elif блоки
+        for elif_block in node.get("elif_blocks", []):
+            self.validate_if_condition_types(elif_block, node_idx, scope_idx, level)
+
+    def validate_operation_types(
+        self, node: Dict, node_idx: int, scope_idx: int, level: int
+    ):
+        """Валидирует типы в операциях"""
+        operations = node.get("operations", [])
+
+        for op in operations:
+            op_type = op.get("type")
+
+            if op_type == "BINARY_OPERATION":
+                left_ast = op.get("left")
+                right_ast = op.get("right")
+                operator = op.get("operator_symbol", "")
+
+                if left_ast and right_ast:
+                    left_type = self.get_type_from_ast(
+                        left_ast, scope_idx, node_idx, level
+                    )
+                    right_type = self.get_type_from_ast(
+                        right_ast, scope_idx, node_idx, level
+                    )
+
+                    if not self.can_operate_between_types(
+                        left_type, right_type, operator
+                    ):
+                        self.add_error(
+                            f"нельзя выполнить операцию '{operator}' "
+                            f"между типами '{left_type}' и '{right_type}'",
+                            scope_idx,
+                            node_idx,
+                        )
+
+            elif op_type == "UNARY_OPERATION":
+                operand_ast = op.get("operand")
+                operator = op.get("operator_symbol", "")
+
+                if operand_ast:
+                    operand_type = self.get_type_from_ast(
+                        operand_ast, scope_idx, node_idx, level
+                    )
+
+                    if operator == "not" and operand_type != "bool":
+                        self.add_error(
+                            f"оператор 'not' применяется к типу '{operand_type}', а не к bool",
+                            scope_idx,
+                            node_idx,
+                        )
+
+    def get_parent_scope(self, level: int) -> Optional[Dict]:
+        """Находит родительский scope для заданного уровня"""
+        # Ищем scope с уровнем, указанным как parent_scope
+        for scope in self.all_scopes:
+            if scope.get("level") == level:
+                parent_level = scope.get("parent_scope")
+                if parent_level is not None:
+                    # Ищем scope с таким уровнем
+                    for parent_scope in self.all_scopes:
+                        if parent_scope.get("level") == parent_level:
+                            return parent_scope
+        return None
+
+    def validate_declaration(
+        self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
+    ):
+        """Валидирует объявление переменной"""
+        symbols = node.get("symbols", [])
+        operations = node.get("operations", [])
+        content = node.get("content", "")
+
+        for symbol in symbols:
+            if symbol not in symbol_table:
+                self.add_error(
+                    f"объявляемая переменная '{symbol}' отсутствует в symbol_table",
+                    scope_idx,
+                    node_idx,
+                )
+            else:
+                for op in operations:
+                    if op.get("type") in ["NEW_VAR", "NEW_CONST"]:
+                        declared_type = op.get("var_type") or op.get("const_type")
+                        actual_type = symbol_table[symbol].get("type")
+                        if declared_type != actual_type:
+                            self.add_error(
+                                f"тип переменной '{symbol}' не совпадает (объявлен: {declared_type}, в symbol_table: {actual_type})",
+                                scope_idx,
+                                node_idx,
+                            )
+
+        # Проверяем значение инициализации
+        if content:
+            # Парсим объявление
+            pattern = r"var\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)"
+            match = re.match(pattern, content)
+
+            if match:
+                var_name, var_type, value = match.groups()
+
+                # Проверяем выражение инициализации
+                self.validate_expression(value, scope_idx, node_idx, level)
+
+                # Проверяем совместимость типов при инициализации
+                self.validate_type_compatibility(
+                    var_name, value, scope_idx, node_idx, level
+                )
+
+    def validate_expression(
+        self, expression: str, scope_idx: int, node_idx: int, level: int
+    ):
+        """Валидирует выражение (правая часть присваивания или инициализации)"""
+        expression = expression.strip()
+
+        # Сначала проверяем, не является ли это литералом
+        if (expression.startswith('"') and expression.endswith('"')) or (
+            expression.startswith("'") and expression.endswith("'")
+        ):
+            return
+
+        if expression.isdigit() or (
+            expression.startswith("-") and expression[1:].isdigit()
+        ):
+            return
+
+        if expression in ["True", "False", "None"]:
+            return
+
+        # Проверяем операции с указателями
+        if expression.startswith("&"):
+            # Адрес переменной
+            var_name = expression[1:].strip()
+            if var_name and var_name.isalpha():
+                if not self.find_symbol_in_scope(var_name, level):
+                    self.add_error(
+                        f"переменная '{var_name}' для взятия адреса не объявлена",
+                        scope_idx,
+                        node_idx,
+                    )
+            return
+
+        elif expression.startswith("*"):
+            # Разыменование указателя
+            pointer_name = expression[1:].strip()
+            if pointer_name and pointer_name.isalpha():
+                pointer_info = self.get_symbol_info(pointer_name, level)
+                if not pointer_info:
+                    self.add_error(
+                        f"указатель '{pointer_name}' для разыменования не найден",
+                        scope_idx,
+                        node_idx,
+                    )
+                elif not pointer_info.get("type", "").startswith("*"):
+                    self.add_error(
+                        f"переменная '{pointer_name}' не является указателем",
+                        scope_idx,
+                        node_idx,
+                    )
+            return
+
+        # Проверяем вызовы функций
+        func_calls = re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(", expression)
+        for func_name in func_calls:
+            if (
+                func_name not in self.functions
+                and func_name not in self.builtin_functions
+            ):
+                self.add_error(
+                    f"функция '{func_name}' не объявлена", scope_idx, node_idx
+                )
+
+        # Проверяем переменные (игнорируя части внутри вызовов функций)
+        # Убираем все вызовы функций для упрощения
+        temp_expr = expression
+        for func_name in func_calls:
+            # Простое удаление вызовов функций
+            temp_expr = temp_expr.replace(f"{func_name}(", "")
+
+        # Ищем переменные
+        var_pattern = r'(?<!["\'])(?<![a-zA-Z0-9_])\b([a-zA-Z_][a-zA-Z0-9_]+)\b(?![a-zA-Z0-9_])(?!["\'])'
+        identifiers = re.findall(var_pattern, temp_expr)
+
+        for identifier in identifiers:
+            # Пропускаем ключевые слова, типы данных, литералы
+            if identifier in ["True", "False", "None"] or identifier.isdigit():
+                continue
+
+            # Проверяем, не является ли это вызовом функции (уже обработали)
+            if identifier in func_calls:
+                continue
+
+            # Это переменная - проверяем ее существование
+            print(f"      Проверка переменной '{identifier}' в выражении")
+            if not self.find_symbol_in_scope(identifier, level):
+                self.add_error(
+                    f"переменная '{identifier}' в выражении не объявлена",
+                    scope_idx,
+                    node_idx,
+                )
+            elif self.is_variable_deleted(identifier, level):
+                self.add_error(
+                    f"переменная '{identifier}' в выражении была удалена",
+                    scope_idx,
+                    node_idx,
+                )
+
+    def validate_assignment(
+        self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
+    ):
+        """Валидирует присваивание"""
+        symbols = node.get("symbols", [])
+        dependencies = node.get("dependencies", [])
+        operations = node.get("operations", [])
+        content = node.get("content", "")
+
+        # 1. Проверяем левую часть (целевую переменную)
+        for symbol in symbols:
+            symbol_info = self.get_symbol_info(symbol, level)
+            print(
+                f"  Проверка переменной '{symbol}': symbol_info={symbol_info is not None}"
+            )
+
+            if not symbol_info:
+                self.add_error(
+                    f"присваиваемая переменная '{symbol}' не объявлена",
+                    scope_idx,
+                    node_idx,
+                )
+            else:
+                # Проверяем, не была ли переменная удалена
+                print(
+                    f"    Состояние переменной '{symbol}': {self.get_variable_state(symbol, level)}"
+                )
+                print(f"    Удалена ли: {self.is_variable_deleted(symbol, level)}")
+
+                if self.is_variable_deleted(symbol, level):
+                    # Получаем историю переменной
+                    key = (level, symbol)
+                    if key in self.variable_history:
+                        print(f"    История переменной {symbol}:")
+                        for action in self.variable_history[key]:
+                            print(
+                                f"      Действие: {action['action']}, content: {action.get('content', '')}"
+                            )
+
+                    # Проверяем, была ли после удаления переинициализация
+                    last_action = self.get_last_variable_action(symbol, level)
+                    if last_action and last_action["action"] == "delete":
+                        # Ищем объявления после удаления
+                        found_redeclaration = False
+                        for action in self.variable_history.get(key, []):
+                            if (
+                                action["action"] == "declare"
+                                and action["timestamp"] > last_action["timestamp"]
+                            ):
+                                found_redeclaration = True
+                                break
+
+                        if not found_redeclaration:
+                            self.add_error(
+                                f"переменная '{symbol}' была удалена и требует переинициализации",
+                                scope_idx,
+                                node_idx,
+                            )
+                elif symbol_info.get("key") == "const":
+                    self.add_error(
+                        f"попытка присваивания константе '{symbol}'",
+                        scope_idx,
+                        node_idx,
+                    )
+
+        # 2. Проверяем правую часть выражения
+        # Извлекаем правую часть из content
+        if symbols and content:
+            target_var = symbols[0]
+            # Вырезаем правую часть после "="
+            if "=" in content:
+                expression = content.split("=", 1)[1].strip()
+                print(f"  Выражение в правой части: '{expression}'")
+
+                # Проверяем вызовы функций в правой части
+                self.validate_expression(expression, scope_idx, node_idx, level)
+
+                # Проверяем совместимость типов
+                self.validate_type_compatibility(
+                    target_var, expression, scope_idx, node_idx, level
+                )
+
+        # 3. Проверяем зависимости (используемые переменные)
+        for dep in dependencies:
+            print(f"  Проверка зависимости '{dep}'")
+            found = self.find_symbol_in_scope(dep, level)
+            print(f"    Найдена в scope: {found}")
+
+            if not found:
+                self.add_error(
+                    f"используемая переменная '{dep}' не объявлена", scope_idx, node_idx
+                )
+            elif self.is_variable_deleted(dep, level):
+                print(
+                    f"    Переменная '{dep}' удалена: {self.is_variable_deleted(dep, level)}"
+                )
+                self.add_error(
+                    f"используемая переменная '{dep}' была удалена", scope_idx, node_idx
+                )
+
+    def validate_delete(
+        self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
+    ):
+        """Валидирует удаление переменной"""
+        symbols = node.get("symbols", [])
+
+        for symbol in symbols:
+            # Проверяем, существует ли переменная
+            symbol_info = self.get_symbol_info(symbol, level)
+            if not symbol_info:
+                self.add_error(
+                    f"удаляемая переменная '{symbol}' не объявлена", scope_idx, node_idx
+                )
+                continue
+
+            # Проверяем, константа ли это
+            if symbol_info.get("key") == "const":
+                self.add_error(
+                    f"попытка удаления константы '{symbol}'", scope_idx, node_idx
+                )
+                continue
+
+            # Проверяем, не была ли уже удалена
+            key = (level, symbol)
+            current_state = self.variable_states.get(key)
+
+            if current_state == "deleted":
+                self.add_error(
+                    f"переменная '{symbol}' уже была удалена", scope_idx, node_idx
+                )
+            else:
+                # Помечаем как удаленную
+                self.variable_states[key] = "deleted"
+                print(f"    Переменная '{symbol}' помечена как удаленная")
+
+    def validate_del_pointer(
+        self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
+    ):
+        """Валидирует оператор del_pointer"""
+        symbols = node.get("symbols", [])
+
+        for symbol in symbols:
+            symbol_info = self.get_symbol_info(symbol, level)
+            if not symbol_info:
+                self.add_error(
+                    f"удаляемый указатель '{symbol}' не объявлен", scope_idx, node_idx
+                )
+            else:
+                if symbol_info.get("key") == "const":
+                    self.add_error(
+                        f"попытка удаления константы '{symbol}'", scope_idx, node_idx
+                    )
+
+    def validate_unary_operation(
+        self, op: Dict, node_idx: int, scope_idx: int, level: int
+    ):
+        """Валидирует унарную операцию"""
+        value = op.get("value")
+
+        if value and value.isalpha() and value not in ["True", "False", "None"]:
+            if not self.find_symbol_in_scope(value, level):
+                self.add_error(
+                    f"операнд унарной операции '{value}' не объявлен",
+                    scope_idx,
+                    node_idx,
+                )
+            elif self.is_variable_deleted(value, level):
+                self.add_error(
+                    f"операнд унарной операции '{value}' был удален",
+                    scope_idx,
+                    node_idx,
+                )
+
+    def validate_augmented_assignment(
+        self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
+    ):
+        """Валидирует составное присваивание"""
+        symbols = node.get("symbols", [])
+        operations = node.get("operations", [])
+        dependencies = node.get("dependencies", [])
+
+        for symbol in symbols:
+            symbol_info = self.get_symbol_info(symbol, level)
+            if not symbol_info:
+                self.add_error(
+                    f"переменная '{symbol}' в составном присваивании не объявлена",
+                    scope_idx,
+                    node_idx,
+                )
+            else:
+                # Проверяем, не была ли переменная удалена
+                if self.is_variable_deleted(symbol, level):
+                    self.add_error(
+                        f"переменная '{symbol}' была удалена и требует переинициализации",
+                        scope_idx,
+                        node_idx,
+                    )
+                elif symbol_info.get("key") == "const":
+                    self.add_error(
+                        f"попытка модификации константы '{symbol}'", scope_idx, node_idx
+                    )
+
+        for dep in dependencies:
+            if not self.find_symbol_in_scope(dep, level):
+                self.add_error(
+                    f"используемая переменная '{dep}' не объявлена", scope_idx, node_idx
+                )
+            elif self.is_variable_deleted(dep, level):
+                self.add_error(
+                    f"используемая переменная '{dep}' была удалена", scope_idx, node_idx
+                )
+
+    def validate_function_declaration(
+        self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
+    ):
+        """Валидирует объявление функции"""
+        func_name = node.get("function_name")
+        parameters = node.get("parameters", [])
+        is_stub = node.get("is_stub", False)
+
+        # Проверяем дублирование функций
+        for other_scope in self.all_scopes:
+            if other_scope.get("level") <= level:
+                for other_node in other_scope.get("graph", []):
+                    if (
+                        other_node.get("node") == "function_declaration"
+                        and other_node.get("function_name") == func_name
+                        and other_node is not node
+                    ):
+                        self.add_error(
+                            f"функция '{func_name}' уже объявлена", scope_idx, node_idx
+                        )
+                        return
+
+        # Проверяем параметры
+        param_names = set()
+        for param in parameters:
+            param_name = param.get("name")
+            if param_name in param_names:
+                self.add_error(
+                    f"дублирующийся параметр '{param_name}' в функции '{func_name}'",
+                    scope_idx,
+                    node_idx,
+                )
+            param_names.add(param_name)
+
+        # Если это заглушка, выводим предупреждение
+        if is_stub:
+            self.add_warning(
+                f"функция '{func_name}' объявлена как заглушка (только pass)",
+                scope_idx,
+                node_idx,
+            )
+
+    def validate_function_call(
+        self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
+    ):
+        """Валидирует вызов функции"""
+        func_name = node.get("function")
+        arguments = node.get("arguments", [])
+
+        # Проверяем, что функция существует или является встроенной
+        if func_name not in self.functions and func_name not in self.builtin_functions:
+            self.add_error(
+                f"вызываемая функция '{func_name}' не объявлена", scope_idx, node_idx
+            )
+        elif func_name in self.functions:
+            func_info = self.functions[func_name]
+            func_params = func_info.get("parameters", [])
+
+            if len(arguments) != len(func_params):
+                self.add_error(
+                    f"функция '{func_name}' ожидает {len(func_params)} аргументов, передано {len(arguments)}",
+                    scope_idx,
+                    node_idx,
+                )
+
+        # Проверяем аргументы
+        for arg in arguments:
+            if arg and arg.isalpha() and arg not in ["True", "False", "None"]:
+                if not self.find_symbol_in_scope(arg, level):
+                    self.add_error(f"аргумент '{arg}' не объявлен", scope_idx, node_idx)
+                elif self.is_variable_deleted(arg, level):
+                    self.add_error(f"аргумент '{arg}' был удален", scope_idx, node_idx)
+
+    def validate_builtin_function_call(
+        self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
+    ):
+        """Валидирует вызов встроенной функции"""
+        func_name = node.get("function")
+        arguments = node.get("arguments", [])
+        dependencies = node.get("dependencies", [])
+
+        if func_name not in self.builtin_functions:
+            self.add_error(
+                f"встроенная функция '{func_name}' не поддерживается",
+                scope_idx,
+                node_idx,
+            )
+            return
+
+        # ... остальная валидация ...
+
+        # Проверяем зависимости (переменные в аргументах)
+        for dep in dependencies:
+            if not self.find_symbol_in_scope(dep, level):
+                self.add_error(
+                    f"переменная '{dep}' в аргументе функции '{func_name}' не объявлена",
+                    scope_idx,
+                    node_idx,
+                )
+            elif self.is_variable_deleted(dep, level):
+                # Но нужно проверить, не было ли использование раньше удаления
+                node_id = f"{scope_idx}.{node_idx}"
+                current_timestamp = None
+                for action in self.variable_history.get((level, dep), []):
+                    if action.get("node_id") == node_id:
+                        current_timestamp = action.get("timestamp")
+                        break
+
+                if current_timestamp is not None:
+                    # Ищем удаление после этого использования
+                    found_delete_after = False
+                    for action in self.variable_history.get((level, dep), []):
+                        if (
+                            action["action"] == "delete"
+                            and action["timestamp"] > current_timestamp
+                        ):
+                            found_delete_after = True
+                            break
+
+                    if not found_delete_after:
+                        self.add_error(
+                            f"переменная '{dep}' в аргументе функции '{func_name}' была удалена",
+                            scope_idx,
+                            node_idx,
+                        )
+
+    def validate_print(
+        self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
+    ):
+        """Валидирует вызов функции print"""
+        arguments = node.get("arguments", [])
+        dependencies = node.get("dependencies", [])
+
+        for dep in dependencies:
+            if not self.find_symbol_in_scope(dep, level):
+                self.add_error(
+                    f"переменная '{dep}' в аргументе print не объявлена",
+                    scope_idx,
+                    node_idx,
+                )
+            elif self.is_variable_deleted(dep, level):
+                self.add_error(
+                    f"переменная '{dep}' в аргументе print была удалена",
+                    scope_idx,
+                    node_idx,
+                )
+
+        # Дополнительно проверяем аргументы для сложных выражений
+        for arg in arguments:
+            if (
+                arg
+                and not arg.startswith('"')
+                and not arg.endswith('"')
+                and not arg.startswith("'")
+                and not arg.endswith("'")
+                and not arg.isdigit()
+                and arg not in ["True", "False", "None"]
+            ):
+                # Ищем переменные в сложных выражениях
+                var_pattern = r"([a-zA-Z_][a-zA-Z0-9_]*)"
+                vars_in_arg = re.findall(var_pattern, arg)
+                for var in vars_in_arg:
+                    if (
+                        var not in ["True", "False", "None"]
+                        and var not in self.builtin_functions
+                        and not self.find_symbol_in_scope(var, level)
+                    ):
+                        self.add_error(
+                            f"переменная '{var}' в выражении print не объявлена",
+                            scope_idx,
+                            node_idx,
+                        )
+                    elif self.is_variable_deleted(var, level):
+                        self.add_error(
+                            f"переменная '{var}' в выражении print была удалена",
+                            scope_idx,
+                            node_idx,
+                        )
+
+    def validate_len_call(
+        self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
+    ):
+        """Валидирует вызов len()"""
+        arguments = node.get("arguments", [])
+
+        if len(arguments) != 1:
+            return
+
+        arg = arguments[0]
+
+        # len() принимает строки или массивы (пока только строки)
+        if arg.startswith('"') and arg.endswith('"'):
+            return
+
+        if arg.startswith("'") and arg.endswith("'"):
+            return
+
+        # Для переменных нужно проверить тип
+        if arg.isalpha():
+            symbol_info = self.get_symbol_info(arg, level)
+            if symbol_info:
+                var_type = symbol_info.get("type")
+                if var_type not in ["str", "list", "array"]:
+                    self.add_error(
+                        f"функция len() ожидает строку, передана переменная типа '{var_type}'",
+                        scope_idx,
+                        node_idx,
+                    )
+
+    def validate_int_call(
+        self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
+    ):
+        """Валидирует вызов int()"""
+        arguments = node.get("arguments", [])
+
+        if len(arguments) != 1:
+            return
+
+        arg = arguments[0]
+
+        # int() принимает числа, строки с числами или bool
+        if arg.isdigit() or arg in ["True", "False"]:
+            return
+
+        if arg.startswith('"') and arg.endswith('"'):
+            str_value = arg[1:-1]
+            if not str_value.lstrip("-").isdigit():
+                self.add_error(
+                    f"функция int() не может преобразовать строку '{arg}' в число",
+                    scope_idx,
+                    node_idx,
+                )
+
+        # Для переменных проверяем тип
+        if arg.isalpha():
+            symbol_info = self.get_symbol_info(arg, level)
+            if symbol_info:
+                var_type = symbol_info.get("type")
+                if var_type not in ["int", "str", "bool"]:
+                    self.add_error(
+                        f"функция int() ожидает int, string или bool, передана переменная типа '{var_type}'",
+                        scope_idx,
+                        node_idx,
+                    )
+
+    def validate_str_call(
+        self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
+    ):
+        """Валидирует вызов str()"""
+        arguments = node.get("arguments", [])
+
+        if len(arguments) != 1:
+            return
+
+        # str() принимает любые значения
+        # Проверяем только, что аргумент существует
+        arg = arguments[0]
+        if arg.isalpha() and not self.find_symbol_in_scope(arg, level):
+            self.add_error(
+                f"переменная '{arg}' в аргументе str() не объявлена",
+                scope_idx,
+                node_idx,
+            )
+        elif arg.isalpha() and self.is_variable_deleted(arg, level):
+            self.add_error(
+                f"переменная '{arg}' в аргументе str() была удалена",
+                scope_idx,
+                node_idx,
+            )
+
+    def validate_bool_call(
+        self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
+    ):
+        """Валидирует вызов bool()"""
+        arguments = node.get("arguments", [])
+
+        if len(arguments) != 1:
+            return
+
+        # bool() принимает любые значения
+        # Проверяем только, что аргумент существует
+        arg = arguments[0]
+        if arg.isalpha() and not self.find_symbol_in_scope(arg, level):
+            self.add_error(
+                f"переменная '{arg}' в аргументе bool() не объявлена",
+                scope_idx,
+                node_idx,
+            )
+        elif arg.isalpha() and self.is_variable_deleted(arg, level):
+            self.add_error(
+                f"переменная '{arg}' в аргументе bool() была удалена",
+                scope_idx,
+                node_idx,
+            )
+
+    def validate_range_call(
+        self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
+    ):
+        """Валидирует вызов range()"""
+        arguments = node.get("arguments", [])
+
+        # range() принимает 1-3 аргумента, все должны быть int
+        for i, arg in enumerate(arguments):
+            if arg.isdigit():
+                continue
+
+            if arg.isalpha():
+                symbol_info = self.get_symbol_info(arg, level)
+                if symbol_info:
+                    var_type = symbol_info.get("type")
+                    if var_type != "int":
+                        self.add_error(
+                            f"аргумент {i + 1} функции range() должен быть int, передана переменная типа '{var_type}'",
+                            scope_idx,
+                            node_idx,
+                        )
+                else:
+                    self.add_error(
+                        f"переменная '{arg}' в аргументе range() не объявлена",
+                        scope_idx,
+                        node_idx,
+                    )
+
+                # Проверяем, не удалена ли переменная
+                if self.is_variable_deleted(arg, level):
+                    self.add_error(
+                        f"переменная '{arg}' в аргументе range() была удалена",
+                        scope_idx,
+                        node_idx,
+                    )
+
+    def validate_return(
+        self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
+    ):
+        """Валидирует оператор return"""
+        dependencies = node.get("dependencies", [])
+        content = node.get("content", "")
+        operations = node.get("operations", [])
+
+        # Парсим return выражение
+        if content.startswith("return "):
+            return_expr = content[7:].strip()  # Убираем "return "
+            print(f"  Проверка return: '{return_expr}'")
+
+            # Получаем текущий scope (функцию) - КОРРЕКТНО
+            current_scope = self.get_scope_for_node(scope_idx, level)
+
+            if not current_scope or current_scope.get("type") != "function":
+                print(f"    Return не в функции, пропускаем проверку типа")
+                return
+
+            declared_return_type = current_scope.get("return_type", "None")
+            print(f"    Функция объявлена как возвращающая: {declared_return_type}")
+
+            # Получаем тип возвращаемого значения
+            actual_return_type = "unknown"
+
+            # Используем AST из operations если есть
+            for op in operations:
+                if op.get("type") == "RETURN":
+                    value_ast = op.get("value")
+                    if value_ast:
+                        actual_return_type = self.get_type_from_ast(
+                            value_ast, scope_idx, node_idx, level
+                        )
+                        print(
+                            f"    Тип возвращаемого значения из AST: {actual_return_type}"
+                        )
+                        break
+
+            # Если не нашли в AST, пытаемся определить из выражения
+            if actual_return_type == "unknown":
+                actual_return_type = self.guess_type_from_value(return_expr)
+                print(
+                    f"    Тип возвращаемого значения из выражения: {actual_return_type}"
+                )
+
+            # Проверяем совместимость типов
+            if actual_return_type != "unknown" and not self.are_types_compatible(
+                declared_return_type, actual_return_type
+            ):
+                self.add_error(
+                    f"функция объявлена как возвращающая '{declared_return_type}', "
+                    f"фактически возвращает '{actual_return_type}'",
+                    scope_idx,
+                    node_idx,
+                )
+
+            # Проверяем сложные выражения
+            self.validate_expression(return_expr, scope_idx, node_idx, level)
+
+        # Старая проверка dependencies (для совместимости)
+        for dep in dependencies:
+            if not self.find_symbol_in_scope(dep, level):
+                self.add_error(
+                    f"возвращаемая переменная '{dep}' не объявлена", scope_idx, node_idx
+                )
+            elif self.is_variable_deleted(dep, level):
+                self.add_error(
+                    f"возвращаемая переменная '{dep}' была удалена", scope_idx, node_idx
+                )
+
+    def validate_loop_node(
+        self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
+    ):
+        """Валидирует узел цикла"""
+        node_type = node.get("node")
+
+        if node_type == "while_loop":
+            condition = node.get("condition", {})
+            if condition.get("type") == "COMPARISON":
+                left = condition.get("left")
+                right = condition.get("right")
+
+                for var in [left, right]:
+                    if var and var.isalpha() and var not in ["True", "False", "None"]:
+                        if not self.find_symbol_in_scope(var, level):
+                            self.add_error(
+                                f"переменная '{var}' в условии цикла не объявлена",
+                                scope_idx,
+                                node_idx,
+                            )
+                        elif self.is_variable_deleted(var, level):
+                            self.add_error(
+                                f"переменная '{var}' в условии цикла была удалена",
+                                scope_idx,
+                                node_idx,
+                            )
+
+        elif node_type == "for_loop":
+            loop_var = node.get("loop_variable")
+            iterable = node.get("iterable", {})
+
+            if loop_var not in symbol_table:
+                self.add_error(
+                    f"переменная цикла '{loop_var}' не объявлена", scope_idx, node_idx
+                )
+            elif self.is_variable_deleted(loop_var, level):
+                self.add_error(
+                    f"переменная цикла '{loop_var}' была удалена", scope_idx, node_idx
+                )
+
+            if iterable.get("type") == "RANGE_CALL":
+                args = iterable.get("arguments", {})
+                for arg_name, arg_value in args.items():
+                    if (
+                        arg_value
+                        and arg_value.isalpha()
+                        and arg_value not in ["True", "False", "None"]
+                    ):
+                        if not self.find_symbol_in_scope(arg_value, level):
+                            self.add_error(
+                                f"аргумент range '{arg_value}' не объявлен",
+                                scope_idx,
+                                node_idx,
+                            )
+                        elif self.is_variable_deleted(arg_value, level):
+                            self.add_error(
+                                f"аргумент range '{arg_value}' был удален",
+                                scope_idx,
+                                node_idx,
+                            )
+
+    def validate_function_return(self, scope: Dict, scope_idx: int):
+        """Проверяет, что функция имеет return если нужно"""
+        return_info = scope.get("return_info", {})
+        return_type = scope.get("return_type", "None")
+        is_stub = scope.get("is_stub", False)
+
+        # Если функция - заглушка, пропускаем проверку return
+        if is_stub:
+            if return_type != "None":
+                self.add_warning(
+                    f"функция-заглушка возвращает '{return_type}' но не имеет return",
+                    scope_idx,
+                    None,
+                )
+            return
+
+        # Обычная проверка для не-заглушек
+        if return_type != "None" and not return_info.get("has_return", False):
+            func_content = ""
+            for node_idx, node in enumerate(scope.get("graph", [])):
+                if node.get("node") == "function_declaration":
+                    func_content = node.get("content", "")
+                    break
+
+            if func_content:
+                self.add_warning(
+                    f"функция возвращает '{return_type}' но не имеет оператора return",
+                    scope_idx,
+                    None,
+                )
+
+    def validate_loops(self, scope: Dict, scope_idx: int):
+        """Проверяет циклы на корректность"""
+        graph = scope.get("graph", [])
+
+        for node_idx, node in enumerate(graph):
+            if node.get("node") in ["while_loop", "for_loop"]:
+                body = node.get("body", [])
+                if not body:
+                    self.add_warning(f"тело цикла пустое", scope_idx, node_idx)
+
+    def validate_pointer_declaration(
+        self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
+    ):
+        """Валидирует объявление указателя"""
+        content = node.get("content", "")
+        symbols = node.get("symbols", [])
+        operations = node.get("operations", [])
+
+        if not symbols:
+            return
+
+        pointer_name = symbols[0]
+        pointer_info = self.get_symbol_info(pointer_name, level)
+
+        if not pointer_info:
+            return
+
+        # Проверяем, что тип действительно указатель
+        if not pointer_info.get("type", "").startswith("*"):
+            self.add_error(
+                f"переменная '{pointer_name}' объявлена как указатель, но тип не начинается с '*'",
+                scope_idx,
+                node_idx,
+            )
+            return
+
+        # Получаем тип, на который указывает указатель
+        pointed_type = pointer_info.get("type")[1:]  # Убираем звездочку
+
+        # Проверяем операции с указателем
+        for op in operations:
+            if op.get("type") == "GET_ADDRESS":
+                pointed_var = op.get("of")
+                pointed_var_info = self.get_symbol_info(pointed_var, level)
+
+                if pointed_var_info:
+                    # Проверяем совместимость типов
+                    pointed_var_type = pointed_var_info.get("type")
+                    if pointed_var_type != pointed_type:
+                        self.add_error(
+                            f"указатель '*{pointed_type}' не может указывать на переменную '{pointed_var}' типа '{pointed_var_type}'",
+                            scope_idx,
+                            node_idx,
+                        )
+
+    def validate_dereference_write(
+        self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
+    ):
+        """Валидирует запись через указатель (*p = значение)"""
+        content = node.get("content", "")
+        symbols = node.get("symbols", [])
+        operations = node.get("operations", [])
+
+        if not symbols:
+            return
+
+        pointer_name = symbols[0]
+        pointer_info = self.get_symbol_info(pointer_name, level)
+
+        if not pointer_info:
+            self.add_error(f"указатель '{pointer_name}' не найден", scope_idx, node_idx)
+            return
+
+        # Проверяем, что это действительно указатель
+        pointer_type = pointer_info.get("type", "")
+        if not pointer_type.startswith("*"):
+            self.add_error(
+                f"переменная '{pointer_name}' не является указателем",
+                scope_idx,
+                node_idx,
+            )
+            return
+
+        # Получаем тип, на который указывает указатель
+        pointed_type = pointer_type[1:]  # Убираем звездочку
+
+        # Получаем значение для присваивания
+        for op in operations:
+            if op.get("type") == "WRITE_POINTER":
+                value = op.get("value", {})  # Теперь это AST
+
+                # Получаем тип значения из AST
+                value_type = self.get_type_from_ast(value, scope_idx, node_idx, level)
+
+                if value_type and value_type != "unknown":
+                    # Проверяем совместимость типов
+                    if not self.are_types_compatible(pointed_type, value_type):
+                        self.add_error(
+                            f"нельзя присвоить значение типа '{value_type}' через указатель на '{pointed_type}'",
+                            scope_idx,
+                            node_idx,
+                        )
+
+    def get_type_from_ast(
+        self, ast: Dict, scope_idx: int, node_idx: int, level: int
+    ) -> str:
+        """Определяет тип значения из AST"""
+        if not isinstance(ast, dict):
+            return "unknown"
+
+        ast_type = ast.get("type")
+
+        if ast_type == "literal":
+            data_type = ast.get("data_type")
+            if data_type:
+                return data_type
+            elif "value" in ast:
+                val = ast["value"]
+                if isinstance(val, str):
+                    return "str"
+                elif isinstance(val, int):
+                    return "int"
+                elif isinstance(val, bool):
+                    return "bool"
+                elif val is None:
+                    return "None"
+
+        elif ast_type == "variable":
+            var_name = ast.get("value")
+            if var_name:
+                var_info = self.get_symbol_info(var_name, level)
+                if var_info:
+                    return var_info.get("type", "unknown")
+
+        elif ast_type == "binary_operation":
+            # Определяем тип результата бинарной операции
+            operator = ast.get("operator_symbol", "")
+            left_type = self.get_type_from_ast(
+                ast.get("left"), scope_idx, node_idx, level
+            )
+            right_type = self.get_type_from_ast(
+                ast.get("right"), scope_idx, node_idx, level
+            )
+
+            # Для арифметических операций
+            if operator in ["+", "-", "*", "/", "//", "%", "**"]:
+                if left_type == "float" or right_type == "float":
+                    return "float"
+                elif left_type == "int" and right_type == "int":
+                    return "int"
+                elif left_type == "unknown" or right_type == "unknown":
+                    return "int"  # Предполагаем int по умолчанию
+
+            # Для сравнений - возвращается bool
+            elif operator in ["<", ">", "<=", ">=", "==", "!=", "and", "or"]:
+                return "bool"
+
+            return "int"  # По умолчанию для других операций
+
+        elif ast_type == "function_call":
+            func_name = ast.get("function")
+            if func_name in self.builtin_functions:
+                return self.builtin_functions[func_name]["return_type"]
+            elif func_name in self.functions:
+                func_info = self.functions[func_name]
+                return func_info.get("return_type", "unknown")
+            else:
+                # Проверяем среди C функций
+                return "unknown"  # Будет определено через guess_type_from_value
+
+        elif ast_type == "dereference":
+            pointer_name = ast.get("pointer")
+            if pointer_name:
+                pointer_info = self.get_symbol_info(pointer_name, level)
+                if pointer_info:
+                    pointer_type = pointer_info.get("type", "")
+                    if pointer_type.startswith("*"):
+                        return pointer_type[1:]  # Тип, на который указывает указатель
+
+        return "unknown"
+
+    def validate_assignment(
+        self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
+    ):
+        """Валидирует присваивание"""
+        symbols = node.get("symbols", [])
+        dependencies = node.get("dependencies", [])
+        content = node.get("content", "")
+        expression_ast = node.get("expression_ast")
+
+        # 1. Проверяем левую часть (целевую переменную)
+        for symbol in symbols:
+            symbol_info = self.get_symbol_info(symbol, level)
+
+            if not symbol_info:
+                self.add_error(
+                    f"присваиваемая переменная '{symbol}' не объявлена",
+                    scope_idx,
+                    node_idx,
+                )
+            else:
+                if self.is_variable_deleted(symbol, level):
+                    # Проверяем переинициализацию
+                    key = (level, symbol)
+                    last_action = self.get_last_variable_action(symbol, level)
+                    if last_action and last_action["action"] == "delete":
+                        found_redeclaration = False
+                        for action in self.variable_history.get(key, []):
+                            if (
+                                action["action"] == "declare"
+                                and action["timestamp"] > last_action["timestamp"]
+                            ):
+                                found_redeclaration = True
+                                break
+
+                        if not found_redeclaration:
+                            self.add_error(
+                                f"переменная '{symbol}' была удалена и требует переинициализации",
+                                scope_idx,
+                                node_idx,
+                            )
+                elif symbol_info.get("key") == "const":
+                    self.add_error(
+                        f"попытка присваивания константе '{symbol}'",
+                        scope_idx,
+                        node_idx,
+                    )
+
+        # 2. Проверяем правую часть выражения
+        if symbols and expression_ast:
+            target_var = symbols[0]
+
+            # Получаем тип значения из AST
+            value_type = self.get_type_from_ast(
+                expression_ast, scope_idx, node_idx, level
+            )
+
+            # Получаем тип целевой переменной
+            target_info = self.get_symbol_info(target_var, level)
+            if target_info:
+                target_type = target_info.get("type", "")
+
+                # Проверяем совместимость типов
+                if value_type and value_type != "unknown" and target_type:
+                    if not self.are_types_compatible(target_type, value_type):
+                        self.add_error(
+                            f"нельзя присвоить значение типа '{value_type}' переменной типа '{target_type}'",
+                            scope_idx,
+                            node_idx,
+                        )
+
+        # 3. Проверяем зависимости (используемые переменные)
+        for dep in dependencies:
+            if not self.find_symbol_in_scope(dep, level):
+                self.add_error(
+                    f"используемая переменная '{dep}' не объявлена", scope_idx, node_idx
+                )
+            elif self.is_variable_deleted(dep, level):
+                self.add_error(
+                    f"используемая переменная '{dep}' была удалена", scope_idx, node_idx
+                )
+
+    def validate_function_return_type(self, scope: Dict, scope_idx: int):
+        """Проверяет соответствие типа возвращаемого значения"""
+        return_info = scope.get("return_info", {})
+        declared_return_type = scope.get("return_type", "None")
+
+        if not return_info.get("has_return", False):
+            # Функция не имеет return, но проверяем тип
+            if declared_return_type != "None":
+                self.add_warning(
+                    f"функция объявлена как возвращающая '{declared_return_type}', но не имеет return",
+                    scope_idx,
+                    None,
+                )
+            return
+
+        # Получаем информацию о возвращаемом значении
+        return_value = return_info.get("return_value")
+        if not return_value:
+            return
+
+        # Определяем фактический тип возвращаемого значения
+        actual_return_type = self.determine_return_type(
+            return_value, scope_idx, scope.get("level", 0)
+        )
+
+        if actual_return_type and actual_return_type != "unknown":
+            # Сравниваем объявленный и фактический типы
+            if not self.are_types_compatible(declared_return_type, actual_return_type):
+                # Находим узел return в графе для правильной привязки ошибки
+                graph = scope.get("graph", [])
+                return_node_idx = -1
+
+                for i, node in enumerate(graph):
+                    if node.get("node") == "return":
+                        return_node_idx = i
+                        break
+
+                # Добавляем ошибку только один раз
+                if return_node_idx != -1:
+                    self.add_error(
+                        f"функция объявлена как возвращающая '{declared_return_type}', "
+                        f"фактически возвращает '{actual_return_type}'",
+                        scope_idx,
+                        return_node_idx,
+                    )
+
+    def determine_return_type(self, return_value, scope_idx: int, level: int) -> str:
+        """Определяет тип возвращаемого значения"""
+        # Если return_value - строка (из content)
+        if isinstance(return_value, str):
+            # Парсим выражение
+            if (return_value.startswith('"') and return_value.endswith('"')) or (
+                return_value.startswith("'") and return_value.endswith("'")
+            ):
+                return "str"
+            elif return_value.isdigit() or (
+                return_value.startswith("-") and return_value[1:].isdigit()
+            ):
+                return "int"
+            elif return_value in ["True", "False"]:
+                return "bool"
+            elif return_value == "None":
+                return "None"
+            else:
+                # Это может быть переменная или выражение
+                # Проверяем, не является ли это вызовом функции
+                if "(" in return_value and ")" in return_value:
+                    # Извлекаем имя функции
+                    func_match = re.match(r"([a-zA-Z_][a-zA-Z0-9_]*)\(", return_value)
+                    if func_match:
+                        func_name = func_match.group(1)
+                        # Получаем информацию о функции
+                        func_info = None
+
+                        # Проверяем в функциях
+                        if func_name in self.functions:
+                            func_info = self.functions[func_name]
+                        else:
+                            # Ищем в scope'ах
+                            for scope in self.all_scopes:
+                                if (
+                                    scope.get("type") == "function"
+                                    and scope.get("function_name") == func_name
+                                ):
+                                    return scope.get("return_type", "unknown")
+
+                        if func_info:
+                            return func_info.get("return_type", "unknown")
+
+                # Если это переменная
+                var_info = self.get_symbol_info(return_value, level)
+                if var_info:
+                    return var_info.get("type", "unknown")
+                else:
+                    return "unknown"
+
+        # Если return_value - AST (словарь)
+        elif isinstance(return_value, dict):
+            return self.get_type_from_ast(return_value, scope_idx, None, level)
+
+        return "unknown"
+
+    def validate_type_compatibility(
+        self, var_name: str, value: str, scope_idx: int, node_idx: int, level: int
+    ):
+        """Проверяет совместимость типов при присваивании"""
+        var_info = self.get_symbol_info(var_name, level)
+        if not var_info:
+            return
+
+        var_type = var_info.get("type")
+
+        if "(" in value and ")" in value:
+            # Извлекаем имя функции
+            func_match = re.match(r"([a-zA-Z_][a-zA-Z0-9_]*)\(", value)
+            if func_match:
+                func_name = func_match.group(1)
+
+                # Получаем возвращаемый тип функции
+                func_return_type = "unknown"
+
+                # Проверяем в функциях
+                if func_name in self.functions:
+                    func_return_type = self.functions[func_name].get(
+                        "return_type", "unknown"
+                    )
+                else:
+                    # Ищем в scope'ах
+                    for scope in self.all_scopes:
+                        if (
+                            scope.get("type") == "function"
+                            and scope.get("function_name") == func_name
+                        ):
+                            func_return_type = scope.get("return_type", "unknown")
+                            break
+
+                if func_return_type != "unknown" and not self.are_types_compatible(
+                    var_type, func_return_type
+                ):
+                    self.add_error(
+                        f"переменной типа '{var_type}' присваивается результат функции '{func_name}' "
+                        f"с возвращаемым типом '{func_return_type}'",
+                        scope_idx,
+                        node_idx,
+                    )
+                return  # Пропускаем дальнейшие проверки для вызова функции
+
+        # Если это указатель
+        if var_type.startswith("*"):
+            pointed_type = var_type[1:]  # Тип, на который указывает указатель
+
+            # Если берем адрес переменной (&x)
+            if value.strip().startswith("&"):
+                pointed_var = value.strip()[1:].strip()
+                pointed_var_info = self.get_symbol_info(pointed_var, level)
+
+                if pointed_var_info:
+                    pointed_var_type = pointed_var_info.get("type")
+                    if pointed_var_type != pointed_type:
+                        self.add_error(
+                            f"указатель '*{pointed_type}' не может указывать на переменную '{pointed_var}' типа '{pointed_var_type}'",
+                            scope_idx,
+                            node_idx,
+                        )
+            # Проверяем другие значения для указателей
+            elif value.strip() != "null":  # null - допустимо для любого указателя
+                value_type = self.guess_type_from_value(value)
+                self.add_warning(
+                    f"присвоение значения типа '{value_type}' указателю типа '*{pointed_type}'",
+                    scope_idx,
+                    node_idx,
+                )
+        else:
+            # Проверяем обычные типы
+            if var_type == "int":
+                if value.startswith('"') or value.startswith("'"):
+                    self.add_error(
+                        f"нельзя присвоить строку переменной типа int",
+                        scope_idx,
+                        node_idx,
+                    )
+                elif value in ["True", "False"]:
+                    self.add_error(
+                        f"нельзя присвоить bool переменной типа int",
+                        scope_idx,
+                        node_idx,
+                    )
+            elif var_type == "str":
+                if value.isdigit():
+                    self.add_warning(
+                        f"присвоение числа строковой переменной", scope_idx, node_idx
+                    )
+
+    # В JSONValidator добавьте:
+    def validate_type_operations(
+        self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
+    ):
+        """Валидирует операции с типами"""
+        if "expression_ast" in node:
+            ast = node["expression_ast"]
+            self.validate_ast_types(ast, node_idx, scope_idx, level)
+
+    def validate_ast_types(self, ast: Dict, node_idx: int, scope_idx: int, level: int):
+        """Рекурсивно валидирует типы в AST"""
+        if not isinstance(ast, dict):
+            return
+
+        node_type = ast.get("type")
+
+        if node_type == "binary_operation":
+            # Проверяем совместимость типов операндов
+            left_type = self.get_type_from_ast(
+                ast.get("left"), scope_idx, node_idx, level
+            )
+            right_type = self.get_type_from_ast(
+                ast.get("right"), scope_idx, node_idx, level
+            )
+            operator = ast.get("operator_symbol", "")
+
+            if not self.can_operate_between_types(left_type, right_type, operator):
+                self.add_error(
+                    f"нельзя выполнить операцию '{operator}' "
+                    f"между типами '{left_type}' и '{right_type}'",
+                    scope_idx,
+                    node_idx,
+                )
+
+            # Рекурсивно проверяем дочерние узлы
+            self.validate_ast_types(ast.get("left"), node_idx, scope_idx, level)
+            self.validate_ast_types(ast.get("right"), node_idx, scope_idx, level)
+
+        elif node_type == "unary_operation":
+            operand_type = self.get_type_from_ast(
+                ast.get("operand"), scope_idx, node_idx, level
+            )
+            operator = ast.get("operator_symbol", "")
+
+            if operator == "not" and operand_type != "bool":
+                self.add_error(
+                    f"оператор 'not' применяется к типу '{operand_type}', а не к bool",
+                    scope_idx,
+                    node_idx,
+                )
+
+            # Рекурсивно проверяем операнд
+            self.validate_ast_types(ast.get("operand"), node_idx, scope_idx, level)
+
+        elif node_type == "function_call":
+            # Проверяем аргументы
+            for arg in ast.get("arguments", []):
+                self.validate_ast_types(arg, node_idx, scope_idx, level)
+
+    def can_operate_between_types(self, type1: str, type2: str, operator: str) -> bool:
+        """Проверяет, можно ли выполнить операцию между двумя типами"""
+        # Если один из типов unknown, пропускаем проверку
+        if type1 == "unknown" or type2 == "unknown":
+            return True
+
+        # Арифметические операции требуют числовых типов
+        arithmetic_ops = [
+            "+",
+            "-",
+            "*",
+            "/",
+            "//",
+            "%",
+            "**",
+            "+=",
+            "-=",
+            "*=",
+            "/=",
+            "%=",
+            "**=",
+        ]
+
+        if operator in arithmetic_ops:
+            # int и float могут взаимодействовать
+            numeric_types = ["int", "float"]
+            return type1 in numeric_types and type2 in numeric_types
+
+        # Операции сравнения
+        comparison_ops = ["<", ">", "<=", ">=", "==", "!="]
+        if operator in comparison_ops:
+            # Можно сравнивать числовые типы между собой
+            if type1 in ["int", "float"] and type2 in ["int", "float"]:
+                return True
+            # Можно сравнивать строки со строками
+            if type1 == "str" and type2 == "str":
+                return True
+            # Можно сравнивать булевы с булевыми
+            if type1 == "bool" and type2 == "bool":
+                return True
+            return False
+
+        # Логические операции
+        logical_ops = ["and", "or"]
+        if operator in logical_ops:
+            return type1 == "bool" and type2 == "bool"
+
+        return True
+
+    def check_unused_variables(self, scope: Dict, scope_idx: int):
+        """Проверяет объявленные, но неиспользуемые переменные"""
+        local_vars = scope.get("local_variables", [])
+        graph = scope.get("graph", [])
+        level = scope.get("level", 0)
+
+        if not local_vars:
+            return
+
+        used_vars = set()
+
+        # Собираем все используемые переменные из графа
+        for node in graph:
+            node_type = node.get("node", "")
+
+            # Пропускаем узлы declaration, так как они объявляют переменные
+            if node_type == "declaration":
+                continue
+
+            # Проверяем зависимости
+            if "dependencies" in node:
+                for dep in node["dependencies"]:
+                    if (
+                        isinstance(dep, str)
+                        and dep.isalpha()
+                        and dep not in ["True", "False", "None"]
+                    ):
+                        used_vars.add(dep)
+
+            # Проверяем символы в узлах
+            if "symbols" in node:
+                for symbol in node["symbols"]:
+                    if isinstance(symbol, str) and symbol not in [
+                        "True",
+                        "False",
+                        "None",
+                    ]:
+                        used_vars.add(symbol)
+
+            # Проверяем аргументы в вызовах функций
+            if "arguments" in node:
+                for arg in node["arguments"]:
+                    if (
+                        isinstance(arg, str)
+                        and arg.isalpha()
+                        and arg not in ["True", "False", "None"]
+                    ):
+                        used_vars.add(arg)
+
+            # Проверяем условия в if/while (через AST)
+            if node_type in ["if_statement", "while_loop"]:
+                condition_ast = node.get("condition_ast")
+                if condition_ast:
+                    self._collect_vars_from_ast(condition_ast, used_vars)
+
+            # Проверяем возвращаемые значения
+            if node_type == "return":
+                # Проверяем expression_ast если есть
+                if "expression_ast" in node:
+                    expression_ast = node["expression_ast"]
+                    self._collect_vars_from_ast(expression_ast, used_vars)
+                # Или проверяем зависимости
+                elif "dependencies" in node:
+                    for dep in node["dependencies"]:
+                        if isinstance(dep, str) and dep.isalpha():
+                            used_vars.add(dep)
+
+        # Находим неиспользуемые переменные
+        for var in local_vars:
+            if var not in used_vars:
+                self.add_warning(
+                    f"переменная '{var}' объявлена, но нигде не используется",
+                    scope_idx,
+                    None,
+                )
+
+    def _collect_vars_from_ast(self, ast: Dict, used_vars: set):
+        """Собирает переменные из AST"""
+        if not isinstance(ast, dict):
+            return
+
+        node_type = ast.get("type")
+
+        if node_type == "variable":
+            var_name = ast.get("value")
+            if (
+                var_name
+                and var_name.isalpha()
+                and var_name not in ["True", "False", "None"]
+            ):
+                used_vars.add(var_name)
+
+        elif node_type == "binary_operation":
+            self._collect_vars_from_ast(ast.get("left"), used_vars)
+            self._collect_vars_from_ast(ast.get("right"), used_vars)
+
+        elif node_type == "unary_operation":
+            self._collect_vars_from_ast(ast.get("operand"), used_vars)
+
+        elif node_type == "function_call":
+            for arg in ast.get("arguments", []):
+                self._collect_vars_from_ast(arg, used_vars)
+
+    def validate_return_paths(self, scope: Dict, scope_idx: int):
+        """Проверяет, что все пути выполнения функции возвращают значение"""
+        if scope.get("type") != "function":
+            return
+
+        return_type = scope.get("return_type", "None")
+        if return_type == "None":
+            return  # Функция void - не проверяем
+
+        graph = scope.get("graph", [])
+        has_return = False
+
+        # Рекурсивно проверяем все узлы
+        def check_node_for_return(node: Dict) -> bool:
+            node_type = node.get("node")
+
+            if node_type == "return":
+                return True
+
+            elif node_type == "if_statement":
+                # Проверяем тело if
+                if_body_has_return = False
+                for body_node in node.get("body", []):
+                    if check_node_for_return(body_node):
+                        if_body_has_return = True
+                        break
+
+                # Проверяем elif блоки
+                elif_has_return = False
+                for elif_block in node.get("elif_blocks", []):
+                    for body_node in elif_block.get("body", []):
+                        if check_node_for_return(body_node):
+                            elif_has_return = True
+                            break
+                    if elif_has_return:
+                        break
+
+                # Проверяем else блок
+                else_has_return = False
+                else_block = node.get("else_block")
+                if else_block:
+                    for body_node in else_block.get("body", []):
+                        if check_node_for_return(body_node):
+                            else_has_return = True
+                            break
+
+                # Если есть else, проверяем, что все пути возвращают значение
+                if else_block:
+                    return if_body_has_return and elif_has_return and else_has_return
+                else:
+                    # Если нет else, функция может не возвращать значение
+                    return False
+
+            elif node_type in ["while_loop", "for_loop"]:
+                # Циклы не гарантируют возврат
+                return False
+
+            return False
+
+        # Проверяем все узлы в графе
+        for node in graph:
+            if check_node_for_return(node):
+                has_return = True
+                break
+
+        if not has_return:
+            self.add_warning(
+                f"функция объявлена как возвращающая '{return_type}', "
+                f"но не все пути выполнения возвращают значение",
+                scope_idx,
+                None,
+            )
+
+    def check_division_by_zero(
+        self, node: Dict, node_idx: int, scope_idx: int, level: int
+    ):
+        """Проверяет деление на ноль"""
+        if node.get("node") in ["assignment", "declaration"]:
+            content = node.get("content", "")
+
+            # Ищем операции деления
+            if "/" in content or "//" in content or "/=" in content:
+                # Упрощенная проверка
+                if "/ 0" in content or "// 0" in content:
+                    self.add_warning("возможное деление на ноль", scope_idx, node_idx)
+
+                # Более сложная проверка для переменных
+                pattern = (
+                    r"[/](?:\s*0\b|\s*[a-zA-Z_][a-zA-Z0-9_]*(?:\s*[*+-/]\s*\w+)*\s*)"
+                )
+                if re.search(pattern, content):
+                    # Проверяем, может ли переменная быть нулем
+                    self.add_warning(
+                        "возможное деление на переменную, которая может быть нулем",
+                        scope_idx,
+                        node_idx,
+                    )
+
+    def check_loop_conditions(self, scope: Dict, scope_idx: int):
+        """Проверяет условия циклов на потенциальные проблемы"""
+        graph = scope.get("graph", [])
+
+        for node_idx, node in enumerate(graph):
+            if node.get("node") == "while_loop":
+                condition = node.get("condition", {})
+
+                # Проверяем вечные циклы (while True)
+                if condition.get("value") == "True":
+                    self.add_warning("бесконечный цикл while True", scope_idx, node_idx)
+
+                # Проверяем невозможные условия (while False)
+                if condition.get("value") == "False":
+                    self.add_warning(
+                        "цикл while с условием, которое всегда ложно",
+                        scope_idx,
+                        node_idx,
+                    )
+
+            elif node.get("node") == "for_loop":
+                iterable = node.get("iterable", {})
+
+                # Проверяем пустые диапазоны range()
+                if iterable.get("type") == "RANGE_CALL":
+                    args = iterable.get("arguments", {})
+
+                    # range(x, x) - пустой диапазон
+                    if args.get("start") == args.get("stop"):
+                        self.add_warning(
+                            "цикл for с пустым диапазоном range()", scope_idx, node_idx
+                        )
+
+                    # range(x, y) где x > y без отрицательного шага
+                    if (
+                        args.get("start")
+                        and args.get("stop")
+                        and args.get("step") not in ["-1", "-2"]
+                    ):
+                        # Упрощенная проверка
+                        try:
+                            start = int(args.get("start"))
+                            stop = int(args.get("stop"))
+                            if start > stop:
+                                self.add_warning(
+                                    "цикл for с start > stop без отрицательного шага",
+                                    scope_idx,
+                                    node_idx,
+                                )
+                        except Exception:
+                            pass
+
+    def check_memory_leaks(self, scope: Dict, scope_idx: int):
+        """Проверяет потенциальные утечки памяти с указателями"""
+        graph = scope.get("graph", [])
+        level = scope.get("level", 0)
+
+        pointer_declarations = {}  # {pointer_name: node_idx}
+        pointer_deletes = set()  # pointer_names that were deleted
+
+        for node_idx, node in enumerate(graph):
+            node_type = node.get("node")
+
+            # Отслеживаем объявления указателей
+            if node_type == "declaration":
+                operations = node.get("operations", [])
+                for op in operations:
+                    if op.get("type") == "NEW_POINTER":
+                        symbols = node.get("symbols", [])
+                        if symbols:
+                            pointer_declarations[symbols[0]] = node_idx
+
+            # Отслеживаем удаление указателей
+            elif node_type in ["delete", "del_pointer"]:
+                symbols = node.get("symbols", [])
+                for symbol in symbols:
+                    pointer_deletes.add(symbol)
+
+        # Проверяем объявленные, но не удаленные указатели
+        for pointer_name, decl_idx in pointer_declarations.items():
+            if pointer_name not in pointer_deletes:
+                # Проверяем, что указатель не был удален в родительском scope
+                # или что это не возвращаемое значение
+                self.add_warning(
+                    f"указатель '{pointer_name}' объявлен, но не удален (возможная утечка памяти)",
+                    scope_idx,
+                    decl_idx,
+                )
+
+    def get_scope_by_level(self, level: int) -> Optional[Dict]:
+        """Находит scope по уровню"""
+        for scope in self.all_scopes:
+            if scope.get("level") == level:
+                return scope
+        return None
+
+    def guess_type_from_value(self, value) -> str:
+        """Пытается определить тип по значению"""
+        # Если value - строка
+        if isinstance(value, str):
+            value = value.strip()
+
+            # Проверяем арифметические выражения
+            if any(op in value for op in ["+", "-", "*", "/"]):
+                # Простая эвристика: если есть цифры - предположительно int
+                if any(c.isdigit() for c in value):
+                    return "int"
+                return "unknown"
+
+            # Остальные проверки как раньше
+            if (value.startswith('"') and value.endswith('"')) or (
+                value.startswith("'") and value.endswith("'")
+            ):
+                return "str"
+
+            if value.isdigit() or (value.startswith("-") and value[1:].isdigit()):
+                return "int"
+
+            if re.match(r"^-?\d+\.\d+$", value):
+                return "float"
+
+            if value in ["True", "False"]:
+                return "bool"
+
+            if value == "None":
+                return "None"
+
+            if value == "null":
+                return "null"
+
+            if value.startswith("&"):
+                return "pointer"
+
+            if value.startswith("*"):
+                return "dereference"
+
+            if value.startswith("["):
+                return "list"
+
+            if value.startswith("{"):
+                if ":" in value:
+                    return "dict"
+                else:
+                    return "set"
+
+            # Если это вызов функции (содержит скобки)
+            if "(" in value and ")" in value:
+                # Извлекаем имя функции
+                func_match = re.match(r"([a-zA-Z_][a-zA-Z0-9_]*)\(", value)
+                if func_match:
+                    func_name = func_match.group(1)
+                    # Проверяем тип возвращаемого значения функции
+                    if func_name in self.functions:
+                        func_info = self.functions[func_name]
+                        return func_info.get("return_type", "unknown")
+                    elif func_name in self.builtin_functions:
+                        return self.builtin_functions[func_name]["return_type"]
+
+            return "unknown"
+
+        # Если value - AST (словарь)
+        elif isinstance(value, dict):
+            return self.get_type_from_ast(value, None, None, None)
+
+        return "unknown"
+
+    def are_types_compatible(self, target_type: str, value_type: str) -> bool:
+        """Проверяет совместимость типов"""
+        # Если типы равны - совместимы
+        if target_type == value_type:
+            return True
+
+        # Null совместим с любым указателем
+        if value_type == "null" and target_type.startswith("*"):
+            return True
+
+        # None совместим с любым типом, если target_type - None
+        if value_type == "None" and target_type == "None":
+            return True
+
+        # Ошибка: если функция должна возвращать int, а возвращает str
+        if target_type == "int" and value_type == "str":
+            return False
+
+        if target_type == "str" and value_type == "int":
+            return False
+
+        # Упрощенные правила совместимости
+        compatibility_rules = {
+            "int": ["bool"],  # int может принимать bool (True=1, False=0)
+            "bool": ["int"],  # bool может принимать int (0=False, не 0=True)
+        }
+
+        if (
+            target_type in compatibility_rules
+            and value_type in compatibility_rules[target_type]
+        ):
+            return True
+
+        # Если value_type - конкретный тип, а target_type - указатель на тот же тип
+        if target_type.startswith("*") and f"*{value_type}" == target_type:
+            return True
+
+        return False
+
+    def find_symbol_in_scope(self, symbol_name: str, current_level: int) -> bool:
+        """Ищет символ в текущем или родительских scope'ах"""
+        # Проверяем текущий scope
+        if (
+            current_level in self.scope_symbols
+            and symbol_name in self.scope_symbols[current_level]
+        ):
+            return True
+
+        # Находим текущий scope в all_scopes
+        current_scope = None
+        for scope in self.all_scopes:
+            if scope.get("level") == current_level:
+                current_scope = scope
+                break
+
+        if current_scope:
+            # Проверяем родительский scope
+            parent_level = current_scope.get("parent_scope")
+            if parent_level is not None:
+                return self.find_symbol_in_scope(symbol_name, parent_level)
+
+        return False
+
+    def get_symbol_info(self, symbol_name: str, current_level: int) -> Optional[Dict]:
+        """Получает информацию о символе из текущего или родительских scope'ов"""
+        # Сначала проверяем функции
+        if symbol_name in self.functions:
+            return self.functions[symbol_name]
+
+        # Проверяем встроенные функции
+        if symbol_name in self.builtin_functions:
+            return {"name": symbol_name, "type": "function", "key": "builtin_function"}
+
+        # Сначала проверяем текущий scope
+        if (
+            current_level in self.scope_symbols
+            and symbol_name in self.scope_symbols[current_level]
+        ):
+            return self.scope_symbols[current_level][symbol_name]
+
+        # Если не нашли в текущем scope, ищем во всех scope'ах
+        for level, symbols in self.scope_symbols.items():
+            if symbol_name in symbols:
+                return symbols[symbol_name]
+
+        return None
+
+    def get_report(self) -> Dict:
+        """Возвращает отчет о проверке"""
+        # Форматируем ошибки и предупреждения для вывода
+        formatted_errors = []
+        formatted_warnings = []
+
+        for error in self.errors:
+            if isinstance(error, dict):
+                line_info = (
+                    f" (строка {error['line_number']})"
+                    if error.get("line_number")
+                    else ""
+                )
+                formatted_errors.append(f"{error['message']}{line_info}")
+            else:
+                formatted_errors.append(str(error))
+
+        for warning in self.warnings:
+            if isinstance(warning, dict):
+                line_info = (
+                    f" (строка {warning['line_number']})"
+                    if warning.get("line_number")
+                    else ""
+                )
+                formatted_warnings.append(f"{warning['message']}{line_info}")
+            else:
+                formatted_warnings.append(str(warning))
+
+        return {
+            "is_valid": len(self.errors) == 0,
+            "error_count": len(self.errors),
+            "warning_count": len(self.warnings),
+            "errors": self.errors,  # Сохраняем полную информацию
+            "warnings": self.warnings,  # Сохраняем полную информацию
+            "formatted_errors": formatted_errors,  # Для обратной совместимости
+            "formatted_warnings": formatted_warnings,  # Для обратной совместимости
+        }

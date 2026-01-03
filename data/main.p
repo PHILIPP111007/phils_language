@@ -122,7 +122,7 @@ def main() -> int:
 
     return 0
 
-"""
+
 
 
 
@@ -167,15 +167,10 @@ def main() -> int:
     var x: int = 0
     x = 1 + 1 / 10
 
-    var xx: dict = {}
-    var xxx: dict = {"a": 1}
-
 
     var p: *int = &x
     *p = 10
     print(p)
-
-    var ddd: list = [1, 2, 3, 4]
 
     var aaa: float = 1.001
 
@@ -201,8 +196,19 @@ def main() -> int:
         print(result)
     
 
-    var aaaaa: list = [1, 2, 3]
-    var bbbbbb: int = len(aaaaa)
+
+
     
     return 0
+
+"""
+
+
+cimport <stdio.h>
+cimport <stdlib.h>
+cimport <string.h>
+cimport <stdbool.h>
+import "./module.p"
+
+
 
