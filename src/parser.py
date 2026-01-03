@@ -4,7 +4,31 @@ import json
 
 
 KEYS = ["const", "var", "def", "del", "del_pointer", "return", "while", "for", "if"]
-DATA_TYPES = ["bool", "int", "float", "str", "None", "list", "dict", "set"]
+DATA_TYPES = [
+    "bool",
+    "int",
+    "float",
+    "str",
+    "None",
+    "list",
+    "dict",
+    "set",
+    "tuple",
+    "list[int]",
+    "list[float]",
+    "list[str]",
+    "list[bool]",
+    "dict[str]",
+    "dict[int]",
+    "dict[float]",
+    "set[int]",
+    "set[str]",
+    "set[float]",
+    "*int",
+    "*float",
+    "*str",
+    "*bool",  # указатели
+]
 
 
 class CImportProcessor:
@@ -956,9 +980,18 @@ class Parser:
             return True
         return False
 
+    def extract_list_element_type(self, list_type: str) -> str:
+        """Извлекает тип элементов из объявления типа списка"""
+        if "[" in list_type and "]" in list_type:
+            match = re.search(r"\[([^\]]+)\]", list_type)
+            if match:
+                return match.group(1).strip()
+        return "any"  # Тип по умолчанию
+
     def parse_var(self, line: str, scope: dict):
         """Парсит объявление переменной"""
-        pattern = r"var\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(\*)?\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)"
+        # Обновленный паттерн для поддержки обобщенных типов
+        pattern = r"var\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(\*)?\s*([a-zA-Z\[\]]+(?:\[[a-zA-Z\[\]]+\])*)\s*=\s*(.+)"
         match = re.match(pattern, line)
 
         if not match:
@@ -979,7 +1012,6 @@ class Parser:
             was_deleted = existing_symbol.get("is_deleted", False)
 
             if not was_deleted:
-                # Ошибка: повторное объявление без удаления
                 print(f"Error: переменная '{name}' уже объявлена")
                 return False
 
@@ -988,7 +1020,7 @@ class Parser:
                 name,
                 {
                     "type": var_type,
-                    "value": value_ast,  # Сохраняем AST
+                    "value": value_ast,
                     "is_deleted": False,
                 },
             )
@@ -1001,7 +1033,7 @@ class Parser:
                 name=name,
                 key="var",
                 var_type=var_type,
-                value=value_ast,  # Сохраняем AST
+                value=value_ast,
             )
 
         # Добавляем в local_variables если нужно
@@ -1026,8 +1058,7 @@ class Parser:
         ]
 
         # Добавляем операцию инициализации в зависимости от типа
-        if base_type in ["list", "dict", "set"]:
-            # Для структур данных создаем специальные операции
+        if "list[" in base_type or base_type == "list":
             if value_ast.get("type") == "list_literal":
                 operations.append(
                     {
@@ -1035,9 +1066,16 @@ class Parser:
                         "target": name,
                         "items": value_ast.get("items", []),
                         "size": len(value_ast.get("items", [])),
+                        "element_type": self.extract_list_element_type(base_type),
                     }
                 )
-            elif value_ast.get("type") == "dict_literal":
+            else:
+                operations.append(
+                    {"type": "INITIALIZE", "target": name, "value": value_ast}
+                )
+        elif base_type in ["dict", "set"]:
+            # Обработка словарей и множеств
+            if value_ast.get("type") == "dict_literal":
                 operations.append(
                     {
                         "type": "CREATE_DICT",
@@ -1095,7 +1133,9 @@ class Parser:
                 "operations": operations,
                 "dependencies": dependencies,
                 "expression_ast": value_ast,
-                "data_structure": base_type
+                "data_structure": "list"
+                if "list[" in base_type or base_type == "list"
+                else base_type
                 if base_type in ["list", "dict", "set"]
                 else None,
             }

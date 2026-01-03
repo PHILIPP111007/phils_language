@@ -72,11 +72,11 @@
       },
       {
         "node": "function_declaration",
-        "content": "def main() -> float:",
+        "content": "def main() -> int:",
         "function_name": "main",
         "symbol_id": "main",
         "parameters": [],
-        "return_type": "float",
+        "return_type": "int",
         "body_level": 1,
         "is_stub": false
       }
@@ -90,7 +90,7 @@
         "id": "main",
         "is_deleted": false,
         "parameters": [],
-        "return_type": "float"
+        "return_type": "int"
       }
     }
   },
@@ -100,148 +100,305 @@
     "parent_scope": 0,
     "function_name": "main",
     "parameters": [],
-    "return_type": "float",
+    "return_type": "int",
     "local_variables": [
       "a",
-      "b"
+      "result"
     ],
     "graph": [
       {
         "node": "declaration",
-        "content": "var a: float = @sqrt(16)",
+        "content": "var a: int = 100",
         "symbols": [
           "a"
         ],
         "var_name": "a",
-        "var_type": "float",
+        "var_type": "int",
         "is_pointer": false,
         "operations": [
           {
             "type": "NEW_VAR",
             "target": "a",
-            "var_type": "float",
+            "var_type": "int",
             "was_deleted": false
           },
           {
             "type": "ASSIGN",
             "target": "a",
-            "value": {
-              "type": "unknown",
-              "value": "@sqrt(16)",
-              "original": "@sqrt(16)"
-            }
-          }
-        ],
-        "dependencies": [],
-        "expression_ast": {
-          "type": "unknown",
-          "value": "@sqrt(16)",
-          "original": "@sqrt(16)"
-        },
-        "data_structure": null
-      },
-      {
-        "node": "declaration",
-        "content": "var b: float = 0.0",
-        "symbols": [
-          "b"
-        ],
-        "var_name": "b",
-        "var_type": "float",
-        "is_pointer": false,
-        "operations": [
-          {
-            "type": "NEW_VAR",
-            "target": "b",
-            "var_type": "float",
-            "was_deleted": false
-          },
-          {
-            "type": "ASSIGN",
-            "target": "b",
             "value": {
               "type": "literal",
-              "value": 0.0,
-              "data_type": "float"
+              "value": 100,
+              "data_type": "int"
             }
           }
         ],
         "dependencies": [],
         "expression_ast": {
           "type": "literal",
-          "value": 0.0,
-          "data_type": "float"
+          "value": 100,
+          "data_type": "int"
         },
         "data_structure": null
       },
       {
-        "node": "assignment",
-        "content": "b = @sqrt(16)",
+        "node": "declaration",
+        "content": "var result: str = \"\"",
         "symbols": [
-          "b"
+          "result"
         ],
-        "operations": [],
+        "var_name": "result",
+        "var_type": "str",
+        "is_pointer": false,
+        "operations": [
+          {
+            "type": "NEW_VAR",
+            "target": "result",
+            "var_type": "str",
+            "was_deleted": false
+          },
+          {
+            "type": "ASSIGN",
+            "target": "result",
+            "value": {
+              "type": "literal",
+              "value": "",
+              "data_type": "str"
+            }
+          }
+        ],
         "dependencies": [],
         "expression_ast": {
-          "type": "unknown",
-          "value": "@sqrt(16)",
-          "original": "@sqrt(16)"
+          "type": "literal",
+          "value": "",
+          "data_type": "str"
+        },
+        "data_structure": null
+      },
+      {
+        "node": "if_statement",
+        "content": "if a > 101:",
+        "condition": {
+          "type": "binary_operation",
+          "operator": "GREATER_THAN",
+          "operator_symbol": ">",
+          "left": {
+            "type": "variable",
+            "value": "a"
+          },
+          "right": {
+            "type": "literal",
+            "value": 101,
+            "data_type": "int"
+          }
+        },
+        "condition_ast": {
+          "type": "binary_operation",
+          "operator": "GREATER_THAN",
+          "operator_symbol": ">",
+          "left": {
+            "type": "variable",
+            "value": "a"
+          },
+          "right": {
+            "type": "literal",
+            "value": 101,
+            "data_type": "int"
+          }
+        },
+        "body_level": 2,
+        "body": [
+          {
+            "node": "assignment",
+            "content": "result = \"10\"",
+            "symbols": [
+              "result"
+            ],
+            "operations": [
+              {
+                "type": "ASSIGN",
+                "target": "result",
+                "value": {
+                  "type": "literal",
+                  "value": "10",
+                  "data_type": "str"
+                }
+              }
+            ],
+            "dependencies": [],
+            "expression_ast": {
+              "type": "literal",
+              "value": "10",
+              "data_type": "str"
+            }
+          }
+        ],
+        "elif_blocks": [
+          {
+            "node": "elif_statement",
+            "content": "elif a == 10:",
+            "condition": {
+              "type": "binary_operation",
+              "operator": "EQUAL",
+              "operator_symbol": "==",
+              "left": {
+                "type": "variable",
+                "value": "a"
+              },
+              "right": {
+                "type": "literal",
+                "value": 10,
+                "data_type": "int"
+              }
+            },
+            "condition_ast": {
+              "type": "binary_operation",
+              "operator": "EQUAL",
+              "operator_symbol": "==",
+              "left": {
+                "type": "variable",
+                "value": "a"
+              },
+              "right": {
+                "type": "literal",
+                "value": 10,
+                "data_type": "int"
+              }
+            },
+            "body_level": 2,
+            "body": [
+              {
+                "node": "assignment",
+                "content": "result = \"10\"",
+                "symbols": [
+                  "result"
+                ],
+                "operations": [
+                  {
+                    "type": "ASSIGN",
+                    "target": "result",
+                    "value": {
+                      "type": "literal",
+                      "value": "10",
+                      "data_type": "str"
+                    }
+                  }
+                ],
+                "dependencies": [],
+                "expression_ast": {
+                  "type": "literal",
+                  "value": "10",
+                  "data_type": "str"
+                }
+              }
+            ]
+          }
+        ],
+        "else_block": {
+          "node": "else_statement",
+          "content": "else:",
+          "body_level": 2,
+          "body": [
+            {
+              "node": "assignment",
+              "content": "result = \"undefined\"",
+              "symbols": [
+                "result"
+              ],
+              "operations": [
+                {
+                  "type": "ASSIGN",
+                  "target": "result",
+                  "value": {
+                    "type": "literal",
+                    "value": "undefined",
+                    "data_type": "str"
+                  }
+                }
+              ],
+              "dependencies": [],
+              "expression_ast": {
+                "type": "literal",
+                "value": "undefined",
+                "data_type": "str"
+              }
+            }
+          ]
         }
       },
       {
-        "node": "return",
-        "content": "return a",
-        "symbols": [
-          "a"
+        "node": "builtin_function_call",
+        "content": "print(result)",
+        "function": "print",
+        "arguments": [
+          "result"
         ],
+        "return_type": "None",
+        "operations": [
+          {
+            "type": "BUILTIN_FUNCTION_CALL",
+            "function": "print",
+            "arguments": [
+              "result"
+            ],
+            "return_type": "None"
+          }
+        ],
+        "dependencies": [
+          "result"
+        ]
+      },
+      {
+        "node": "return",
+        "content": "return 0",
+        "symbols": [],
         "operations": [
           {
             "type": "RETURN",
             "value": {
-              "type": "variable",
-              "value": "a"
+              "type": "literal",
+              "value": 0,
+              "data_type": "int"
             },
-            "expression": "a"
+            "expression": "0"
           }
         ],
-        "dependencies": [
-          "a"
-        ]
+        "dependencies": []
       }
     ],
     "symbol_table": {
       "a": {
         "name": "a",
         "key": "var",
-        "type": "float",
+        "type": "int",
         "value": {
-          "type": "unknown",
-          "value": "@sqrt(16)",
-          "original": "@sqrt(16)"
+          "type": "literal",
+          "value": 100,
+          "data_type": "int"
         },
         "id": "a",
         "is_deleted": false
       },
-      "b": {
-        "name": "b",
+      "result": {
+        "name": "result",
         "key": "var",
-        "type": "float",
+        "type": "str",
         "value": {
-          "type": "unknown",
-          "value": "@sqrt(16)",
-          "original": "@sqrt(16)"
+          "type": "literal",
+          "value": "undefined",
+          "data_type": "str"
         },
-        "id": "b",
+        "id": "result",
         "is_deleted": false
       }
     },
     "return_info": {
       "has_return": true,
       "return_value": {
-        "type": "variable",
-        "value": "a"
+        "type": "literal",
+        "value": 0,
+        "data_type": "int"
       },
-      "return_type": "float"
+      "return_type": "int"
     },
     "is_stub": false
   }

@@ -4,11 +4,22 @@
 #include <stdbool.h>
 #include <math.h>
 
-double main(void);
+int main(void);
 
-double main(void) {
-    double a = sqrt(16);
-    double b = 0.0;
-    b = sqrt(16);
-    return a;
+int main(void) {
+    int a;
+    a = 100;
+    char* result;
+    result = "";
+    if ((a > 101)) {
+        result = "10";
+    }
+    else if ((a == 10)) {
+        result = "10";
+    }
+    else {
+        result = "undefined";
+    }
+    printf("%d\n", result);
+    return 0;
 }

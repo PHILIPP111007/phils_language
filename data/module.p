@@ -203,3 +203,15 @@ def main() -> int:
 
 """
 
+
+
+def main() -> float:
+    var a: float = @sqrt(16)   # C code
+    var b: float = 0.0
+
+
+    b = @sqrt(16)
+
+
+    return a
+

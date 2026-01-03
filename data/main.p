@@ -6,12 +6,19 @@ cimport <math.h>
 
 
 
-def main() -> float:
-    var a: float = @sqrt(16)
-    var b: float = 0.0
+def main() -> int:
+    
+    var a: int = 100
+    var result: str = ""
+
+    if a > 101:
+        result = "10"
+    elif a == 10:
+        result = "10"
+    else:
+        result = "undefined"
+    
+    print(result)
 
 
-    b = @sqrt(16)
-
-
-    return a
+    return 0
