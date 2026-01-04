@@ -283,6 +283,10 @@ class CCodeGenerator:
             self.generate_if_statement(node)
         elif node_type == "for_loop":
             self.generate_for_loop(node)
+        elif node_type == "break":  # НОВОЕ: обработка break
+            self.generate_break(node)
+        elif node_type == "continue":  # НОВОЕ: обработка continue
+            self.generate_continue(node)
         elif node_type == "c_import":
             # Импорты уже обработаны на уровне модуля
             pass
@@ -353,14 +357,11 @@ class CCodeGenerator:
         return_type = node.get("return_type", "")
 
         if not target:
-            # Если нет целевой переменной, генерируем просто вызов
             self.generate_builtin_function_call(node)
             return
 
-        # Получаем информацию о целевой переменной
         var_info = self.get_variable_info(target)
         if not var_info:
-            # Если переменная не объявлена, объявляем ее
             node_type = node.get("var_type", "int")
             self.declare_variable(target, node_type)
             var_info = self.get_variable_info(target)
@@ -386,9 +387,36 @@ class CCodeGenerator:
 
         args_str = ", ".join(arg_strings)
 
-        # Генерируем присваивание
+        # Специальная обработка для len()
+        if func_name == "len" and args:
+            # Определяем тип аргумента
+            arg_expr = args[0]
+            if isinstance(arg_expr, dict):
+                # Если это переменная, получаем ее тип
+                if arg_expr.get("type") == "variable":
+                    var_name = arg_expr.get("value", "")
+                    var_info = self.get_variable_info(var_name)
+                    if var_info:
+                        py_type = var_info.get("py_type", "")
+                        if py_type.startswith("tuple["):
+                            struct_name = self.generate_tuple_struct_name(py_type)
+                            c_func_name = f"builtin_len_{struct_name}"
+                        elif py_type.startswith("list["):
+                            struct_name = self.generate_list_struct_name(py_type)
+                            c_func_name = f"builtin_len_{struct_name}"
+
         c_type = var_info["c_type"] if var_info else self.map_type_to_c(return_type)
         self.add_line(f"{c_type} {target} = {c_func_name}({args_str});")
+
+    def generate_break(self, node: Dict):
+        """Генерирует оператор break"""
+        self.add_line("break;")
+        self.add_line("// break statement")
+
+    def generate_continue(self, node: Dict):
+        """Генерирует оператор continue"""
+        self.add_line("continue;")
+        self.add_line("// continue statement")
 
     def generate_declaration(self, node: Dict):
         """Генерирует объявление переменной с поддержкой tuple и list"""
@@ -980,15 +1008,12 @@ class CCodeGenerator:
             c_element_type = self.map_type_to_c(element_type)
 
             # Универсальная структура для tuple[T]
-            struct_code = []
-            struct_code.append(f"typedef struct {{")
-            struct_code.append(f"    {c_element_type}* data;")
-            struct_code.append(f"    int size;")
-            struct_code.append(f"}} {struct_name};")
-            struct_code.append("")
+            struct_code = f"typedef struct {{\n"
+            struct_code += f"    {c_element_type}* data;\n"
+            struct_code += f"    int size;\n"
+            struct_code += f"}} {struct_name};\n"
 
-            # Добавляем структуру
-            self.generated_helpers.append("\n".join(struct_code))
+            self.generated_helpers.append(struct_code)
 
             # Функция создания
             create_func = f"{struct_name} create_{struct_name}({c_element_type} arr[], int size) {{\n"
@@ -1007,7 +1032,10 @@ class CCodeGenerator:
             create_func += f"    return t;\n"
             create_func += f"}}\n"
 
-            self.generated_helpers.append(create_func)
+            # Функция len() для этого типа tuple
+            len_func = f"int builtin_len_{struct_name}({struct_name} t) {{\n"
+            len_func += f"    return t.size;\n"
+            len_func += f"}}\n"
 
             # Функция очистки
             free_func = f"void free_{struct_name}({struct_name}* t) {{\n"
@@ -1017,6 +1045,9 @@ class CCodeGenerator:
             free_func += f"    }}\n"
             free_func += f"}}\n"
 
+            # Добавляем все
+            self.generated_helpers.append(create_func)
+            self.generated_helpers.append(len_func)
             self.generated_helpers.append(free_func)
 
             # Forward declarations
@@ -1027,45 +1058,10 @@ class CCodeGenerator:
                 f"{struct_name} create_{struct_name}({c_element_type} arr[], int size);"
             )
             self.helper_declarations.append(
+                f"int builtin_len_{struct_name}({struct_name} t);"
+            )
+            self.helper_declarations.append(
                 f"void free_{struct_name}({struct_name}* t);"
-            )
-
-        else:
-            # tuple[T1, T2, ...] - фиксированный
-            element_types = [t.strip() for t in inner.split(",")]
-            c_element_types = [self.map_type_to_c(t) for t in element_types]
-
-            # Фиксированная структура
-            struct_code = []
-            struct_code.append(f"typedef struct {{")
-            struct_code.append(f"    int size;")
-            for i, c_type in enumerate(c_element_types):
-                struct_code.append(f"    {c_type} item_{i};")
-            struct_code.append(f"}} {struct_name};")
-            struct_code.append("")
-
-            self.generated_helpers.append("\n".join(struct_code))
-
-            # Функция создания
-            create_func = f"{struct_name} create_{struct_name}("
-            params = [f"{c_type} arg_{i}" for i, c_type in enumerate(c_element_types)]
-            create_func += ", ".join(params)
-            create_func += f") {{\n"
-            create_func += f"    {struct_name} t;\n"
-            create_func += f"    t.size = {len(element_types)};\n"
-            for i in range(len(element_types)):
-                create_func += f"    t.item_{i} = arg_{i};\n"
-            create_func += f"    return t;\n"
-            create_func += f"}}\n"
-
-            self.generated_helpers.append(create_func)
-
-            # Forward declarations
-            self.helper_declarations.append(
-                f"typedef struct {struct_name} {struct_name};"
-            )
-            self.helper_declarations.append(
-                f"{struct_name} create_{struct_name}({', '.join(params)});"
             )
 
     def generate_list_struct(self, py_type: str):
@@ -1146,6 +1142,12 @@ class CCodeGenerator:
         append_func += f"    list->size++;\n"
         append_func += f"}}\n"
 
+        # ВАЖНО: Добавляем функцию len() для списков
+        len_func = f"int builtin_len_{struct_name}({struct_name}* list) {{\n"
+        len_func += f"    if (!list) return 0;\n"
+        len_func += f"    return list->size;\n"
+        len_func += f"}}\n"
+
         # Генерируем функцию очистки
         free_func = f"void free_{struct_name}({struct_name}* list) {{\n"
         free_func += f"    if (list) {{\n"
@@ -1172,6 +1174,7 @@ class CCodeGenerator:
         # Добавляем в helpers
         self.generated_helpers.append(create_func)
         self.generated_helpers.append(append_func)
+        self.generated_helpers.append(len_func)  # ← ЭТО ВАЖНО!
         self.generated_helpers.append(free_func)
 
         # Добавляем forward declarations
@@ -1181,6 +1184,9 @@ class CCodeGenerator:
         )
         self.helper_declarations.append(
             f"void append_{struct_name}({struct_name}* list, {c_element_type} value);"
+        )
+        self.helper_declarations.append(
+            f"int builtin_len_{struct_name}({struct_name}* list);"  # ← ЭТО ВАЖНО!
         )
         self.helper_declarations.append(
             f"void free_{struct_name}({struct_name}* list);"
@@ -1417,7 +1423,34 @@ class CCodeGenerator:
 
             builtin_funcs = ["len", "str", "int", "bool", "range"]
             if func_name in builtin_funcs:
-                c_func_name = f"builtin_{func_name}"
+                args = ast.get("arguments", [])
+
+                # Для len() определяем тип аргумента
+                if func_name == "len" and args:
+                    arg_ast = args[0]
+                    if arg_ast.get("type") == "variable":
+                        var_name = arg_ast.get("value", "")
+                        var_info = self.get_variable_info(var_name)
+
+                        if var_info:
+                            py_type = var_info.get("py_type", "")
+
+                            if py_type.startswith("tuple["):
+                                struct_name = self.generate_tuple_struct_name(py_type)
+                                # Используем специализированную функцию
+                                c_func_name = f"builtin_len_{struct_name}"
+                            elif py_type.startswith("list["):
+                                struct_name = self.generate_list_struct_name(py_type)
+                                # Используем специализированную функцию для списков
+                                c_func_name = f"builtin_len_{struct_name}"
+                            else:
+                                c_func_name = "builtin_len"
+                        else:
+                            c_func_name = "builtin_len"
+                    else:
+                        c_func_name = "builtin_len"
+                else:
+                    c_func_name = f"builtin_{func_name}"
             else:
                 c_func_name = func_name
 

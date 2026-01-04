@@ -3,7 +3,20 @@ import os
 import json
 
 
-KEYS = ["const", "var", "def", "del", "del_pointer", "return", "while", "for", "if"]
+KEYS = [
+    "const",
+    "var",
+    "def",
+    "del",
+    "del_pointer",
+    "return",
+    "while",
+    "for",
+    "if",
+    "break",
+    "continue",
+]  # Добавили break и continue
+
 DATA_TYPES = [
     "bool",
     "int",
@@ -519,6 +532,12 @@ class Parser:
                     return self.parse_if_statement(
                         line, scope, all_lines, current_index, indent
                     )
+                elif key == "break":  # Уже обработали выше, но оставляем для ясности
+                    parsed = self.parse_break(line, scope)
+                    break
+                elif key == "continue":  # Уже обработали выше, но оставляем для ясности
+                    parsed = self.parse_continue(line, scope)
+                    break
 
         if not parsed:
             # Проверяем, является ли строка вызовом встроенной функции
@@ -813,6 +832,28 @@ class Parser:
                 parsed = self.parse_assignment(line, scope)
             elif "+=" in line or "-=" in line or "*=" in line or "/=" in line:
                 parsed = self.parse_augmented_assignment(line, scope)
+
+    def parse_break(self, line: str, scope: dict):
+        """Парсит оператор break"""
+        scope["graph"].append(
+            {
+                "node": "break",
+                "content": line,
+                "operations": [{"type": "BREAK"}],
+            }
+        )
+        return True
+
+    def parse_continue(self, line: str, scope: dict):
+        """Парсит оператор continue"""
+        scope["graph"].append(
+            {
+                "node": "continue",
+                "content": line,
+                "operations": [{"type": "CONTINUE"}],
+            }
+        )
+        return True
 
     def parse_function_declaration(
         self, line: str, parent_scope: dict, all_lines: list, current_index: int
