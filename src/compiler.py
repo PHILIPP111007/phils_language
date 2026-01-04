@@ -1693,47 +1693,62 @@ class CCodeGenerator:
         clean_inner = self.clean_type_name_for_c(inner)
         return f"tuple_{clean_inner}"
 
-    def generate_list_struct_name(self, py_type: str) -> str:
-        """Генерирует корректное имя структуры для списка любой вложенности"""
-        if not py_type.startswith("list["):
-            return f"list_{self.clean_type_name_for_c(py_type)}"
+    def generate_list_struct(self, py_type: str):
+        """Генерирует структуру C для списка любой вложенности с рекурсивной генерацией всех уровней"""
 
-        # Упрощенный алгоритм без рекурсии
-        depth = 0
-        current = py_type
-        inner_type = "int"  # по умолчанию
+        # Получаем полную информацию о типе
+        type_info = self.extract_nested_type_info(py_type)
 
-        # Считаем уровни вложенности
-        while current.startswith("list["):
-            depth += 1
-            # Находим закрывающую скобку
-            balance = 0
-            end_pos = -1
+        if not type_info:
+            print(f"ERROR: Не удалось получить информацию о типе {py_type}")
+            return
 
-            for i in range(5, len(current)):  # Пропускаем "list["
-                char = current[i]
-                if char == "[":
-                    balance += 1
-                elif char == "]":
-                    if balance == 0:
-                        end_pos = i
-                        break
-                    balance -= 1
+        struct_name = type_info.get("struct_name")
+        if not struct_name:
+            return
 
-            if end_pos == -1:
-                break
+        print(f"DEBUG generate_list_struct: {py_type}")
+        print(f"  struct_name: {struct_name}")
+        print(f"  is_leaf: {type_info.get('is_leaf')}")
 
-            inner = current[5:end_pos]  # Пропускаем "list[" и до "]"
+        # Рекурсивно генерируем структуры для всех внутренних типов
+        inner_info = type_info.get("inner_info")
+        if inner_info:
+            inner_py_type = inner_info.get("py_type", "")
+            inner_struct_name = inner_info.get("struct_name")
 
-            if not inner.startswith("list["):
-                inner_type = inner
-                break
+            # Если внутренний тип - тоже список, генерируем его структуру
+            if inner_py_type.startswith("list["):
+                self.generate_list_struct(inner_py_type)
+            elif inner_struct_name and inner_struct_name.startswith("list_"):
+                # Это листовой тип list_int, list_float и т.д.
+                # Генерируем структуру для него
+                if inner_struct_name not in self.generated_structs:
+                    self._generate_leaf_list_struct(
+                        inner_info.get("py_type", "int"), inner_struct_name
+                    )
 
-            current = inner
+        # Генерируем структуру только если еще не генерировали
+        if struct_name not in self.generated_structs:
+            self.generated_structs.add(struct_name)
 
-        # Генерируем имя
-        prefix = "list_" * depth
-        return f"{prefix}{self.clean_type_name_for_c(inner_type)}"
+            # Генерируем структуру
+            element_type = type_info.get("element_type", "void*")
+
+            struct_code = f"typedef struct {{\n"
+            struct_code += f"    {element_type}* data;\n"
+            struct_code += f"    int size;\n"
+            struct_code += f"    int capacity;\n"
+            struct_code += f"}} {struct_name};\n\n"
+
+            self.generated_helpers.append(struct_code)
+
+            # Генерируем функции для этой структуры
+            self._generate_list_functions(
+                struct_name,
+                element_type,
+                inner_info.get("py_type") if inner_info else None,
+            )
 
     def generate_tuple_struct(self, py_type: str):
         """Генерирует структуру C для tuple типа"""
@@ -1833,9 +1848,9 @@ class CCodeGenerator:
             self.generated_helpers.extend([create_func, free_func])
 
     def generate_list_struct(self, py_type: str):
-        """Генерирует структуру C для списка любой вложенности"""
+        """Генерирует структуру C для списка любой вложенности с рекурсивной генерацией всех уровней"""
 
-        # Получаем информацию о типе
+        # Получаем полную информацию о типе
         type_info = self.extract_nested_type_info(py_type)
 
         if not type_info:
@@ -1846,27 +1861,37 @@ class CCodeGenerator:
         if not struct_name:
             return
 
-        element_type = type_info.get("element_type", "void*")
-
         print(f"DEBUG generate_list_struct: {py_type}")
         print(f"  struct_name: {struct_name}")
-        print(f"  element_type: {element_type}")
+        print(f"  is_leaf: {type_info.get('is_leaf')}")
 
-        # Рекурсивно генерируем структуры для внутренних типов
+        # Рекурсивно генерируем структуры для всех внутренних типов
         inner_info = type_info.get("inner_info")
         if inner_info and not inner_info.get("is_leaf", True):
+            # Если внутренний тип - тоже список, генерируем его структуру
             inner_py_type = inner_info.get("py_type", "")
             if inner_py_type:
                 self.generate_list_struct(inner_py_type)
+        elif inner_info and inner_info.get("is_leaf", True):
+            # Если внутренний тип - листовой, генерируем структуру для него
+            leaf_py_type = inner_info.get("py_type", "int")
+            if leaf_py_type.startswith("list["):
+                # Это не должно случиться если is_leaf=True
+                pass
+            else:
+                # Для листового типа тоже генерируем структуру (list_int, list_float и т.д.)
+                leaf_struct_name = f"list_{self.clean_type_name_for_c(leaf_py_type)}"
+                if leaf_struct_name != struct_name:
+                    # Генерируем структуру для листового списка
+                    self._generate_leaf_list_struct(leaf_py_type, leaf_struct_name)
 
         # Генерируем структуру только если еще не генерировали
-        struct_exists = False
-        for helper in self.generated_helpers:
-            if f"typedef struct {{" in helper and f"}} {struct_name};" in helper:
-                struct_exists = True
-                break
+        if struct_name not in self.generated_structs:
+            self.generated_structs.add(struct_name)
 
-        if not struct_exists:
+            # Генерируем структуру
+            element_type = type_info.get("element_type", "void*")
+
             struct_code = f"typedef struct {{\n"
             struct_code += f"    {element_type}* data;\n"
             struct_code += f"    int size;\n"
@@ -1875,12 +1900,35 @@ class CCodeGenerator:
 
             self.generated_helpers.append(struct_code)
 
-            # Генерируем функции
+            # Генерируем функции для этой структуры
             self._generate_list_functions(
                 struct_name,
                 element_type,
                 inner_info.get("py_type") if inner_info else None,
             )
+
+    def _generate_leaf_list_struct(self, leaf_type: str, struct_name: str):
+        """Генерирует структуру для листового списка (например, list_int)"""
+        if struct_name in self.generated_structs:
+            return
+
+        self.generated_structs.add(struct_name)
+
+        # Базовый тип элементов
+        element_type = self.map_type_to_c(
+            leaf_type
+        )  # Например, "int" для leaf_type="int"
+
+        struct_code = f"typedef struct {{\n"
+        struct_code += f"    {element_type}* data;\n"
+        struct_code += f"    int size;\n"
+        struct_code += f"    int capacity;\n"
+        struct_code += f"}} {struct_name};\n\n"
+
+        self.generated_helpers.append(struct_code)
+
+        # Генерируем функции для листового списка
+        self._generate_list_functions(struct_name, element_type, leaf_type)
 
     def _generate_list_functions(
         self, struct_name: str, element_type: str, element_py_type: str = None
@@ -2328,17 +2376,8 @@ class CCodeGenerator:
                 if var_type:
                     if var_type.startswith("list["):
                         all_types.add(var_type)
-                    elif var_type.startswith("tuple["):
-                        all_types.add(var_type)
-
-            # Обрабатываем операции
-            operations = node.get("operations", [])
-            for op in operations:
-                if isinstance(op, dict):
-                    if op.get("type") in ["CREATE_TUPLE_UNIFORM", "CREATE_TUPLE_FIXED"]:
-                        element_type = op.get("element_type", "")
-                        if element_type:
-                            all_types.add(f"tuple[{element_type}]")
+                        # Также добавляем все вложенные типы
+                        self._collect_all_nested_list_types(var_type, all_types)
 
         # Проходим по всем scope и узлам
         for scope in json_data:
@@ -2348,11 +2387,36 @@ class CCodeGenerator:
                     process_node(node)
 
         # Генерируем структуры для всех найденных типов
-        for py_type in sorted(all_types, key=lambda x: x.count("[")):
+        # Сортируем по глубине вложенности (от простых к сложным)
+        for py_type in sorted(all_types, key=lambda x: x.count("list[")):
             if py_type.startswith("list["):
                 self.generate_list_struct(py_type)
-            elif py_type.startswith("tuple["):
-                self.generate_tuple_struct(py_type)
+
+    def generate_list_struct_name(self, py_type: str) -> str:
+        """Генерирует имя структуры для списка любой вложенности"""
+        if not py_type.startswith("list["):
+            return f"list_{self.clean_type_name_for_c(py_type)}"
+
+        # Используем уже существующий метод _generate_struct_name_recursive
+        return self._generate_struct_name_recursive(py_type)
+
+    def _collect_all_nested_list_types(self, list_type: str, type_set: set):
+        """Рекурсивно собирает все вложенные типы списков"""
+        if not list_type.startswith("list["):
+            return
+
+        type_set.add(list_type)
+
+        # Извлекаем внутренний тип
+        inner_type = self._parse_list_type(list_type)
+        if inner_type:
+            if inner_type.startswith("list["):
+                # Если внутренний тип тоже список, рекурсивно обрабатываем
+                self._collect_all_nested_list_types(inner_type, type_set)
+            else:
+                # Листовой тип - создаем базовую структуру list_тип
+                leaf_struct = f"list[{inner_type}]"
+                type_set.add(leaf_struct)
 
     def _collect_nested_list_types(self, py_type: str, type_set: set):
         """Рекурсивно собирает вложенные типы списков"""
@@ -2449,35 +2513,33 @@ class CCodeGenerator:
         return depth
 
     def extract_nested_type_info(self, py_type: str) -> Dict:
-        """Извлекает информацию о вложенном типе списка (универсальная версия)"""
-        # Кэшируем результаты для производительности
-        if not hasattr(self, "_type_info_cache"):
-            self._type_info_cache = {}
-
-        if py_type in self._type_info_cache:
-            return self._type_info_cache[py_type]
-
+        """Извлекает информацию о вложенном типе списка с рекурсивным анализом"""
         if not py_type or not isinstance(py_type, str):
-            result = self._create_default_type_info()
-            self._type_info_cache[py_type] = result
-            return result
+            return self._create_default_type_info()
 
         # Для отладки
         print(f"DEBUG extract_nested_type_info: {py_type}")
 
         # Базовый случай: не список
         if not py_type.startswith("list["):
-            result = self._create_leaf_type_info(py_type)
-            self._type_info_cache[py_type] = result
-            return result
+            # Для листового типа создаем информацию о list_тип
+            struct_name = f"list_{self.clean_type_name_for_c(py_type)}"
+            element_type = self.map_type_to_c(py_type)  # "int" для py_type="int"
+
+            return {
+                "py_type": py_type,
+                "c_type": f"{struct_name}*",
+                "struct_name": struct_name,
+                "element_type": element_type,
+                "is_leaf": True,
+                "inner_info": None,
+            }
 
         try:
-            # Используем универсальный парсер скобок
+            # Извлекаем внутренний тип
             inner_type = self._parse_list_type(py_type)
             if not inner_type:
-                result = self._create_default_type_info()
-                self._type_info_cache[py_type] = result
-                return result
+                return self._create_default_type_info()
 
             # Генерируем имя структуры
             struct_name = self._generate_struct_name_recursive(py_type)
@@ -2486,13 +2548,14 @@ class CCodeGenerator:
             inner_info = self.extract_nested_type_info(inner_type)
 
             # Определяем информацию о текущем уровне
-            # is_leaf = True только если внутренний тип НЕ является списком
             is_leaf = not inner_type.startswith("list[")
 
             # Определяем element_type
             if is_leaf:
                 # Если это list[int], то element_type = int
-                element_type = inner_info.get("c_type", "void*")
+                element_type = self.map_type_to_c(
+                    inner_type
+                )  # "int" для inner_type="int"
             else:
                 # Если это list[list[...]], то element_type = inner_struct*
                 if inner_info.get("struct_name"):
@@ -2509,15 +2572,11 @@ class CCodeGenerator:
                 "inner_info": inner_info,
             }
 
-            # Кэшируем результат
-            self._type_info_cache[py_type] = result
             return result
 
         except Exception as e:
             print(f"ERROR в extract_nested_type_info для {py_type}: {e}")
-            result = self._create_default_type_info()
-            self._type_info_cache[py_type] = result
-            return result
+            return self._create_default_type_info()
 
     def _generate_struct_name_recursive(self, py_type: str) -> str:
         """Рекурсивно генерирует имя структуры для вложенного списка"""
