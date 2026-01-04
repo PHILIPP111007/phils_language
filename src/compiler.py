@@ -714,7 +714,7 @@ class CCodeGenerator:
     ):
         """Генерирует объявление кортежа"""
         struct_name = self.generate_tuple_struct_name(var_type)
-        c_type = self.map_type_to_c(var_type)
+        c_type = self.map_type_to_c(var_type)  # Это будет "tuple_int" для tuple[int]
 
         # Определяем тип кортежа
         is_uniform = tuple_info.get("is_uniform", False)
@@ -843,8 +843,18 @@ class CCodeGenerator:
             print(f"  ЛИСТОВОЙ УРОВЕНЬ - добавляем простые элементы")
             for i, item_ast in enumerate(items):
                 print(f"    элемент {i}: {item_ast.get('type')}")
-                item_expr = self.generate_expression(item_ast)
-                self.add_line(f"append_{struct_name}({parent_var}, {item_expr});")
+
+                # Для кортежей используем специальную обработку
+                if item_ast.get("type") == "tuple_literal":
+                    # Создаем кортеж напрямую, без вызова generate_expression
+                    tuple_expr = self._generate_tuple_creation_direct(
+                        item_ast, f"{parent_var}_tuple_{i}"
+                    )
+                    self.add_line(f"append_{struct_name}({parent_var}, {tuple_expr});")
+                else:
+                    # Для других типов используем обычный generate_expression
+                    item_expr = self.generate_expression(item_ast)
+                    self.add_line(f"append_{struct_name}({parent_var}, {item_expr});")
             return
 
         # Есть вложенность - элементы это указатели на списки
@@ -893,6 +903,52 @@ class CCodeGenerator:
                 # Если это уже созданная переменная, просто добавляем ее
                 item_expr = self.generate_expression(item_ast)
                 self.add_line(f"append_{struct_name}({parent_var}, {item_expr});")
+
+    def _generate_tuple_creation_direct(self, tuple_ast: Dict, base_name: str) -> str:
+        """Генерирует создание кортежа напрямую, возвращая имя переменной с кортежем"""
+        items = tuple_ast.get("items", [])
+
+        if not items:
+            return "NULL"
+
+        # Определяем тип кортежа
+        element_types = set()
+        for item in items:
+            if isinstance(item, dict):
+                if item.get("type") == "literal":
+                    data_type = item.get("data_type", "int")
+                    element_types.add(data_type)
+
+        if len(element_types) == 1:
+            element_type = next(iter(element_types))
+            tuple_type = f"tuple[{element_type}]"
+        else:
+            # По умолчанию int
+            tuple_type = "tuple[int]"
+
+        struct_name = self.generate_tuple_struct_name(tuple_type)
+
+        # Создаем временный массив
+        temp_array_name = f"{base_name}_arr"
+
+        # Генерируем элементы массива
+        item_exprs = [self.generate_expression(item) for item in items]
+
+        # Создаем массив
+        self.add_line(f"int {temp_array_name}[{len(items)}] = {{")
+        self.indent_level += 1
+        for i, item_expr in enumerate(item_exprs):
+            self.add_line(f"{item_expr}{',' if i < len(items) - 1 else ''}")
+        self.indent_level -= 1
+        self.add_line("};")
+
+        # Создаем кортеж и возвращаем его
+        tuple_var_name = f"{base_name}_val"
+        self.add_line(
+            f"tuple_int {tuple_var_name} = create_{struct_name}({temp_array_name}, {len(items)});"
+        )
+
+        return tuple_var_name
 
     def _generate_nested_list_elements_recursive(
         self, parent_var: str, items: List, type_info: Dict, level: int
@@ -1675,7 +1731,7 @@ class CCodeGenerator:
             self.add_empty_line()
 
     def generate_tuple_struct_name(self, py_type: str) -> str:
-        """Генерирует корректное имя структуры для tuple"""
+        """Генерирует имя структуры для tuple"""
         # Извлекаем содержимое скобок
         match = re.match(r"tuple\[([^\]]+)\]", py_type)
         if not match:
@@ -1690,65 +1746,10 @@ class CCodeGenerator:
 
         # Если это tuple[T1, T2, ...]
         # Заменяем запятые на подчеркивания и убираем пробелы
-        clean_inner = self.clean_type_name_for_c(inner)
+        clean_inner = self.clean_type_name_for_c(
+            inner.replace(",", "_").replace(" ", "")
+        )
         return f"tuple_{clean_inner}"
-
-    def generate_list_struct(self, py_type: str):
-        """Генерирует структуру C для списка любой вложенности с рекурсивной генерацией всех уровней"""
-
-        # Получаем полную информацию о типе
-        type_info = self.extract_nested_type_info(py_type)
-
-        if not type_info:
-            print(f"ERROR: Не удалось получить информацию о типе {py_type}")
-            return
-
-        struct_name = type_info.get("struct_name")
-        if not struct_name:
-            return
-
-        print(f"DEBUG generate_list_struct: {py_type}")
-        print(f"  struct_name: {struct_name}")
-        print(f"  is_leaf: {type_info.get('is_leaf')}")
-
-        # Рекурсивно генерируем структуры для всех внутренних типов
-        inner_info = type_info.get("inner_info")
-        if inner_info:
-            inner_py_type = inner_info.get("py_type", "")
-            inner_struct_name = inner_info.get("struct_name")
-
-            # Если внутренний тип - тоже список, генерируем его структуру
-            if inner_py_type.startswith("list["):
-                self.generate_list_struct(inner_py_type)
-            elif inner_struct_name and inner_struct_name.startswith("list_"):
-                # Это листовой тип list_int, list_float и т.д.
-                # Генерируем структуру для него
-                if inner_struct_name not in self.generated_structs:
-                    self._generate_leaf_list_struct(
-                        inner_info.get("py_type", "int"), inner_struct_name
-                    )
-
-        # Генерируем структуру только если еще не генерировали
-        if struct_name not in self.generated_structs:
-            self.generated_structs.add(struct_name)
-
-            # Генерируем структуру
-            element_type = type_info.get("element_type", "void*")
-
-            struct_code = f"typedef struct {{\n"
-            struct_code += f"    {element_type}* data;\n"
-            struct_code += f"    int size;\n"
-            struct_code += f"    int capacity;\n"
-            struct_code += f"}} {struct_name};\n\n"
-
-            self.generated_helpers.append(struct_code)
-
-            # Генерируем функции для этой структуры
-            self._generate_list_functions(
-                struct_name,
-                element_type,
-                inner_info.get("py_type") if inner_info else None,
-            )
 
     def generate_tuple_struct(self, py_type: str):
         """Генерирует структуру C для tuple типа"""
@@ -1762,9 +1763,7 @@ class CCodeGenerator:
             return
 
         inner = match.group(1)
-        struct_name = self.generate_tuple_struct_name(
-            py_type
-        )  # tuple_int для tuple[int]
+        struct_name = self.generate_tuple_struct_name(py_type)
 
         # Определяем, является ли это универсальным tuple[T]
         is_fixed = "," in inner
@@ -1797,6 +1796,12 @@ class CCodeGenerator:
             create_func += f"    return t;\n"
             create_func += f"}}\n\n"
 
+            # Функция len()
+            len_func = f"int builtin_len_{struct_name}({struct_name}* t) {{\n"
+            len_func += f"    if (!t) return 0;\n"
+            len_func += f"    return t->size;\n"
+            len_func += f"}}\n\n"
+
             # Функция очистки
             free_func = f"void free_{struct_name}({struct_name}* t) {{\n"
             free_func += f"    if (t->data) {{\n"
@@ -1806,11 +1811,23 @@ class CCodeGenerator:
             free_func += f"    t->size = 0;\n"
             free_func += f"}}\n\n"
 
+            # Функция доступа к элементу по индексу
+            get_func = (
+                f"{c_element_type} get_{struct_name}({struct_name}* t, int index) {{\n"
+            )
+            get_func += f"    if (!t || index < 0 || index >= t->size) {{\n"
+            get_func += f'        fprintf(stderr, "Index out of bounds in tuple\\n");\n'
+            get_func += f"        exit(1);\n"
+            get_func += f"    }}\n"
+            get_func += f"    return t->data[index];\n"
+            get_func += f"}}\n\n"
+
             # Добавляем все функции
-            self.generated_helpers.extend([struct_code, create_func, free_func])
+            self.generated_helpers.extend(
+                [struct_code, create_func, len_func, free_func, get_func]
+            )
         else:
             # tuple[T1, T2, ...] - фиксированный кортеж
-            # TODO: Реализовать генерацию фиксированных кортежей
             element_types = [t.strip() for t in inner.split(",")]
             c_element_types = [self.map_type_to_c(t) for t in element_types]
 
@@ -1839,13 +1856,21 @@ class CCodeGenerator:
             create_func += f"    return t;\n"
             create_func += f"}}\n\n"
 
-            # Функция очистки (для типов с указателями)
-            free_func = f"void free_{struct_name}({struct_name}* t) {{\n"
-            # TODO: Добавить освобождение памяти для указателей если нужно
-            free_func += f"    // Освобождение памяти для указателей (если есть)\n"
-            free_func += f"}}\n\n"
+            # Функция len() для фиксированного кортежа
+            len_func = f"int builtin_len_{struct_name}({struct_name}* t) {{\n"
+            len_func += f"    return {len(element_types)};\n"
+            len_func += f"}}\n\n"
 
-            self.generated_helpers.extend([create_func, free_func])
+            # Функция доступа к элементам
+            for i, (elem_type, c_elem_type) in enumerate(
+                zip(element_types, c_element_types)
+            ):
+                get_func = f"{c_elem_type} get_{struct_name}_{i}({struct_name}* t) {{\n"
+                get_func += f"    return t->elem_{i};\n"
+                get_func += f"}}\n\n"
+                self.generated_helpers.append(get_func)
+
+            self.generated_helpers.extend([create_func, len_func])
 
     def generate_list_struct(self, py_type: str):
         """Генерирует структуру C для списка любой вложенности с рекурсивной генерацией всех уровней"""
@@ -2378,6 +2403,8 @@ class CCodeGenerator:
                         all_types.add(var_type)
                         # Также добавляем все вложенные типы
                         self._collect_all_nested_list_types(var_type, all_types)
+                    elif var_type.startswith("tuple["):
+                        all_types.add(var_type)
 
         # Проходим по всем scope и узлам
         for scope in json_data:
@@ -2388,9 +2415,12 @@ class CCodeGenerator:
 
         # Генерируем структуры для всех найденных типов
         # Сортируем по глубине вложенности (от простых к сложным)
-        for py_type in sorted(all_types, key=lambda x: x.count("list[")):
+        sorted_types = sorted(all_types, key=lambda x: (x.count("["), x))
+        for py_type in sorted_types:
             if py_type.startswith("list["):
                 self.generate_list_struct(py_type)
+            elif py_type.startswith("tuple["):
+                self.generate_tuple_struct(py_type)
 
     def generate_list_struct_name(self, py_type: str) -> str:
         """Генерирует имя структуры для списка любой вложенности"""
@@ -2674,7 +2704,10 @@ class CCodeGenerator:
 
         node_type = ast.get("type", "")
 
-        if node_type == "literal":
+        if node_type == "tuple_literal":
+            # Для tuple литералов используем метод generate_tuple_creation
+            return self.generate_tuple_creation(ast)
+        elif node_type == "literal":
             value = ast.get("value")
             data_type = ast.get("data_type", "")
 
@@ -4181,3 +4214,77 @@ class CCodeGenerator:
         self.add_line(f"fgets({buffer_var}, sizeof({buffer_var}), stdin);")
         self.add_line(f'{buffer_var}[strcspn({buffer_var}, "\\n")] = 0;')
         self.add_line(f"// Ввод прочитан, результат игнорируется")
+
+    def generate_tuple_creation(self, tuple_ast: Dict, tuple_type: str = None) -> str:
+        """Генерирует выражение для создания кортежа"""
+        items = tuple_ast.get("items", [])
+
+        # Если tuple_type уже задан и является именем структуры (начинается с tuple_), не анализируем
+        if tuple_type and tuple_type.startswith("tuple_"):
+            # Это уже имя структуры, а не тип
+            struct_name = tuple_type
+            print(
+                f"DEBUG generate_tuple_creation: struct_name={struct_name} (уже задано)"
+            )
+        else:
+            if not tuple_type:
+                # Определяем тип кортежа на основе элементов
+                if items:
+                    # Проверяем, все ли элементы одного типа
+                    element_types = set()
+                    for item in items:
+                        if isinstance(item, dict):
+                            if item.get("type") == "literal":
+                                data_type = item.get("data_type", "int")
+                                element_types.add(data_type)
+
+                    if len(element_types) == 1:
+                        element_type = next(iter(element_types))
+                        tuple_type = f"tuple[{element_type}]"
+                    else:
+                        # Разные типы - используем фиксированный кортеж
+                        element_types_list = []
+                        for item in items:
+                            if isinstance(item, dict) and item.get("type") == "literal":
+                                data_type = item.get("data_type", "int")
+                                element_types_list.append(data_type)
+
+                        if element_types_list:
+                            tuple_type = f"tuple[{', '.join(element_types_list)}]"
+                        else:
+                            tuple_type = "tuple[int]"
+                else:
+                    tuple_type = "tuple[int]"
+
+            struct_name = self.generate_tuple_struct_name(tuple_type)
+            print(
+                f"DEBUG generate_tuple_creation: tuple_type={tuple_type}, struct_name={struct_name}"
+            )
+
+        if items:
+            # Для универсального кортежа tuple[T]
+            if "," not in tuple_type:  # tuple[int] (нет запятых)
+                # Создаем временный массив
+                temp_var = self.generate_temporary_var("array")
+
+                # Генерируем элементы массива
+                item_exprs = [self.generate_expression(item) for item in items]
+
+                # Создаем массив
+                self.add_line(f"int {temp_var}[{len(items)}] = {{")
+                self.indent_level += 1
+                for i, item_expr in enumerate(item_exprs):
+                    self.add_line(f"{item_expr}{',' if i < len(items) - 1 else ''}")
+                self.indent_level -= 1
+                self.add_line("};")
+
+                # Возвращаем вызов create_tuple_int
+                return f"create_{struct_name}({temp_var}, {len(items)})"
+
+            else:
+                # Для фиксированного кортежа tuple[T1, T2, ...]
+                item_exprs = [self.generate_expression(item) for item in items]
+                return f"create_{struct_name}({', '.join(item_exprs)})"
+
+        # Пустой кортеж
+        return f"({struct_name}){{NULL, 0}}"
