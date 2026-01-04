@@ -12,6 +12,8 @@ In the future, I'll implement object-oriented programming in it.
 
 ## Examples
 
+Imports:
+
 ```python
 cimport "my_header.h" # your module in C
 cimport <my_header.h> # system import
@@ -21,9 +23,7 @@ import "./module.p" # your module
 ```python
 def main() -> None:
     var x: int = 0
-
     x = x + 1
-
 
 def main() -> None:
     def func() -> int:
@@ -37,6 +37,8 @@ def main() -> None:
     return
 ```
 
+Input:
+
 ```python
 def main() -> int:
     var name: str = input("Enter your name: ")
@@ -44,12 +46,17 @@ def main() -> int:
     return 0
 ```
 
+del:
+
 ```python
 def func() -> str:
     return "qepfko"
 
 def main() -> int:
     var a: int = 1 + 10
+
+    del_pointer a
+
     var b: str = func()
 
     del b
@@ -58,6 +65,9 @@ def main() -> int:
     return 0
 ```
 
+
+C code -> function should starts with @:
+
 ```python
 cimport <math.h>
 
@@ -65,6 +75,8 @@ def main() -> float:
     var a: float = @sqrt(16)   # C code -> function should starts with @
     return a
 ```
+
+Tuples and lists:
 
 ```python
 def main() -> int:
@@ -76,20 +88,7 @@ def main() -> int:
     var x: int = len(c)
 
     return 0
-```
 
-```python
-def main() -> int:
-
-    var i: int = 0
-    var a: int = 0
-    for i in range(0, 10, -1):
-        a = a + 1
-
-    return 0
-```
-
-```python
 def main() -> int:
     var A: list[list[list[int]]] = [[[1], [2]], [[1], [2]]]
 
@@ -102,16 +101,15 @@ def main() -> int:
     var c: list[tuple[int]] = [ (1, 2), (1, 2) ]
 
     return 0
-```
 
-```python
 def main() -> int:
     var t1: tuple[int] = (1, 2, 3)
-
     var l: list[tuple[int]] = []
-
     l.append(t1)
+    return 0
 ```
+
+OOP:
 
 ```python
 class Object:
