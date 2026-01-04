@@ -1,5 +1,16 @@
 # Phils language
 
+## Info
+
+This program is a Python-like implementation of the C language.
+
+Because it's similar to Python, the entry barrier is low. My goal is to make it as memory-safe as possible, which is something C lacks.
+
+I'm creating this language for specialists working primarily with neural networks. But it can be used anywhere, as it's almost a complete copy of C.
+
+In the future, I'll implement object-oriented programming in it.
+
+## Examples
 
 ```python
 cimport "my_header.h" # your module in C
