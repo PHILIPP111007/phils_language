@@ -230,3 +230,71 @@ def main() -> int:
 
     return 0
 
+
+
+def main() -> int:
+
+    var a: tuple[int] = (1, 2)
+    var b: int = len(a)
+
+    var c: list[int] = [1, 2, 3,]
+    var x: int = len(c)
+
+    return 0
+
+
+def main() -> int:
+
+    var i: int = 0
+    var a: int = 0
+    for i in range(0, 10, -1):
+        a = a + 1
+
+    return 0
+
+
+
+def main() -> int:
+
+    var i: int = 0
+    var a: int = 0
+    for i in range(0, 10, -1):
+        a = a + 1
+        if a > 100:
+            a = a + 1
+            break
+        else:
+            continue
+
+    return 0
+
+
+
+def main() -> int:
+
+    var c: list[int] = [1, 2, 3,]
+    var x: int = len(c)
+
+    c.append(x)
+    @append_list_int(numbers, new_num)
+
+    return 0
+
+
+def main() -> int:
+    # var A: list[list[list[int]]] = [[[1], [2]], [[1], [2]]]
+    var A: list[list[int]] = [[1, 2], [1, 2]]
+
+    # var a: list[int] = [1, 2]
+    # var b: tuple[int] = (1, 2)
+    # var c: list[tuple[int]] = [ (1, 2), (1, 2) ]
+    return 0
+
+
+def main() -> int:
+    var t1: tuple[int] = (1, 2, 3)
+    # var t2: tuple[int] = (4, 5, 6)
+
+    var l: list[tuple[int]] = []
+
+    l.append(t1)
