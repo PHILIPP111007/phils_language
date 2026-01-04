@@ -105,3 +105,27 @@ def main() -> int:
 
     l.append(t1)
 ```
+
+```python
+class Object:
+    def __init__(self, age: int) -> None:
+        pass
+
+class User(Object):
+    def __init__(self, age: int, a: int) -> None:
+        self.age = age
+        self.a: int = a
+    
+    def get_age(self) -> int:
+        return self.age
+
+
+def main() -> int:
+    var u: User = User(10, 1)
+    print(u.age)
+
+    var age: int = u.get_age()
+    print(age)
+
+    return 0
+```
