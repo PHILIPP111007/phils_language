@@ -114,7 +114,6 @@ class Object:
 class User(Object):
     def __init__(self, age: int, a: int) -> None:
         self.age = age
-        self.a: int = a
     
     def get_age(self) -> int:
         return self.age

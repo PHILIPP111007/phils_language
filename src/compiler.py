@@ -26,6 +26,8 @@ class CCodeGenerator:
         # Типы, которые являются указателями (используют ->)
         self.pointer_types = set()
 
+        self.class_fields = {}  # {class_name: {field_name: field_type}}
+
         # Расширенный маппинг типов Python -> C
         self.type_map = {
             "int": "int",
@@ -74,6 +76,7 @@ class CCodeGenerator:
         self.generated_structs.clear()
         self.generated_helpers.clear()
         self.generic_type_map.clear()
+        self.class_fields.clear()  # Очищаем поля классов
 
     def indent(self) -> str:
         """Возвращает отступ для текущего уровня"""
@@ -1349,9 +1352,6 @@ class CCodeGenerator:
                         self.c_imports.append(node)
 
         # Собираем информацию о классах и их методах
-        class_methods = {}  # {class_name: [method_signatures]}
-
-        # Сначала находим все классы и их методы
         for scope in json_data:
             if scope.get("type") == "module":
                 for node in scope.get("graph", []):
@@ -1382,14 +1382,64 @@ class CCodeGenerator:
                                 f"{class_name}* create_{class_name}({params_str});"
                             )
 
-                        # Собираем объявления методов
+                        # Собираем объявления методов из описания класса
                         for method in methods:
                             if method.get("name") != "__init__":
                                 method_name = method.get("name", "")
                                 return_type = method.get("return_type", "void")
-                                self.function_declarations.append(
-                                    f"{return_type} {class_name}_{method_name}({class_name}* self);"
+                                params = method.get("parameters", [])
+
+                                # Формируем параметры метода
+                                param_decls = []
+                                for i, param in enumerate(params):
+                                    param_name = param.get("name", "")
+                                    param_type = param.get("type", "int")
+
+                                    if i == 0 and param_name == "self":
+                                        # Первый параметр - self, это указатель на класс
+                                        param_decls.append(f"{class_name}* self")
+                                    else:
+                                        c_param_type = self.map_type_to_c(param_type)
+                                        param_decls.append(
+                                            f"{c_param_type} {param_name}"
+                                        )
+
+                                params_str = (
+                                    ", ".join(param_decls) if param_decls else "void"
                                 )
+                                self.function_declarations.append(
+                                    f"{return_type} {class_name}_{method_name}({params_str});"
+                                )
+
+        # Также добавляем объявления из class_method scope (для точности)
+        for scope in json_data:
+            if scope.get("type") == "class_method":
+                class_name = scope.get("class_name", "")
+                method_name = scope.get("method_name", "")
+                return_type = scope.get("return_type", "void")
+
+                if method_name != "__init__":
+                    parameters = scope.get("parameters", [])
+
+                    # Формируем параметры
+                    param_decls = []
+                    for i, param in enumerate(parameters):
+                        param_name = param.get("name", "")
+                        param_type = param.get("type", "int")
+
+                        if i == 0 and param_name == "self":
+                            param_decls.append(f"{class_name}* self")
+                        else:
+                            c_param_type = self.map_type_to_c(param_type)
+                            param_decls.append(f"{c_param_type} {param_name}")
+
+                    params_str = ", ".join(param_decls) if param_decls else "void"
+
+                    declaration = (
+                        f"{return_type} {class_name}_{method_name}({params_str});"
+                    )
+                    if declaration not in self.function_declarations:
+                        self.function_declarations.append(declaration)
 
         # Добавляем объявление main
         self.function_declarations.append("int main(void);")
@@ -2046,21 +2096,31 @@ class CCodeGenerator:
         # Сначала собираем все типы, которые нужны
         self.collect_types_from_ast(json_data)
 
+        # Анализируем классы и их поля
+        self.analyze_classes(json_data)
+
+        # Выводим найденные поля
+        for class_name, fields in self.class_fields.items():
+            print(f"DEBUG: Class {class_name} fields: {fields}")
+
+        print("=== END DEBUG ===")
+
         # Собираем импорты и объявления
         self.collect_imports_and_declarations(json_data)
 
         # 1. Генерируем заголовок с импортами
         self.generate_c_imports()
 
-        # 2. Генерируем forward declarations функций (если есть)
+        # 2. Генерируем forward declarations
         self.generate_forward_declarations()
 
-        # 3. Генерируем структуры классов
+        # 3. Генерируем структуры классов (теперь с полями)
         for scope in json_data:
             if scope.get("type") == "module":
                 for node in scope.get("graph", []):
                     if node.get("node") == "class_declaration":
-                        self.generate_class_declaration(node)
+                        # Используем новый метод с полями
+                        self.generate_class_declaration_with_fields(node)
 
         # 4. Генерируем вспомогательные структуры и функции
         self.generate_helpers_section_sorted()
@@ -2379,8 +2439,28 @@ class CCodeGenerator:
 
         node_type = ast.get("type", "")
 
+        if node_type == "literal":
+            value = ast.get("value")
+            data_type = ast.get("data_type", "")
+
+            if data_type == "str":
+                return f'"{value}"'
+            elif data_type == "bool":
+                return "true" if value else "false"
+            elif data_type == "None":
+                return "NULL"
+            else:
+                return str(value)
+        elif node_type == "variable":
+            var_name = ast.get("value", "")
+
+            if not self.is_variable_declared(var_name):
+                print(f"WARNING: Использование необъявленной переменной '{var_name}'")
+
+            return var_name
+
         # Добавляем обработку новых типов узлов
-        if node_type == "attribute_access":
+        elif node_type == "attribute_access":
             return self.generate_attribute_access(ast)
         elif node_type == "constructor_call":
             return self.generate_constructor_call(ast)
@@ -2547,37 +2627,166 @@ class CCodeGenerator:
         return ast_value
 
     def generate_class_declaration(self, node: Dict):
-        """Генерирует структуру для класса C"""
+        """Генерирует структуру для класса C динамически"""
         class_name = node.get("class_name", "")
 
         # Регистрируем класс
         self.class_types.add(class_name)
-
-        # Добавляем в маппинг типов
         self.type_map[class_name] = f"{class_name}*"
+
+        # Анализируем класс для определения полей
+        # (fields будут собраны позже при анализе методов)
+        if class_name not in self.class_fields:
+            self.class_fields[class_name] = {}
 
         # Генерируем структуру
         self.add_line(f"typedef struct {class_name} {{")
         self.indent_level += 1
 
-        # Добавляем поля от базовых классов
-        base_classes = node.get("base_classes", [])
-        if base_classes:
-            for base in base_classes:
-                self.add_line(f"struct {base} _base_{base};")
-
-        # Добавляем собственные атрибуты
-        # Для User добавляем поля age и a
-        if class_name == "User":
-            self.add_line(f"int age;")
-            self.add_line(f"int a;")  # ДОБАВИТЬ ЭТО ПОЛЕ
-
         # Добавляем таблицу виртуальных методов
         self.add_line(f"void** vtable;")
+
+        # Поля будут добавлены позже, после анализа методов
+        # Создаем временный комментарий
+        self.add_line(f"// Поля класса будут добавлены после анализа методов")
 
         self.indent_level -= 1
         self.add_line(f"}} {class_name};")
         self.add_empty_line()
+
+    def collect_class_fields(self, class_name: str, json_data: List[Dict]) -> Dict:
+        """Собирает поля класса из всех его методов (включая __init__)"""
+        fields = {}
+
+        # Ищем все методы этого класса в json_data
+        for scope in json_data:
+            if (
+                scope.get("type") == "class_method"
+                and scope.get("class_name") == class_name
+            ):
+                method_name = scope.get("method_name", "")
+
+                # Анализируем метод __init__ для присваиваний атрибутам
+                if method_name == "__init__":
+                    self._analyze_init_method_for_fields(fields, scope)
+
+                # Также анализируем другие методы для использования атрибутов
+                else:
+                    self._analyze_method_for_field_references(fields, scope)
+
+        return fields
+
+    def _analyze_init_method_for_fields(self, fields: Dict, init_scope: Dict):
+        """Анализирует метод __init__ для определения полей класса"""
+        graph = init_scope.get("graph", [])
+
+        for node in graph:
+            if node.get("node") == "attribute_assignment":
+                # Присваивание атрибуту: self.attr = value
+                attr_name = node.get("attribute", "")
+                value = node.get("value", {})
+
+                # Определяем тип значения
+                field_type = self._infer_field_type(value)
+                if field_type:
+                    fields[attr_name] = field_type
+
+            elif node.get("node") == "declaration":
+                # Объявление атрибута с типом: self.attr: type = value
+                var_name = node.get("var_name", "")
+                if var_name.startswith("self."):
+                    attr_name = var_name[5:]  # Убираем "self."
+                    var_type = node.get("var_type", "")
+                    if var_type:
+                        fields[attr_name] = var_type
+
+    def _analyze_method_for_field_references(self, fields: Dict, method_scope: Dict):
+        """Анализирует метод для ссылок на атрибуты"""
+        graph = method_scope.get("graph", [])
+
+        # Собираем все обращения к атрибутам
+        def collect_attribute_accesses(node):
+            accesses = []
+
+            if isinstance(node, dict):
+                node_type = node.get("type", "")
+
+                if node_type == "attribute_access":
+                    # Доступ к атрибуту: self.attr или obj.attr
+                    obj_name = node.get("object", "")
+                    attr_name = node.get("attribute", "")
+
+                    if obj_name == "self":
+                        accesses.append(attr_name)
+
+                # Рекурсивно проверяем все значения
+                for key, value in node.items():
+                    if isinstance(value, (dict, list)):
+                        if isinstance(value, dict):
+                            accesses.extend(collect_attribute_accesses(value))
+                        elif isinstance(value, list):
+                            for item in value:
+                                accesses.extend(collect_attribute_accesses(item))
+
+            return accesses
+
+        # Проходим по всему графу метода
+        for node in graph:
+            attr_accesses = collect_attribute_accesses(node)
+            for attr_name in attr_accesses:
+                # Если атрибут упоминается, но не зарегистрирован, добавляем как int
+                if attr_name not in fields:
+                    fields[attr_name] = "int"
+
+    def _infer_field_type(self, value_ast: Dict) -> str:
+        """Определяет тип поля по значению"""
+        if not value_ast:
+            return "int"  # По умолчанию
+
+        value_type = value_ast.get("type", "")
+
+        # Литералы
+        if value_type == "literal":
+            data_type = value_ast.get("data_type", "int")
+            return data_type
+
+        # Переменные
+        elif value_type == "variable":
+            var_name = value_ast.get("value", "")
+            # Пытаемся определить тип переменной по контексту
+            if var_name in ["in_dim", "out_dim", "x", "y", "z"]:
+                return "int"
+            elif var_name in ["weight", "bias", "value"]:
+                return "float"
+
+        # Бинарные операции
+        elif value_type == "binary_operation":
+            left = value_ast.get("left", {})
+            right = value_ast.get("right", {})
+
+            left_type = self._infer_field_type(left)
+            right_type = self._infer_field_type(right)
+
+            # Если типы совпадают, возвращаем его
+            if left_type == right_type:
+                return left_type
+
+            # Если один float, а другой int - возвращаем float
+            if "float" in left_type or "double" in left_type:
+                return left_type
+            if "float" in right_type or "double" in right_type:
+                return right_type
+
+            # По умолчанию int
+            return "int"
+
+        # Атрибуты
+        elif value_type == "attribute_access":
+            # Не можем определить тип атрибута рекурсивно
+            return "int"
+
+        # По умолчанию
+        return "int"
 
     def generate_vtable(self, class_name: str, methods: List[Dict]):
         """Генерирует таблицу виртуальных методов"""
@@ -2640,12 +2849,18 @@ class CCodeGenerator:
             self.add_line(f"extern {vtable_type_name} {class_name}_vtable_instance;")
             self.add_empty_line()
 
-    def generate_constructor(self, class_name: str, init_method: Optional[Dict] = None):
+    def generate_constructor(
+        self,
+        class_name: str,
+        init_method: Optional[Dict] = None,
+        init_scope: Optional[Dict] = None,
+    ):
         """Генерирует конструктор класса"""
         self.add_line(f"// Конструктор для {class_name}")
 
         # Определяем параметры
         params = []
+        param_names = []  # Сохраняем имена параметров для подстановки
         if init_method:
             init_params = init_method.get("parameters", [])
             # Пропускаем self параметр
@@ -2654,6 +2869,7 @@ class CCodeGenerator:
                 param_type = param.get("type", "int")
                 c_param_type = self.map_type_to_c(param_type)
                 params.append(f"{c_param_type} {param_name}")
+                param_names.append(param_name)
 
         params_str = ", ".join(params) if params else "void"
 
@@ -2675,28 +2891,83 @@ class CCodeGenerator:
 
         # Инициализируем таблицу виртуальных методов
         self.add_line(f"// Инициализация таблицы виртуальных методов")
-        self.add_line(
-            f"obj->vtable = malloc(sizeof(void*) * 16); // TODO: точный размер"
-        )
+        self.add_line(f"obj->vtable = malloc(sizeof(void*) * 16);")
         self.add_empty_line()
 
-        # Инициализируем поля из параметров конструктора
-        if init_method and params:
-            init_params = init_method.get("parameters", [])
-            for i, param in enumerate(
-                init_params[1:], 1
-            ):  # Начинаем с 1, пропускаем self
-                param_name = param.get("name", "")
-                # Предполагаем, что имя параметра совпадает с именем поля
-                if param_name == "age" and class_name == "User":
-                    self.add_line(f"obj->{param_name} = {param_name};")
-                elif param_name == "a" and class_name == "User":
-                    self.add_line(f"obj->{param_name} = {param_name};")
+        # Инициализируем поля на основе анализа метода __init__
+        # TODO
+        if init_scope:
+            # ПЕРЕДАЕМ param_names в _generate_init_logic
+            self._generate_init_logic(class_name, init_scope, param_names)
+        else:
+            # Если нет scope, но есть метод, все равно пытаемся инициализировать
+            # базовые поля если они известны из class_fields
+            if class_name in self.class_fields:
+                for field_name in self.class_fields[class_name]:
+                    # Инициализируем значениями по умолчанию
+                    self.add_line(f"obj->{field_name} = 0;")
 
         self.add_line(f"return obj;")
         self.indent_level -= 1
         self.add_line(f"}}")
         self.add_empty_line()
+
+    def _generate_field_initializations(
+        self, class_name: str, init_scope: Dict, constructor_params: List[str]
+    ):
+        """Генерирует инициализацию полей на основе метода __init__"""
+        if not init_scope:
+            return
+
+        graph = init_scope.get("graph", [])
+        if not graph:
+            return
+
+        # Создаем контекст параметров для подстановки
+        param_map = {}
+        for param in constructor_params:
+            parts = param.split()
+            if len(parts) >= 2:
+                param_map[parts[-1]] = parts[-1]  # Имя параметра
+
+        self.add_line(f"// Инициализация полей для {class_name}")
+
+        for node in graph:
+            node_type = node.get("node", "")
+
+            if node_type == "attribute_assignment":
+                # Присваивание атрибуту: self.attr = value
+                obj_name = node.get("object", "")
+                attr_name = node.get("attribute", "")
+                value_ast = node.get("value", {})
+
+                if obj_name == "self":
+                    # Генерируем выражение для значения
+                    if value_ast:
+                        try:
+                            value_expr = self.generate_expression(value_ast)
+                            # Заменяем параметры конструктора
+                            for param_name in param_map:
+                                value_expr = value_expr.replace(
+                                    param_name, param_map[param_name]
+                                )
+                            self.add_line(f"obj->{attr_name} = {value_expr};")
+                        except Exception as e:
+                            self.add_line(f"// Ошибка генерации выражения: {e}")
+
+    def _debug_expression_node(self, node: Dict):
+        """Отладочный вывод для узла expression"""
+        operations = node.get("operations", [])
+        self.add_line(f"// Количество операций в expression: {len(operations)}")
+
+        for i, op in enumerate(operations):
+            op_type = op.get("type", "")
+            self.add_line(f"// Операция {i}: тип={op_type}")
+
+            if op_type == "ATTRIBUTE_ASSIGN":
+                self.add_line(f"//   object={op.get('object')}")
+                self.add_line(f"//   attribute={op.get('attribute')}")
+                self.add_line(f"//   value={op.get('value')}")
 
     def generate_class_method(self, class_name: str, method: Dict):
         """Генерирует метод класса"""
@@ -2843,6 +3114,23 @@ class CCodeGenerator:
 
     def generate_class_constructors(self, json_data: List[Dict]):
         """Генерирует конструкторы для всех классов"""
+        # Сначала находим все методы __init__
+        init_scopes = {}
+
+        for scope in json_data:
+            # Ищем как constructor ИЛИ class_method
+            if (
+                scope.get("type") == "class_method"
+                or scope.get("type") == "constructor"
+            ) and scope.get("method_name") == "__init__":
+                class_name = scope.get("class_name", "")
+                init_scopes[class_name] = scope
+                print(
+                    f"DEBUG: Found init_scope for {class_name} (type: {scope.get('type')})"
+                )
+                print(f"DEBUG: Graph length: {len(scope.get('graph', []))}")
+
+        # Затем находим объявления классов
         for scope in json_data:
             if scope.get("type") == "module":
                 for node in scope.get("graph", []):
@@ -2850,15 +3138,32 @@ class CCodeGenerator:
                         class_name = node.get("class_name", "")
                         methods = node.get("methods", [])
 
-                        # Ищем метод __init__
+                        # Ищем метод __init__ в объявлении класса
                         init_method = None
                         for method in methods:
                             if method.get("name") == "__init__":
                                 init_method = method
+                                print(f"DEBUG: Found init_method for {class_name}")
                                 break
 
+                        # Получаем scope для этого метода
+                        init_scope = init_scopes.get(class_name)
+
+                        if init_scope:
+                            print(f"DEBUG: Will generate constructor for {class_name}")
+                            # Выводим для отладки структуру init_scope
+                            print(f"DEBUG init_scope keys: {init_scope.keys()}")
+                            print(
+                                f"DEBUG init_scope graph: {init_scope.get('graph', [])}"
+                            )
+                        else:
+                            print(f"DEBUG: No init_scope found for {class_name}")
+                            print(
+                                f"DEBUG: Available scopes: {list(init_scopes.keys())}"
+                            )
+
                         # Генерируем конструктор
-                        self.generate_constructor(class_name, init_method)
+                        self.generate_constructor(class_name, init_method, init_scope)
 
     def generate_class_methods(self, json_data: List[Dict]):
         """Генерирует методы для всех классов"""
@@ -2966,3 +3271,477 @@ class CCodeGenerator:
                 return True
 
         return False
+
+    def analyze_classes(self, json_data: List[Dict]):
+        """Анализирует все классы и их методы для определения полей"""
+        # Сначала находим все методы __init__
+        init_scopes = {}
+
+        for scope in json_data:
+            if (
+                scope.get("type") == "class_method"
+                and scope.get("method_name") == "__init__"
+            ):
+                class_name = scope.get("class_name", "")
+                init_scopes[class_name] = scope
+
+        # Сначала анализируем методы __init__ для определения полей
+        for scope in json_data:
+            if (
+                scope.get("type") == "class_method"
+                and scope.get("method_name") == "__init__"
+            ):
+                class_name = scope.get("class_name", "")
+                self._analyze_init_method(class_name, scope)
+
+        # Затем анализируем другие методы для ссылок на поля
+        for scope in json_data:
+            if (
+                scope.get("type") == "class_method"
+                and scope.get("method_name") != "__init__"
+            ):
+                class_name = scope.get("class_name", "")
+                self._analyze_method_for_fields(class_name, scope)
+
+    def _analyze_init_method(self, class_name: str, init_scope: Dict):
+        """Анализирует метод __init__ для определения полей класса"""
+        if class_name not in self.class_fields:
+            self.class_fields[class_name] = {}
+
+        graph = init_scope.get("graph", [])
+
+        for node in graph:
+            if node.get("node") == "attribute_assignment":
+                # Присваивание атрибуту: self.attr = value
+                attr_name = node.get("attribute", "")
+                value = node.get("value", {})
+
+                # Определяем тип значения
+                field_type = self._infer_field_type(value)
+                if field_type:
+                    self.class_fields[class_name][attr_name] = field_type
+
+            elif node.get("node") == "declaration":
+                # Объявление атрибута с типом: self.attr: type = value
+                var_name = node.get("var_name", "")
+                if var_name.startswith("self."):
+                    attr_name = var_name[5:]  # Убираем "self."
+                    var_type = node.get("var_type", "")
+                    if var_type:
+                        self.class_fields[class_name][attr_name] = var_type
+
+    def _analyze_method_for_fields(self, class_name: str, method_scope: Dict):
+        """Анализирует метод для ссылок на поля"""
+        if class_name not in self.class_fields:
+            self.class_fields[class_name] = {}
+
+        graph = method_scope.get("graph", [])
+
+        def collect_attribute_accesses(node):
+            accesses = []
+
+            if isinstance(node, dict):
+                node_type = node.get("type", "")
+
+                if node_type == "attribute_access":
+                    # Доступ к атрибуту: self.attr или obj.attr
+                    obj_name = node.get("object", "")
+                    attr_name = node.get("attribute", "")
+
+                    if obj_name == "self":
+                        accesses.append(attr_name)
+
+                # Рекурсивно проверяем все значения
+                for key, value in node.items():
+                    if isinstance(value, (dict, list)):
+                        if isinstance(value, dict):
+                            accesses.extend(collect_attribute_accesses(value))
+                        elif isinstance(value, list):
+                            for item in value:
+                                accesses.extend(collect_attribute_accesses(item))
+
+            return accesses
+
+        # Проходим по всему графу метода
+        for node in graph:
+            attr_accesses = collect_attribute_accesses(node)
+            for attr_name in attr_accesses:
+                # Если атрибут упоминается, но не зарегистрирован, добавляем как int
+                if attr_name not in self.class_fields[class_name]:
+                    self.class_fields[class_name][attr_name] = "int"
+
+    def generate_class_declaration_with_fields(self, node: Dict):
+        """Генерирует структуру для класса C с полями"""
+        class_name = node.get("class_name", "")
+
+        # Регистрируем класс
+        self.class_types.add(class_name)
+        self.type_map[class_name] = f"{class_name}*"
+
+        # Генерируем структуру
+        self.add_line(f"typedef struct {class_name} {{")
+        self.indent_level += 1
+
+        # Добавляем таблицу виртуальных методов
+        self.add_line(f"void** vtable;")
+
+        # Добавляем поля класса, если они есть
+        if class_name in self.class_fields and self.class_fields[class_name]:
+            self.add_line(f"// Поля класса {class_name}")
+            for field_name, field_type in self.class_fields[class_name].items():
+                c_type = self.map_type_to_c(field_type)
+                self.add_line(f"{c_type} {field_name};")
+        else:
+            # Если поля не найдены, все равно генерируем минимальную структуру
+            self.add_line(f"// Нет явных полей для {class_name}")
+
+        self.indent_level -= 1
+        self.add_line(f"}} {class_name};")
+        self.add_empty_line()
+
+    def _try_generate_init_logic(
+        self, class_name: str, init_scope: Dict, param_names: List[str]
+    ):
+        """Пытается сгенерировать логику из метода __init__"""
+        graph = init_scope.get("graph", [])
+
+        for node in graph:
+            node_type = node.get("node", "")
+
+            if node_type == "attribute_assignment":
+                # Старый формат
+                self._process_attribute_assignment(node, param_names)
+
+            elif node_type == "expression":
+                # Новый формат: выражение может содержать присваивание
+                self._process_expression_node(node, param_names)
+
+    def _process_expression_node(self, node: Dict, param_names: List[str]):
+        """Обрабатывает узел выражения"""
+        operations = node.get("operations", [])
+
+        for op in operations:
+            op_type = op.get("type", "")
+
+            if op_type == "ATTRIBUTE_ASSIGN":
+                # Это присваивание атрибуту
+                object_name = op.get("object", "")
+                attribute = op.get("attribute", "")
+                value = op.get("value", {})
+
+                if object_name == "self":
+                    # Генерируем выражение для значения
+                    if value:
+                        value_expr = self._generate_value_expression(value, param_names)
+                        if value_expr:
+                            self.add_line(f"obj->{attribute} = {value_expr};")
+
+    def _generate_value_expression(self, value: Dict, param_names: List[str]) -> str:
+        """Генерирует выражение для значения"""
+        if not value:
+            return ""
+
+        value_type = value.get("type", "")
+
+        if value_type == "variable":
+            var_name = value.get("value", "")
+            return var_name
+
+        elif value_type == "binary_operation":
+            left = value.get("left", {})
+            right = value.get("right", {})
+            operator = value.get("operator_symbol", "")
+
+            left_expr = self._generate_value_expression(left, param_names)
+            right_expr = self._generate_value_expression(right, param_names)
+            c_operator = self.operator_map.get(operator, operator)
+
+            if left_expr and right_expr:
+                return f"({left_expr} {c_operator} {right_expr})"
+
+        return ""
+
+    def generate_attribute_assignment(self, node: Dict):
+        """Генерирует присваивание атрибуту объекта"""
+        object_name = node.get("object", "")
+        attribute = node.get("attribute", "")
+        value_ast = node.get("value", {})
+
+        # Проверяем, находимся ли мы в конструкторе
+        # Если это конструктор, метод уже обрабатывается в _process_attribute_assignment_in_init
+        # Так что пропускаем здесь
+        if object_name == "self":
+            print(
+                f"DEBUG generate_attribute_assignment: Skipping self.{attribute} assignment in constructor"
+            )
+            return
+
+        # Генерируем выражение для значения
+        if value_ast:
+            value_expr = self.generate_expression(value_ast)
+            self.add_line(f"{object_name}->{attribute} = {value_expr};")
+
+    def _process_expression_in_init(self, node: Dict):
+        """Обрабатывает expression узел в методе __init__"""
+        operations = node.get("operations", [])
+
+        for op in operations:
+            op_type = op.get("type", "")
+
+            if op_type == "ATTRIBUTE_ASSIGN":
+                # Присваивание атрибуту: self.attr = value
+                object_name = op.get("object", "")
+                attr_name = op.get("attribute", "")
+                value_ast = op.get("value", {})
+
+                if object_name == "self":
+                    if value_ast:
+                        try:
+                            value_expr = self.generate_expression(value_ast)
+                            self.add_line(f"obj->{attr_name} = {value_expr};")
+                        except Exception as e:
+                            self.add_line(f"// Ошибка генерации выражения: {e}")
+
+    def _process_attribute_assignment_in_init(self, node: Dict, param_names: List[str]):
+        """Обрабатывает присваивание атрибуту в конструкторе"""
+        object_name = node.get("object", "")
+        attribute = node.get("attribute", "")
+        value_ast = node.get("value", {})
+
+        print(
+            f"DEBUG _process_attribute_assignment_in_init: {object_name}.{attribute} = {value_ast}"
+        )
+
+        if object_name == "self" and value_ast:
+            # Генерируем выражение для значения с учетом параметров конструктора
+            value_expr = self._generate_expression_from_ast_for_init(
+                value_ast, param_names
+            )
+            if value_expr:
+                print(f"DEBUG: Generated expression: obj->{attribute} = {value_expr}")
+                self.add_line(f"obj->{attribute} = {value_expr};")
+            else:
+                print(f"DEBUG: Could not generate expression for {attribute}")
+                self.add_line(f"obj->{attribute} = 0; // default value")
+        else:
+            print(f"DEBUG: Skipping non-self assignment or empty value")
+
+    def _generate_expression_from_ast_for_init(
+        self, ast: Dict, param_names: List[str]
+    ) -> str:
+        """Генерирует выражение из AST для конструктора с подстановкой параметров"""
+        if not ast:
+            return ""
+
+        node_type = ast.get("type", "")
+        print(
+            f"DEBUG _generate_expression_from_ast_for_init: type={node_type}, ast={ast}"
+        )
+
+        if node_type == "literal":
+            value = ast.get("value", "")
+            data_type = ast.get("data_type", "")
+            print(f"DEBUG: Found literal: {value} (type: {data_type})")
+            if data_type == "str":
+                return f'"{value}"'
+            else:
+                return str(value)
+
+        elif node_type == "variable":
+            # Поддерживаем оба формата: 'value' и 'name'
+            var_name = ast.get("value") or ast.get("name", "")
+            print(f"DEBUG: Found variable: {var_name}")
+            # Если это параметр конструктора, используем как есть
+            if var_name in param_names:
+                print(f"DEBUG: Is a constructor parameter")
+                return var_name
+            # Если это не параметр, возможно это атрибут self
+            print(f"DEBUG: Not a constructor parameter")
+            return var_name
+
+        elif node_type == "binary_operation":
+            left_ast = ast.get("left", {})
+            right_ast = ast.get("right", {})
+            operator = ast.get("operator_symbol") or ast.get("operator", "")
+
+            print(f"DEBUG: Binary operation: {operator}")
+
+            left = self._generate_expression_from_ast_for_init(left_ast, param_names)
+            right = self._generate_expression_from_ast_for_init(right_ast, param_names)
+
+            if operator in ["**", "POW"]:
+                return f"pow({left}, {right})"
+
+            c_operator = self.operator_map.get(operator, operator)
+
+            # Правильно расставляем скобки для сохранения приоритета операций
+            if operator in ["+", "-", "ADD", "SUBTRACT"]:
+                # Для сложения/вычитания в сложных выражениях нужны скобки
+                if left_ast.get("type") == "binary_operation":
+                    left_operator = left_ast.get("operator_symbol") or left_ast.get(
+                        "operator", ""
+                    )
+                    if left_operator in ["*", "/", "%", "MULTIPLY", "DIVIDE", "MODULO"]:
+                        left = f"({left})"
+                if right_ast.get("type") == "binary_operation":
+                    right_operator = right_ast.get("operator_symbol") or right_ast.get(
+                        "operator", ""
+                    )
+                    if right_operator in [
+                        "*",
+                        "/",
+                        "%",
+                        "MULTIPLY",
+                        "DIVIDE",
+                        "MODULO",
+                    ]:
+                        right = f"({right})"
+
+            result = f"{left} {c_operator} {right}"
+            print(f"DEBUG: Generated binary expression: {result}")
+            return result
+
+        print(
+            f"DEBUG _generate_expression_from_ast_for_init: Unknown AST type: {node_type}"
+        )
+        return ""
+
+    def _generate_expression_from_ast(self, ast: Dict, param_names: List[str]) -> str:
+        """Генерирует выражение из AST с подстановкой параметров конструктора"""
+        if not ast:
+            return ""
+
+        node_type = ast.get("type", "")
+        print(f"DEBUG _generate_expression_from_ast: type={node_type}, ast={ast}")
+
+        if node_type == "variable":
+            # Поддерживаем оба формата: 'value' и 'name'
+            var_name = ast.get("value") or ast.get("name", "")
+            # Если это параметр конструктора, используем как есть
+            if var_name in param_names:
+                print(f"DEBUG: Found parameter: {var_name}")
+                return var_name
+            print(f"DEBUG: Variable not a parameter: {var_name}")
+            return var_name
+
+        elif node_type == "literal":
+            value = ast.get("value", "")
+            data_type = ast.get("data_type", "")
+            print(f"DEBUG: Found literal: {value} (type: {data_type})")
+            if data_type == "str":
+                return f'"{value}"'
+            else:
+                return str(value)
+
+        elif node_type == "binary_operation":
+            left_ast = ast.get("left", {})
+            right_ast = ast.get("right", {})
+            operator = ast.get("operator_symbol") or ast.get("operator", "")
+
+            print(f"DEBUG: Binary operation: {operator}")
+
+            left = self._generate_expression_from_ast(left_ast, param_names)
+            right = self._generate_expression_from_ast(right_ast, param_names)
+
+            if operator == "**" or operator == "POW":
+                return f"pow({left}, {right})"
+
+            c_operator = self.operator_map.get(operator, operator)
+
+            # Правильно расставляем скобки для сохранения приоритета операций
+            if operator in ["+", "-", "ADD", "SUBTRACT"]:
+                # Для сложения/вычитания в сложных выражениях нужны скобки
+                if left_ast.get("type") == "binary_operation":
+                    left_operator = left_ast.get("operator_symbol") or left_ast.get(
+                        "operator", ""
+                    )
+                    if left_operator in ["*", "/", "%", "MULTIPLY", "DIVIDE", "MODULO"]:
+                        left = f"({left})"
+                if right_ast.get("type") == "binary_operation":
+                    right_operator = right_ast.get("operator_symbol") or right_ast.get(
+                        "operator", ""
+                    )
+                    if right_operator in [
+                        "*",
+                        "/",
+                        "%",
+                        "MULTIPLY",
+                        "DIVIDE",
+                        "MODULO",
+                    ]:
+                        right = f"({right})"
+
+            result = f"{left} {c_operator} {right}"
+            print(f"DEBUG: Generated binary expression: {result}")
+            return result
+
+        elif node_type == "attribute_access":
+            obj_name = ast.get("object", "")
+            attr_name = ast.get("attribute", "")
+
+            print(f"DEBUG: Attribute access: {obj_name}.{attr_name}")
+
+            # В конструкторе атрибуты объекта еще не инициализированы
+            # Это не должно случиться при правильном анализе
+            self.add_line(
+                f"// WARNING: Accessing attribute {attr_name} of {obj_name} in constructor"
+            )
+            return f"obj->{attr_name}"
+
+        print(f"DEBUG: Unknown AST type: {node_type}")
+        return ""
+
+    def _generate_init_logic(
+        self, class_name: str, init_scope: Dict, param_names: List[str]
+    ):
+        """Генерирует логику инициализации полей из метода __init__"""
+        if not init_scope:
+            print(f"DEBUG _generate_init_logic: No init_scope for {class_name}")
+            return
+
+        graph = init_scope.get("graph", [])
+
+        print(
+            f"DEBUG _generate_init_logic: Processing {len(graph)} nodes for {class_name}"
+        )
+        print(f"DEBUG _generate_init_logic: param_names = {param_names}")
+
+        for i, node in enumerate(graph):
+            print(f"DEBUG _generate_init_logic: Node {i}: {node}")
+
+        if not graph:
+            # Если нет графа, просто инициализируем поля значениями по умолчанию
+            if class_name in self.class_fields:
+                for field_name in self.class_fields[class_name]:
+                    self.add_line(f"obj->{field_name} = 0;")
+            return
+
+        self.add_line(f"// Инициализация полей класса {class_name}")
+
+        for i, node in enumerate(graph):
+            node_type = node.get("node", "")
+            print(f"DEBUG _generate_init_logic: Node {i}: type={node_type}")
+
+            if node_type == "attribute_assignment":
+                # Присваивание атрибуту: self.weights = in_dim + out_dim
+                print(f"DEBUG _generate_init_logic: Found attribute_assignment: {node}")
+                self._process_attribute_assignment_in_init(node, param_names)
+
+            elif node_type == "expression":
+                # Выражение, которое может содержать операции присваивания
+                print(f"DEBUG _generate_init_logic: Found expression: {node}")
+                operations = node.get("operations", [])
+                for op in operations:
+                    if op.get("type") == "ATTRIBUTE_ASSIGN":
+                        object_name = op.get("object", "")
+                        attribute = op.get("attribute", "")
+                        value = op.get("value", {})
+
+                        if object_name == "self":
+                            value_expr = self._generate_expression_from_ast_for_init(
+                                value, param_names
+                            )
+                            if value_expr:
+                                self.add_line(f"obj->{attribute} = {value_expr};")
+                            else:
+                                self.add_line(f"obj->{attribute} = 0; // default value")
