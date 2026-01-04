@@ -38,6 +38,13 @@ def main() -> None:
 ```
 
 ```python
+def main() -> int:
+    var name: str = input("Enter your name: ")
+    print("Hello, ", name)
+    return 0
+```
+
+```python
 def func() -> str:
     return "qepfko"
 

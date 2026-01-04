@@ -385,6 +385,10 @@ class CCodeGenerator:
             args_str = ", ".join(value_parts)
 
             self.add_line(f"printf({format_str}, {args_str});")
+        elif func_name == "input":
+            # Для input() без присваивания
+            self.generate_input_statement(node)
+            return
         else:
             # Обработка других встроенных функций
             # Генерируем аргументы
@@ -417,14 +421,54 @@ class CCodeGenerator:
         return_type = node.get("return_type", "")
 
         if not target:
-            self.generate_builtin_function_call(node)
+            # Просто вызов функции без присваивания
+            if func_name == "input":
+                self.generate_input_statement(node)
+            else:
+                self.generate_builtin_function_call(node)
             return
 
         var_info = self.get_variable_info(target)
         if not var_info:
             node_type = node.get("var_type", "int")
+            # Для input() по умолчанию возвращается строка
+            if func_name == "input" and not node_type:
+                node_type = "str"
             self.declare_variable(target, node_type)
             var_info = self.get_variable_info(target)
+
+        # Специальная обработка для input()
+        if func_name == "input":
+            c_type = var_info["c_type"] if var_info else "char*"
+
+            # Генерируем prompt если есть аргументы
+            if args:
+                self._generate_input_prompt(args)
+
+            # Для разных типов переменных разная обработка
+            if c_type == "char*":
+                # Для строковых переменных - прямой ввод в целевую переменную
+                self._generate_input_read_code_direct(target)
+            else:
+                # Для других типов (int, float и т.д.)
+                buffer_var = f"{target}_input_buffer"
+                self.add_line(f"char {buffer_var}[256];")
+                self.add_line(f"fgets({buffer_var}, sizeof({buffer_var}), stdin);")
+                self.add_line(f'{buffer_var}[strcspn({buffer_var}, "\\n")] = 0;')
+
+                if c_type == "int":
+                    self.add_line(f"{target} = atoi({buffer_var});")
+                elif c_type == "float" or c_type == "double":
+                    self.add_line(f"{target} = atof({buffer_var});")
+                elif c_type == "bool":
+                    self.add_line(
+                        f'{target} = (strcmp({buffer_var}, "true") == 0 || strcmp({buffer_var}, "1") == 0);'
+                    )
+                else:
+                    self.add_line(f"// Неподдерживаемый тип для input: {c_type}")
+                    self.add_line(f"{target} = 0;")
+
+            return
 
         # Маппинг встроенных функций Python -> C
         builtin_map = {
@@ -468,6 +512,39 @@ class CCodeGenerator:
         c_type = var_info["c_type"] if var_info else self.map_type_to_c(return_type)
         self.add_line(f"{c_type} {target} = {c_func_name}({args_str});")
 
+    def _generate_input_read_code_direct(self, target_var: str):
+        """Генерирует код для чтения ввода с клавиатуры прямо в целевую переменную"""
+        # Создаем буфер для ввода
+        buffer_var = f"{target_var}_buffer"
+
+        # Выделяем память для буфера (стековая переменная)
+        self.add_line(f"char {buffer_var}[256];")
+
+        # Читаем строку с stdin
+        self.add_line(f"fgets({buffer_var}, sizeof({buffer_var}), stdin);")
+
+        # Убираем символ новой строки
+        self.add_line(f'{buffer_var}[strcspn({buffer_var}, "\\n")] = 0;')
+
+        # Освобождаем предыдущую память, если переменная уже инициализирована
+        self.add_line(f"if ({target_var} != NULL) {{")
+        self.indent_level += 1
+        self.add_line(f"free({target_var});")
+        self.indent_level -= 1
+        self.add_line(f"}}")
+
+        # Выделяем память для результата и копируем
+        self.add_line(f"{target_var} = malloc(strlen({buffer_var}) + 1);")
+        self.add_line(f"if (!{target_var}) {{")
+        self.indent_level += 1
+        self.add_line(
+            f'fprintf(stderr, "Memory allocation failed for input result\\n");'
+        )
+        self.add_line(f"exit(1);")
+        self.indent_level -= 1
+        self.add_line(f"}}")
+        self.add_line(f"strcpy({target_var}, {buffer_var});")
+
     def generate_break(self, node: Dict):
         """Генерирует оператор break"""
         self.add_line("break;")
@@ -505,6 +582,12 @@ class CCodeGenerator:
 
         # 2. Определяем тип и генерируем соответствующее объявление
 
+        # Сначала объявляем переменную в scope
+        self.declare_variable(var_name, var_type)
+
+        # Получаем C тип
+        c_type = self.map_type_to_c(var_type)
+
         # 2.1 Указатели
         if var_type.startswith("*"):
             self.generate_pointer_declaration(
@@ -537,12 +620,68 @@ class CCodeGenerator:
 
         # 2.6 Простые типы (int, float, str, bool, None)
         else:
-            self.generate_simple_declaration(
-                var_name, var_type, expression_ast, operations
+            self.generate_simple_declaration_with_init(
+                var_name, c_type, var_type, expression_ast, operations
             )
 
-        # 3. Объявляем переменную в scope
-        self.declare_variable(var_name, var_type)
+    def generate_simple_declaration_with_init(
+        self,
+        var_name: str,
+        c_type: str,
+        var_type: str,
+        expression_ast: Dict,
+        operations: List,
+    ):
+        """Генерирует объявление простой переменной с правильной инициализацией"""
+        if expression_ast:
+            expr = self.generate_expression(expression_ast)
+
+            # Проверяем специальные случаи инициализации
+            special_case_handled = False
+            for op in operations:
+                if op.get("type") == "ASSIGN_POINTER":
+                    # Инициализация указателя
+                    value = op.get("value", {})
+                    if value.get("type") == "address_of":
+                        var = value.get("variable", "")
+                        self.add_line(f"{c_type} {var_name} = &{var};")
+                        special_case_handled = True
+                        return
+                elif op.get("type") == "ASSIGN_NULL":
+                    # Инициализация null
+                    self.add_line(f"{c_type} {var_name} = NULL;")
+                    special_case_handled = True
+                    return
+
+            # Обычная инициализация
+            if not special_case_handled:
+                # Для строковых переменных может быть результат input()
+                if (
+                    c_type == "char*"
+                    and isinstance(expr, str)
+                    and expr.startswith("temp_")
+                ):
+                    # Это результат input() - уже инициализирован
+                    self.add_line(f"{c_type} {var_name} = {expr};")
+                else:
+                    self.add_line(f"{c_type} {var_name} = {expr};")
+        else:
+            # Объявление без инициализации
+            # Для указателей инициализируем NULL
+            if c_type.endswith("*") or var_type == "str":
+                self.add_line(f"{c_type} {var_name} = NULL;")
+            else:
+                # Для простых типов просто объявляем
+                self.add_line(f"{c_type} {var_name};")
+
+            # Если есть операции инициализации
+            for op in operations:
+                if op.get("type") == "INITIALIZE":
+                    value_ast = op.get("value", {})
+                    if value_ast:
+                        expr = self.generate_expression(value_ast)
+                        self.add_line(f"{var_name} = {expr};")
+                    break
 
     def generate_pointer_declaration(
         self, var_name: str, var_type: str, expression_ast: Dict, operations: List
@@ -2552,7 +2691,7 @@ class CCodeGenerator:
             if func_name.startswith("@"):
                 func_name = func_name[1:]
 
-            builtin_funcs = ["len", "str", "int", "bool", "range"]
+            builtin_funcs = ["len", "str", "int", "bool", "range", "input"]
             if func_name in builtin_funcs:
                 args = ast.get("arguments", [])
 
@@ -2580,6 +2719,9 @@ class CCodeGenerator:
                             c_func_name = "builtin_len"
                     else:
                         c_func_name = "builtin_len"
+                elif func_name == "input":
+                    # Для input в выражениях генерируем код и возвращаем переменную
+                    return self.generate_input_expression(ast)
                 else:
                     c_func_name = f"builtin_{func_name}"
             else:
@@ -3780,3 +3922,201 @@ class CCodeGenerator:
                                 self.add_line(f"obj->{attribute} = {value_expr};")
                             else:
                                 self.add_line(f"obj->{attribute} = 0; // default value")
+
+    def generate_input(self, node: Dict):
+        """Генерирует код для функции input()"""
+        args = node.get("arguments", [])
+
+        # Форматная строка для prompt (если есть)
+        format_str = ""
+        value_parts = []
+
+        if args:
+            # Создаем форматную строку для prompt
+            format_parts = []
+            for arg in args:
+                if isinstance(arg, dict):
+                    if arg.get("type") == "literal" and arg.get("data_type") == "str":
+                        # Строковый литерал
+                        value = arg.get("value", "")
+                        format_parts.append(f"{value}")
+                    else:
+                        # Другие выражения
+                        expr = self.generate_expression(arg)
+                        format_parts.append("%s")
+                        value_parts.append(expr)
+                else:
+                    # Простая строка
+                    format_parts.append(str(arg))
+
+            # Собираем строку
+            prompt = " ".join(format_parts)
+            format_str = f'printf("{prompt}"); '
+
+        # Добавляем чтение ввода
+        # Создаем временную переменную для результата input()
+        temp_var = self.generate_temporary_var("str")
+        self.add_line(
+            f"{format_str}char {temp_var}[256]; fgets({temp_var}, sizeof({temp_var}), stdin);"
+        )
+
+        # Убираем символ новой строки в конце
+        self.add_line(f'{temp_var}[strcspn({temp_var}, "\\n")] = 0;')
+
+        # Если input() используется в выражении, нужно вернуть значение
+        # Для этого создадим узел с результатом
+        return temp_var
+
+    def generate_expression_input(self, node: Dict) -> str:
+        """Генерирует выражение с input() и возвращает имя переменной"""
+        args = node.get("arguments", [])
+
+        # Создаем временную переменную для результата
+        temp_var = self.generate_temporary_var("str")
+
+        # Создаем prompt если есть аргументы
+        if args:
+            format_parts = []
+            value_parts = []
+
+            for arg in args:
+                if isinstance(arg, dict):
+                    if arg.get("type") == "literal" and arg.get("data_type") == "str":
+                        value = arg.get("value", "")
+                        format_parts.append(value)
+                    else:
+                        expr = self.generate_expression(arg)
+                        format_parts.append("%s")
+                        value_parts.append(expr)
+
+            prompt = " ".join(format_parts)
+            if value_parts:
+                args_str = ", ".join(value_parts)
+                self.add_line(f'printf("{prompt}", {args_str});')
+            else:
+                self.add_line(f'printf("{prompt}");')
+
+        # Читаем ввод
+        self.add_line(f"char {temp_var}_buffer[256];")
+        self.add_line(f"fgets({temp_var}_buffer, sizeof({temp_var}_buffer), stdin);")
+        self.add_line(f'{temp_var}_buffer[strcspn({temp_var}_buffer, "\\n")] = 0;')
+
+        # Выделяем память для строки
+        self.add_line(f"{temp_var} = malloc(strlen({temp_var}_buffer) + 1);")
+        self.add_line(f"strcpy({temp_var}, {temp_var}_buffer);")
+
+        return temp_var
+
+    def generate_print_from_ast(self, ast: Dict):
+        """Генерирует print из AST выражения"""
+        args = ast.get("arguments", [])
+
+        # Создаем временный узел для print
+        print_node = {
+            "node": "print",
+            "arguments": args,
+        }
+
+        # Используем существующий метод generate_print
+        self.generate_print(print_node)
+
+    def generate_input_expression(self, node: Dict) -> str:
+        """Генерирует выражение с input() и возвращает имя переменной с результатом"""
+        args = node.get("arguments", [])
+
+        # Создаем уникальное имя для временной переменной
+        temp_var = self.generate_temporary_var("str")
+
+        # Объявляем переменную
+        self.declare_variable(temp_var, "str")
+
+        # Получаем информацию о переменной для генерации правильного типа
+        var_info = self.get_variable_info(temp_var)
+        c_type = var_info["c_type"] if var_info else "char*"
+
+        # Объявляем переменную
+        self.add_line(f"{c_type} {temp_var} = NULL;")
+
+        # Генерируем prompt если есть аргументы
+        if args:
+            self._generate_input_prompt(args)
+
+        # Генерируем код для чтения ввода
+        self._generate_input_read_code_direct(temp_var)
+
+        return temp_var
+
+    def _generate_input_prompt(self, args: List):
+        """Генерирует код для вывода prompt в input()"""
+        format_parts = []
+        value_parts = []
+
+        for arg in args:
+            if isinstance(arg, dict):
+                if arg.get("type") == "literal" and arg.get("data_type") == "str":
+                    # Строковый литерал
+                    value = arg.get("value", "")
+                    format_parts.append(f"{value}")
+                else:
+                    # Другие выражения (переменные, вызовы функций и т.д.)
+                    expr = self.generate_expression(arg)
+                    format_parts.append("%s")
+                    value_parts.append(expr)
+            else:
+                # Простая строка (не должно быть в нормальном AST)
+                format_parts.append(str(arg))
+
+        # Собираем prompt строку
+        if format_parts:
+            prompt = " ".join(format_parts)
+
+            if value_parts:
+                # Если есть динамические части (переменные)
+                args_str = ", ".join(value_parts)
+                self.add_line(f'printf("{prompt}", {args_str});')
+            else:
+                # Простой строковый литерал
+                self.add_line(f'printf("{prompt}");')
+
+    def _generate_input_read_code(self, target_var: str):
+        """Генерирует код для чтения ввода с клавиатуры"""
+        # Создаем буфер для ввода
+        buffer_var = f"{target_var}_buffer"
+
+        # Выделяем память для буфера
+        self.add_line(f"char {buffer_var}[256];")
+
+        # Читаем строку с stdin
+        self.add_line(f"fgets({buffer_var}, sizeof({buffer_var}), stdin);")
+
+        # Убираем символ новой строки
+        self.add_line(f'{buffer_var}[strcspn({buffer_var}, "\\n")] = 0;')
+
+        # Выделяем память для результата и копируем
+        self.add_line(f"{target_var} = malloc(strlen({buffer_var}) + 1);")
+        self.add_line(f"if (!{target_var}) {{")
+        self.indent_level += 1
+        self.add_line(
+            f'fprintf(stderr, "Memory allocation failed for input result\\n");'
+        )
+        self.add_line(f"exit(1);")
+        self.indent_level -= 1
+        self.add_line(f"}}")
+        self.add_line(f"strcpy({target_var}, {buffer_var});")
+
+    def generate_input_statement(self, node: Dict):
+        """Генерирует вызов input() как отдельный statement (без присваивания)"""
+        args = node.get("arguments", [])
+
+        # Генерируем prompt если есть аргументы
+        if args:
+            self._generate_input_prompt(args)
+
+        # Читаем ввод, но игнорируем результат
+        temp_var = self.generate_temporary_var("str")
+        buffer_var = f"{temp_var}_buffer"
+
+        self.add_line(f"char {buffer_var}[256];")
+        self.add_line(f"fgets({buffer_var}, sizeof({buffer_var}), stdin);")
+        self.add_line(f'{buffer_var}[strcspn({buffer_var}, "\\n")] = 0;')
+        self.add_line(f"// Ввод прочитан, результат игнорируется")

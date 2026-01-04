@@ -372,6 +372,7 @@ class Parser:
             "int",
             "bool",
             "range",
+            "input",  # ДОБАВЛЕНО
         }  # Добавили встроенные функции
         self.import_processor = ImportProcessor(
             base_path=base_path
@@ -1377,6 +1378,8 @@ class Parser:
             return "None"
         elif func_name == "range":
             return "range"
+        elif func_name == "input":  # ДОБАВЛЕНО
+            return "str"  # input всегда возвращает строку
         return "unknown"
 
     def parse_global_line(
