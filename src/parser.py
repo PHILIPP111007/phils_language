@@ -499,6 +499,55 @@ class Parser:
             print(f"Error: else без предшествующего if в строке {current_index}")
             return current_index + 1
 
+        if line.startswith("@"):
+            parsed = self.parse_c_call(line, scope)
+            return current_index + 1
+
+        # Проверяем вызов метода: object.method(args)
+        # Пример: c.append(x)
+        method_pattern = (
+            r"([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)"
+        )
+        method_match = re.match(method_pattern, line)
+
+        if method_match:
+            obj_name, method_name, args_str = method_match.groups()
+            args = self.parse_function_arguments(args_str)
+
+            # Создаем узел для вызова метода
+            operations = [
+                {
+                    "type": "METHOD_CALL",
+                    "object": obj_name,
+                    "method": method_name,
+                    "arguments": args,
+                }
+            ]
+
+            dependencies = [obj_name]
+            for arg in args:
+                if isinstance(arg, dict):
+                    deps = self.extract_dependencies_from_ast(arg)
+                    dependencies.extend(deps)
+                elif (
+                    arg and arg.isalpha() and arg not in KEYS and arg not in DATA_TYPES
+                ):
+                    dependencies.append(arg)
+
+            scope["graph"].append(
+                {
+                    "node": "method_call",
+                    "content": line,
+                    "object": obj_name,
+                    "method": method_name,
+                    "arguments": args,
+                    "operations": operations,
+                    "dependencies": dependencies,
+                }
+            )
+
+            return current_index + 1
+
         for key in KEYS:
             if line.startswith(key + " ") or line == key:
                 if key == "const":
@@ -1117,12 +1166,85 @@ class Parser:
         return False
 
     def extract_list_element_type(self, list_type: str) -> str:
-        """Извлекает тип элементов из объявления типа списка"""
-        if "[" in list_type and "]" in list_type:
-            match = re.search(r"\[([^\]]+)\]", list_type)
-            if match:
-                return match.group(1).strip()
-        return "any"  # Тип по умолчанию
+        """Извлекает тип элементов из объявления типа списка, учитывая вложенность"""
+        # Убираем "list[" в начале и "]" в конце
+        if list_type.startswith("list[") and list_type.endswith("]"):
+            inner = list_type[5:-1]  # Убираем "list[" и "]"
+
+            # Теперь нужно найти баланс скобок
+            balance = 0
+            end_index = -1
+
+            for i, char in enumerate(inner):
+                if char == "[":
+                    balance += 1
+                elif char == "]":
+                    balance -= 1
+                    if balance < 0:
+                        # Недопустимая строка
+                        return "any"
+
+                # Когда баланс становится 0, мы нашли конец
+                if balance == 0:
+                    end_index = i
+                    break
+
+            if end_index != -1:
+                return inner[: end_index + 1]
+
+        return "any"
+
+    def find_equals_outside_brackets(self, s: str) -> int:
+        """Находит позицию символа '=', которая не находится внутри скобок"""
+        depth = 0
+        in_string = False
+        string_char = None
+
+        for i, char in enumerate(s):
+            # Обработка строк
+            if not in_string and char in ['"', "'"]:
+                in_string = True
+                string_char = char
+            elif in_string and char == string_char:
+                # Проверяем экранирование
+                if i == 0 or s[i - 1] != "\\":
+                    in_string = False
+            # Обработка скобок (только вне строк)
+            elif not in_string:
+                if char == "[":
+                    depth += 1
+                elif char == "]":
+                    depth -= 1
+                elif char == "=" and depth == 0:
+                    return i
+
+        return -1
+
+    def extract_content_inside_brackets(
+        self, s: str, prefix: str, closing_bracket: str
+    ) -> str:
+        """Извлекает содержимое внутри скобок, учитывая вложенность"""
+        if not s.startswith(prefix):
+            return ""
+
+        content = s[len(prefix) :]
+        depth = 0
+        result = []
+
+        for i, char in enumerate(content):
+            if char == "[":
+                depth += 1
+                result.append(char)
+            elif char == "]":
+                if depth == 0:
+                    # Нашли закрывающую скобку
+                    return "".join(result)
+                depth -= 1
+                result.append(char)
+            else:
+                result.append(char)
+
+        return "".join(result)
 
     def parse_var(self, line: str, scope: dict):
         """Парсит объявление переменной с поддержкой tuple и list"""
@@ -1135,16 +1257,13 @@ class Parser:
 
         name, type_and_value = match.groups()
 
-        # Разделяем тип и значение
-        if "=" not in type_and_value:
+        # Разделяем тип и значение - ищем первый "=", который не находится внутри скобок
+        equals_pos = self.find_equals_outside_brackets(type_and_value)
+        if equals_pos == -1:
             return False
 
-        # Ищем последний = перед значением (но не внутри <> или [])
-        parts = type_and_value.split("=", 1)
-        if len(parts) != 2:
-            return False
-
-        var_type_str, value_str = parts[0].strip(), parts[1].strip()
+        var_type_str = type_and_value[:equals_pos].strip()
+        value_str = type_and_value[equals_pos + 1 :].strip()
 
         # Обрабатываем разные варианты типов
         is_pointer = var_type_str.startswith("*")
@@ -1159,7 +1278,7 @@ class Parser:
         tuple_element_types = []
 
         # Проверяем tuple[T]
-        tuple_uniform_pattern = r"tuple\[([a-zA-Z_][a-zA-Z0-9_]*)\]"
+        tuple_uniform_pattern = r"tuple\[([^\]]+)\]"
         tuple_uniform_match = re.match(tuple_uniform_pattern, var_type_str)
 
         if tuple_uniform_match:
@@ -1170,15 +1289,17 @@ class Parser:
         # Проверяем tuple[T1, T2, ...]
         elif var_type_str.startswith("tuple["):
             # Извлекаем содержимое скобок
-            bracket_content = var_type_str[6:-1]  # убираем "tuple[" и "]"
-            if "," in bracket_content:
+            inner_content = self.extract_content_inside_brackets(
+                var_type_str, "tuple[", "]"
+            )
+            if inner_content and "," in inner_content:
                 is_tuple_fixed = True
                 # Разделяем по запятым, но учитываем вложенные скобки
                 tuple_element_types = []
                 current_type = ""
                 depth = 0
 
-                for char in bracket_content:
+                for char in inner_content:
                     if char == "[":
                         depth += 1
                         current_type += char
@@ -1319,20 +1440,29 @@ class Parser:
                 )
 
         elif var_type_str.startswith("list["):
-            # list[T]
-            match = re.match(r"list\[([^\]]+)\]", var_type_str)
-            if match:
-                element_type = match.group(1)
+            # list[T] - может быть вложенным list[list[int]]
+            inner_content = self.extract_content_inside_brackets(
+                var_type_str, "list[", "]"
+            )
+            if inner_content:
+                element_type = inner_content.strip()
 
                 if value_ast.get("type") == "list_literal":
+                    # Проверяем вложенность
+                    items = value_ast.get("items", [])
+                    is_nested = all(
+                        item.get("type") == "list_literal" for item in items
+                    )
+
                     operations.append(
                         {
                             "type": "CREATE_LIST",
                             "target": name,
-                            "items": value_ast.get("items", []),
-                            "size": len(value_ast.get("items", [])),
-                            "element_type": element_type,
+                            "items": items,
+                            "size": len(items),
+                            "element_type": element_type,  # Сохраняем полный тип элемента
                             "is_pointer_array": True,
+                            "is_nested": is_nested,  # Добавляем информацию о вложенности
                         }
                     )
                 else:
@@ -3494,7 +3624,7 @@ class Parser:
         return None
 
     def parse_list_literal(self, value: str) -> dict:
-        """Парсит литерал списка: [1, 2, 3]"""
+        """Парсит литерал списка: [1, 2, 3] или [[1, 2], [3, 4]]"""
         if not (value.startswith("[") and value.endswith("]")):
             return {"type": "unknown", "value": value}
 
@@ -3521,37 +3651,49 @@ class Parser:
                     else:
                         in_string = False
                         current_item += char
-                elif not in_string and char == "[":
-                    depth += 1
-                    current_item += char
-                elif not in_string and char == "]":
-                    depth -= 1
-                    current_item += char
-                elif not in_string and char == "{":
-                    depth += 1
-                    current_item += char
-                elif not in_string and char == "}":
-                    depth -= 1
-                    current_item += char
-                elif not in_string and char == "(":
-                    depth += 1
-                    current_item += char
-                elif not in_string and char == ")":
-                    depth -= 1
-                    current_item += char
-                elif not in_string and depth == 0 and char == ",":
-                    if current_item.strip():
-                        items.append(self.parse_expression_to_ast(current_item.strip()))
-                    current_item = ""
+                elif not in_string:
+                    if char == "[":
+                        depth += 1
+                        current_item += char
+                    elif char == "]":
+                        depth -= 1
+                        current_item += char
+                    elif char == "(":
+                        depth += 1
+                        current_item += char
+                    elif char == ")":
+                        depth -= 1
+                        current_item += char
+                    elif char == "{":
+                        depth += 1
+                        current_item += char
+                    elif char == "}":
+                        depth -= 1
+                        current_item += char
+                    elif depth == 0 and char == ",":
+                        if current_item.strip():
+                            item_ast = self.parse_expression_to_ast(
+                                current_item.strip()
+                            )
+                            items.append(item_ast)
+                        current_item = ""
+                    else:
+                        current_item += char
                 else:
                     current_item += char
 
                 i += 1
 
             if current_item.strip():
-                items.append(self.parse_expression_to_ast(current_item.strip()))
+                item_ast = self.parse_expression_to_ast(current_item.strip())
+                items.append(item_ast)
 
-        return {"type": "list_literal", "items": items, "length": len(items)}
+        return {
+            "type": "list_literal",
+            "items": items,
+            "length": len(items),
+            "is_nested": any(item.get("type") == "list_literal" for item in items),
+        }
 
     def parse_dict_literal(self, value: str) -> dict:
         """Парсит литерал словаря: {"key": "value", "num": 42}"""
@@ -4101,6 +4243,51 @@ class Parser:
         """Парсит вложенные if внутри других блоков (while, for, других if)"""
         # Используем ту же логику, что и для обычного if
         return self.parse_if_statement(line, scope, all_lines, current_index, indent)
+
+    def parse_c_call(self, line: str, scope: dict):
+        """Парсит прямой вызов C-функции"""
+        # Убираем @ в начале
+        c_call = line[1:].strip()
+
+        # Паттерн для вызова C-функции: func_name(arg1, arg2, ...)
+        pattern = r"([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)"
+        match = re.match(pattern, c_call)
+
+        if not match:
+            return False
+
+        func_name, args_str = match.groups()
+
+        # Разбираем аргументы
+        args = []
+        if args_str.strip():
+            args = self.parse_function_arguments(args_str)
+
+        operations = [{"type": "C_CALL", "function": func_name, "arguments": args}]
+
+        # Собираем зависимости из аргументов
+        dependencies = []
+        for arg in args:
+            if isinstance(arg, dict):
+                # Если аргумент - AST, извлекаем зависимости
+                deps = self.extract_dependencies_from_ast(arg)
+                dependencies.extend(deps)
+            elif arg.isalpha() and arg not in KEYS and arg not in DATA_TYPES:
+                dependencies.append(arg)
+
+        # Создаем узел для C-вызова
+        scope["graph"].append(
+            {
+                "node": "c_call",
+                "content": line,
+                "function": func_name,
+                "arguments": args,
+                "operations": operations,
+                "dependencies": dependencies,
+            }
+        )
+
+        return True
 
     def clean_value(self, value: str):
         """Очищает значение от лишних пробелов, но для сложных выражений возвращает AST"""
