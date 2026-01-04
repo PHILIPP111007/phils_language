@@ -1465,7 +1465,7 @@ class JSONValidator:
     def validate_function_call(
         self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
     ):
-        """Валидирует вызов функции"""
+        """Валидирует вызов функции с поддержкой AST аргументов"""
         func_name = node.get("function")
         arguments = node.get("arguments", [])
 
@@ -1477,13 +1477,7 @@ class JSONValidator:
 
             # Только базовая проверка аргументов (если нужно)
             for arg in arguments:
-                if arg and arg.isalpha() and arg not in ["True", "False", "None"]:
-                    if not self.find_symbol_in_scope(arg, level):
-                        self.add_warning(
-                            f"аргумент '{arg}' в игнорируемой функции '{func_name}' не объявлен",
-                            scope_idx,
-                            node_idx,
-                        )
+                self._validate_argument(arg, func_name, scope_idx, node_idx, level)
             return  # Завершаем проверку для этой функции
 
         # Проверяем, что функция существует или является встроенной
@@ -1504,11 +1498,148 @@ class JSONValidator:
 
         # Проверяем аргументы
         for arg in arguments:
-            if arg and arg.isalpha() and arg not in ["True", "False", "None"]:
+            self._validate_argument(arg, func_name, scope_idx, node_idx, level)
+
+    def _validate_argument(
+        self, arg, func_name: str, scope_idx: int, node_idx: int, level: int
+    ):
+        """Валидирует один аргумент (может быть строкой или AST)"""
+        if not arg:
+            return
+
+        # Если аргумент - строка
+        if isinstance(arg, str):
+            if arg.isalpha() and arg not in ["True", "False", "None"]:
                 if not self.find_symbol_in_scope(arg, level):
                     self.add_error(f"аргумент '{arg}' не объявлен", scope_idx, node_idx)
                 elif self.is_variable_deleted(arg, level):
                     self.add_error(f"аргумент '{arg}' был удален", scope_idx, node_idx)
+
+        # Если аргумент - AST (словарь)
+        elif isinstance(arg, dict):
+            arg_type = arg.get("type")
+
+            # Извлекаем зависимости из AST
+            dependencies = self._extract_dependencies_from_ast(arg)
+
+            for dep in dependencies:
+                if not self.find_symbol_in_scope(dep, level):
+                    self.add_warning(
+                        f"переменная '{dep}' в аргументе функции '{func_name}' не объявлена",
+                        scope_idx,
+                        node_idx,
+                    )
+                elif self.is_variable_deleted(dep, level):
+                    self.add_error(
+                        f"переменная '{dep}' в аргументе функции '{func_name}' была удалена",
+                        scope_idx,
+                        node_idx,
+                    )
+
+    def _extract_dependencies_from_ast(self, ast: Dict) -> List[str]:
+        """Извлекает зависимости (имена переменных) из AST"""
+        dependencies = []
+
+        def traverse(node):
+            if not isinstance(node, dict):
+                return
+
+            node_type = node.get("type")
+
+            if node_type == "variable":
+                var_name = node.get("name") or node.get("value")
+                if var_name and var_name not in dependencies:
+                    dependencies.append(var_name)
+
+            elif node_type == "attribute_access":
+                obj_name = node.get("object")
+                if obj_name and obj_name not in dependencies:
+                    dependencies.append(obj_name)
+
+            elif node_type == "method_call":
+                obj_name = node.get("object")
+                if obj_name and obj_name not in dependencies:
+                    dependencies.append(obj_name)
+
+                for arg in node.get("arguments", []):
+                    traverse(arg)
+
+            elif node_type == "constructor_call":
+                for arg in node.get("arguments", []):
+                    traverse(arg)
+
+            elif node_type == "function_call":
+                # Пользовательские функции добавляем как зависимости
+                func_name = node.get("function")
+                if func_name and func_name not in self.builtin_functions:
+                    if func_name not in dependencies:
+                        dependencies.append(func_name)
+
+                for arg in node.get("arguments", []):
+                    traverse(arg)
+
+            elif node_type == "binary_operation":
+                traverse(node.get("left"))
+                traverse(node.get("right"))
+
+            elif node_type == "unary_operation":
+                traverse(node.get("operand"))
+
+            elif node_type == "ternary_operator":
+                traverse(node.get("condition"))
+                traverse(node.get("true_expr"))
+                traverse(node.get("false_expr"))
+
+            elif node_type == "list_literal":
+                for item in node.get("items", []):
+                    traverse(item)
+
+            elif node_type == "tuple_literal":
+                for item in node.get("items", []):
+                    traverse(item)
+
+            elif node_type == "dict_literal":
+                for value in node.get("pairs", {}).values():
+                    traverse(value)
+
+            elif node_type == "set_literal":
+                for item in node.get("items", []):
+                    traverse(item)
+
+            elif node_type == "address_of":
+                var_name = node.get("variable")
+                if var_name and var_name not in dependencies:
+                    dependencies.append(var_name)
+
+            elif node_type == "dereference":
+                pointer_name = node.get("pointer")
+                if pointer_name and pointer_name not in dependencies:
+                    dependencies.append(pointer_name)
+
+            elif node_type == "index_access":
+                var_name = node.get("variable")
+                if var_name and var_name not in dependencies:
+                    dependencies.append(var_name)
+                traverse(node.get("index"))
+
+            elif node_type == "slice_access":
+                var_name = node.get("variable")
+                if var_name and var_name not in dependencies:
+                    dependencies.append(var_name)
+
+                start = node.get("start")
+                stop = node.get("stop")
+                step = node.get("step")
+
+                if start:
+                    traverse(start)
+                if stop:
+                    traverse(stop)
+                if step:
+                    traverse(step)
+
+        traverse(ast)
+        return dependencies
 
     def validate_builtin_function_call(
         self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
@@ -2965,6 +3096,66 @@ class JSONValidator:
                 return symbols[symbol_name]
 
         return None
+
+    def validate_method_call(
+        self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
+    ):
+        """Валидирует вызов метода объекта"""
+        obj_name = node.get("object")
+        method_name = node.get("method")
+        arguments = node.get("arguments", [])
+
+        # Проверяем объект
+        if obj_name and not self.find_symbol_in_scope(obj_name, level):
+            self.add_error(f"объект '{obj_name}' не объявлен", scope_idx, node_idx)
+        elif obj_name and self.is_variable_deleted(obj_name, level):
+            self.add_error(f"объект '{obj_name}' был удален", scope_idx, node_idx)
+
+        # Проверяем аргументы метода
+        for arg in arguments:
+            self._validate_argument(
+                arg, f"{obj_name}.{method_name}", scope_idx, node_idx, level
+            )
+
+    def validate_static_method_call(
+        self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
+    ):
+        """Валидирует вызов статического метода"""
+        class_name = node.get("class_name")
+        method_name = node.get("method")
+        arguments = node.get("arguments", [])
+
+        # Проверяем, существует ли класс
+        class_symbol = self._find_class_symbol(class_name, level)
+        if not class_symbol:
+            self.add_error(f"класс '{class_name}' не объявлен", scope_idx, node_idx)
+
+        # Проверяем аргументы
+        for arg in arguments:
+            self._validate_argument(
+                arg, f"{class_name}.{method_name}", scope_idx, node_idx, level
+            )
+
+    def _find_class_symbol(self, class_name: str, level: int) -> Optional[Dict]:
+        """Находит символ класса в таблице символов"""
+        for scope_info in self.scopes_info:
+            if scope_info["level"] <= level:
+                symbol_table = scope_info.get("symbol_table", {})
+                class_symbol = symbol_table.get(class_name)
+                if class_symbol and class_symbol.get("key") == "class":
+                    return class_symbol
+        return None
+
+    def validate_builtin_function_call(
+        self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
+    ):
+        """Валидирует вызов встроенной функции"""
+        func_name = node.get("function")
+        arguments = node.get("arguments", [])
+
+        # Проверяем аргументы встроенных функций
+        for arg in arguments:
+            self._validate_argument(arg, func_name, scope_idx, node_idx, level)
 
     def get_report(self) -> Dict:
         """Возвращает отчет о проверке"""

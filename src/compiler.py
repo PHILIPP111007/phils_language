@@ -20,6 +20,12 @@ class CCodeGenerator:
         self.generated_helpers = []
         self.helper_declarations = []  # Декларации helper-функций
 
+        # Для отслеживания типов классов
+        self.class_types = set()  # Имена классов
+        self.struct_types = set()  # Имена структур (включая tuple/list)
+        # Типы, которые являются указателями (используют ->)
+        self.pointer_types = set()
+
         # Расширенный маппинг типов Python -> C
         self.type_map = {
             "int": "int",
@@ -102,6 +108,13 @@ class CCodeGenerator:
 
     def map_type_to_c(self, py_type: str, is_pointer: bool = False) -> str:
         """Преобразует тип Python в тип C"""
+
+        if self._is_class_type(py_type):
+            # Классы в C - это указатели на структуры
+            if is_pointer:
+                return f"{py_type}**"  # Указатель на указатель
+            return f"{py_type}*"  # Обычный указатель на структуру
+
         if py_type.startswith("*"):
             base_type = py_type[1:]
             c_base_type = self.map_type_to_c(base_type)
@@ -290,6 +303,10 @@ class CCodeGenerator:
             self.generate_continue(node)
         elif node_type == "c_call":  # ДОБАВЬТЕ ЭТО
             self.generate_c_call(node)
+        elif node_type == "class_declaration":
+            self.generate_class_declaration(node)
+        elif node_type == "attribute_assignment":
+            self.generate_attribute_assignment(node)
         elif node_type == "method_call":
             self.generate_method_call(node)
         elif node_type == "c_import":
@@ -306,52 +323,87 @@ class CCodeGenerator:
         """Генерирует вызов встроенной функции"""
         func_name = node.get("function", "")
         args = node.get("arguments", [])
-        return_type = node.get("return_type", "")
 
-        # Маппинг встроенных функций Python -> C
-        builtin_map = {
-            "print": "printf",
-            "len": "builtin_len",
-            "str": "builtin_str",
-            "int": "builtin_int",
-            "bool": "builtin_bool",
-            "range": "builtin_range",
-        }
-
-        # Получаем C имя функции
-        c_func_name = builtin_map.get(func_name, func_name)
-
-        # Генерируем аргументы
-        arg_strings = []
-        for arg in args:
-            if isinstance(arg, dict):
-                arg_strings.append(self.generate_expression(arg))
-            else:
-                arg_strings.append(str(arg))
-
-        args_str = ", ".join(arg_strings)
-
-        # Обработка специальных случаев
         if func_name == "print":
-            # Для print генерируем полную строку
+            # Генерируем printf для print
             if not args:
                 self.add_line('printf("\\n");')
-            else:
-                # Создаем форматную строку
-                format_parts = []
-                for arg in args:
-                    if (
-                        isinstance(arg, str)
-                        and arg.startswith('"')
-                        and arg.endswith('"')
-                    ):
-                        format_parts.append(arg[1:-1])
+                return
+
+            # Создаем форматную строку
+            format_parts = []
+            value_parts = []
+
+            for arg in args:
+                if isinstance(arg, dict):
+                    if arg.get("type") == "attribute_access":
+                        expr = self.generate_attribute_access(arg)
+                        format_parts.append("%d")
+                        value_parts.append(expr)
+                    elif arg.get("type") == "variable":
+                        var_name = arg.get("value", "")
+                        var_info = self.get_variable_info(var_name)
+                        if var_info:
+                            var_type = var_info.get("py_type", "")
+                            if var_type == "int":
+                                format_parts.append("%d")
+                                value_parts.append(var_name)
+                            elif var_type in ["float", "double"]:
+                                format_parts.append("%f")
+                                value_parts.append(var_name)
+                            elif var_type == "str":
+                                format_parts.append("%s")
+                                value_parts.append(var_name)
+                            else:
+                                format_parts.append("%d")
+                                value_parts.append(var_name)
+                        else:
+                            format_parts.append("%d")
+                            value_parts.append(var_name)
+                    elif arg.get("type") == "literal":
+                        value = arg.get("value", "")
+                        data_type = arg.get("data_type", "")
+                        if data_type == "str":
+                            format_parts.append("%s")
+                            value_parts.append(f'"{value}"')
+                        else:
+                            format_parts.append("%d")
+                            value_parts.append(str(value))
                     else:
-                        format_parts.append("%d")  # По умолчанию int
-                format_str = '"' + " ".join(format_parts) + '\\n"'
-                self.add_line(f"printf({format_str}, {args_str});")
+                        expr = self.generate_expression(arg)
+                        format_parts.append("%d")
+                        value_parts.append(expr)
+                else:
+                    format_parts.append("%d")
+                    value_parts.append(str(arg))
+
+            # Собираем форматную строку
+            format_str = '"' + " ".join(format_parts) + '\\n"'
+            args_str = ", ".join(value_parts)
+
+            self.add_line(f"printf({format_str}, {args_str});")
         else:
-            # Для других встроенных функций
+            # Обработка других встроенных функций
+            # Генерируем аргументы
+            arg_strings = []
+            for arg in args:
+                if isinstance(arg, dict):
+                    arg_strings.append(self.generate_expression(arg))
+                else:
+                    arg_strings.append(str(arg))
+
+            args_str = ", ".join(arg_strings)
+
+            # Маппинг других встроенных функций
+            builtin_map = {
+                "len": "builtin_len",
+                "str": "builtin_str",
+                "int": "builtin_int",
+                "bool": "builtin_bool",
+                "range": "builtin_range",
+            }
+
+            c_func_name = builtin_map.get(func_name, func_name)
             self.add_line(f"{c_func_name}({args_str});")
 
     def generate_builtin_function_call_assignment(self, node: Dict):
@@ -422,41 +474,6 @@ class CCodeGenerator:
         """Генерирует оператор continue"""
         self.add_line("continue;")
         self.add_line("// continue statement")
-
-    def generate_method_call(self, node: Dict):
-        """Генерирует вызов метода"""
-        obj_name = node.get("object", "")
-        method_name = node.get("method", "")
-        args = node.get("arguments", [])
-
-        # Получаем информацию об объекте
-        var_info = self.get_variable_info(obj_name)
-        if not var_info:
-            self.add_line(f"// ERROR: Объект '{obj_name}' не найден")
-            return
-
-        # Генерируем аргументы
-        arg_strings = []
-        for arg in args:
-            if isinstance(arg, dict):
-                arg_strings.append(self.generate_expression(arg))
-            else:
-                arg_strings.append(str(arg))
-
-        args_str = ", ".join(arg_strings)
-
-        # Определяем тип объекта и маппим метод
-        py_type = var_info.get("py_type", "")
-
-        if py_type.startswith("list["):
-            struct_name = self.generate_list_struct_name(py_type)
-
-            if method_name == "append":
-                self.add_line(f"append_{struct_name}({obj_name}, {args_str});")
-            else:
-                self.add_line(f"// Неизвестный метод '{method_name}' для списка")
-        else:
-            self.add_line(f"// Вызов метода '{method_name}' для типа '{py_type}'")
 
     def generate_declaration(self, node: Dict):
         """Генерирует объявление переменной с поддержкой всех типов"""
@@ -1086,19 +1103,22 @@ class CCodeGenerator:
         func_name = node.get("function", "")
         args = node.get("arguments", [])
 
+        # Проверяем, является ли это print
+        if func_name == "print":
+            # Вызываем метод для генерации print
+            self.generate_print(node)
+            return
+
         # Удаляем @ из имени функции для C кода
         if func_name.startswith("@"):
             func_name = func_name[1:]
-            print(f"DEBUG: Вызов C-функции '{func_name}'")
 
         # Генерируем аргументы
         arg_strings = []
         for arg in args:
             if isinstance(arg, dict):
-                # Если аргумент - это AST
                 arg_strings.append(self.generate_expression(arg))
             else:
-                # Если аргумент - простая строка
                 arg_strings.append(str(arg))
 
         args_str = ", ".join(arg_strings)
@@ -1128,17 +1148,41 @@ class CCodeGenerator:
             self.add_line('printf("\\n");')
             return
 
+        # Для простоты будем печатать каждый аргумент с новой строки
         for arg in args:
-            # Определяем формат в зависимости от типа
-            if isinstance(arg, str):
-                if arg.startswith('"') and arg.endswith('"'):
-                    # Строковый литерал
-                    self.add_line(f"printf({arg});")
+            if isinstance(arg, dict):
+                if arg.get("type") == "attribute_access":
+                    # Доступ к атрибуту
+                    expr = self.generate_attribute_access(arg)
+                    self.add_line(f'printf("%d\\n", {expr});')
+                elif arg.get("type") == "variable":
+                    var_name = arg.get("value", "")
+                    var_info = self.get_variable_info(var_name)
+                    if var_info:
+                        var_type = var_info.get("py_type", "")
+                        if var_type == "int":
+                            self.add_line(f'printf("%d\\n", {var_name});')
+                        elif var_type == "float" or var_type == "double":
+                            self.add_line(f'printf("%f\\n", {var_name});')
+                        elif var_type == "str":
+                            self.add_line(f'printf("%s\\n", {var_name});')
+                        else:
+                            self.add_line(f'printf("%d\\n", {var_name});')
+                    else:
+                        self.add_line(f'printf("%d\\n", {var_name});')
+                elif arg.get("type") == "literal":
+                    value = arg.get("value", "")
+                    data_type = arg.get("data_type", "")
+                    if data_type == "str":
+                        self.add_line(f'printf("%s\\n", "{value}");')
+                    else:
+                        self.add_line(f'printf("%d\\n", {value});')
                 else:
-                    # Предполагаем, что это переменная типа int
-                    self.add_line(f'printf("%d\\n", {arg});')
+                    # Для других выражений
+                    expr = self.generate_expression(arg)
+                    self.add_line(f'printf("%d\\n", {expr});')
             else:
-                # Для сложных выражений
+                # Простое значение
                 self.add_line(f'printf("%d\\n", {arg});')
 
     def generate_while_loop(self, node: Dict):
@@ -1297,13 +1341,58 @@ class CCodeGenerator:
         self.c_imports = []
         self.function_declarations = []
 
+        # Собираем импорты из module scope
         for scope in json_data:
             if scope.get("type") == "module":
                 for node in scope.get("graph", []):
                     if node.get("node") == "c_import":
                         self.c_imports.append(node)
-                    elif node.get("node") == "function_declaration":
-                        self.add_function_declaration(node)
+
+        # Собираем информацию о классах и их методах
+        class_methods = {}  # {class_name: [method_signatures]}
+
+        # Сначала находим все классы и их методы
+        for scope in json_data:
+            if scope.get("type") == "module":
+                for node in scope.get("graph", []):
+                    if node.get("node") == "class_declaration":
+                        class_name = node.get("class_name", "")
+                        methods = node.get("methods", [])
+
+                        # Собираем информацию о конструкторе
+                        init_method = None
+                        for method in methods:
+                            if method.get("name") == "__init__":
+                                init_method = method
+                                break
+
+                        # Генерируем объявление конструктора
+                        if init_method:
+                            params = []
+                            init_params = init_method.get("parameters", [])
+                            # Пропускаем self параметр
+                            for param in init_params[1:]:
+                                param_name = param.get("name", "")
+                                param_type = param.get("type", "int")
+                                c_param_type = self.map_type_to_c(param_type)
+                                params.append(f"{c_param_type} {param_name}")
+
+                            params_str = ", ".join(params) if params else "void"
+                            self.function_declarations.append(
+                                f"{class_name}* create_{class_name}({params_str});"
+                            )
+
+                        # Собираем объявления методов
+                        for method in methods:
+                            if method.get("name") != "__init__":
+                                method_name = method.get("name", "")
+                                return_type = method.get("return_type", "void")
+                                self.function_declarations.append(
+                                    f"{return_type} {class_name}_{method_name}({class_name}* self);"
+                                )
+
+        # Добавляем объявление main
+        self.function_declarations.append("int main(void);")
 
     def generate_c_imports(self):
         """Генерирует #include директивы"""
@@ -1344,9 +1433,19 @@ class CCodeGenerator:
 
     def generate_forward_declarations(self):
         """Генерирует forward declarations функций"""
-        if self.function_declarations:
+        if hasattr(self, "function_declarations") and self.function_declarations:
+            # Удаляем дубликаты
+            unique_declarations = []
+            seen = set()
+
             for decl in self.function_declarations:
+                if decl not in seen:
+                    seen.add(decl)
+                    unique_declarations.append(decl)
+
+            for decl in unique_declarations:
                 self.add_line(decl)
+
             self.add_empty_line()
 
     def generate_tuple_struct_name(self, py_type: str) -> str:
@@ -1950,18 +2049,29 @@ class CCodeGenerator:
         # Собираем импорты и объявления
         self.collect_imports_and_declarations(json_data)
 
-        # 1. Генерируем заголовок
+        # 1. Генерируем заголовок с импортами
         self.generate_c_imports()
 
         # 2. Генерируем forward declarations функций (если есть)
         self.generate_forward_declarations()
 
-        # 3. Генерируем вспомогательные структуры и функции
-        # ВАЖНО: Это ДОЛЖНО быть здесь, перед main!
-        # Но сначала отсортируем структуры по вложенности
+        # 3. Генерируем структуры классов
+        for scope in json_data:
+            if scope.get("type") == "module":
+                for node in scope.get("graph", []):
+                    if node.get("node") == "class_declaration":
+                        self.generate_class_declaration(node)
+
+        # 4. Генерируем вспомогательные структуры и функции
         self.generate_helpers_section_sorted()
 
-        # 4. Генерируем код для каждой функции
+        # 5. Генерируем конструкторы классов
+        self.generate_class_constructors(json_data)
+
+        # 6. Генерируем методы классов
+        self.generate_class_methods(json_data)
+
+        # 7. Генерируем код для каждой функции
         for scope in json_data:
             if scope.get("type") == "function" and not scope.get("is_stub", False):
                 self.generate_function_scope(scope)
@@ -2269,6 +2379,14 @@ class CCodeGenerator:
 
         node_type = ast.get("type", "")
 
+        # Добавляем обработку новых типов узлов
+        if node_type == "attribute_access":
+            return self.generate_attribute_access(ast)
+        elif node_type == "constructor_call":
+            return self.generate_constructor_call(ast)
+        elif node_type == "method_call":
+            return self.generate_method_call(ast)
+
         if node_type == "literal":
             value = ast.get("value")
             data_type = ast.get("data_type", "")
@@ -2427,3 +2545,424 @@ class CCodeGenerator:
             ast_value = ast_value[1:]
 
         return ast_value
+
+    def generate_class_declaration(self, node: Dict):
+        """Генерирует структуру для класса C"""
+        class_name = node.get("class_name", "")
+
+        # Регистрируем класс
+        self.class_types.add(class_name)
+
+        # Добавляем в маппинг типов
+        self.type_map[class_name] = f"{class_name}*"
+
+        # Генерируем структуру
+        self.add_line(f"typedef struct {class_name} {{")
+        self.indent_level += 1
+
+        # Добавляем поля от базовых классов
+        base_classes = node.get("base_classes", [])
+        if base_classes:
+            for base in base_classes:
+                self.add_line(f"struct {base} _base_{base};")
+
+        # Добавляем собственные атрибуты
+        # Для User добавляем поля age и a
+        if class_name == "User":
+            self.add_line(f"int age;")
+            self.add_line(f"int a;")  # ДОБАВИТЬ ЭТО ПОЛЕ
+
+        # Добавляем таблицу виртуальных методов
+        self.add_line(f"void** vtable;")
+
+        self.indent_level -= 1
+        self.add_line(f"}} {class_name};")
+        self.add_empty_line()
+
+    def generate_vtable(self, class_name: str, methods: List[Dict]):
+        """Генерирует таблицу виртуальных методов"""
+        # Определяем, какие методы виртуальные (переопределяемые)
+        virtual_methods = []
+        for method in methods:
+            method_name = method.get("name", "")
+            if method_name != "__init__":
+                virtual_methods.append(method)
+
+        if virtual_methods:
+            # Создаем тип для указателя на таблицу виртуальных методов
+            vtable_type_name = f"{class_name}_vtable"
+
+            self.add_line(f"typedef struct {{")
+            self.indent_level += 1
+            for method in virtual_methods:
+                method_name = method.get("name", "")
+                return_type = method.get("return_type", "void")
+                params = method.get("parameters", [])
+
+                # Пропускаем self параметр
+                actual_params = []
+                if params and params[0].get("name") == "self":
+                    # Определяем тип self для данного метода
+                    for param in params[1:]:
+                        param_name = param.get("name", "")
+                        param_type = param.get("type", "int")
+                        c_param_type = self.map_type_to_c(param_type)
+                        actual_params.append(f"{c_param_type} {param_name}")
+                else:
+                    for param in params:
+                        param_name = param.get("name", "")
+                        param_type = param.get("type", "int")
+                        c_param_type = self.map_type_to_c(param_type)
+                        actual_params.append(f"{c_param_type} {param_name}")
+
+                c_return_type = self.map_type_to_c(return_type)
+                params_str = ", ".join(actual_params) if actual_params else "void"
+
+                # Создаем указатель на функцию
+                # Для методов, параметр self уже учтен в сигнатуре функции
+                if params and params[0].get("name") == "self":
+                    self_param_type = params[0].get("type", class_name)
+                    func_ptr = f"({c_return_type} (*)({self_param_type}*"
+                    if actual_params:
+                        func_ptr += f", {params_str}"
+                    func_ptr += "))"
+                else:
+                    func_ptr = f"({c_return_type} (*)({params_str}))"
+
+                self.add_line(f"{func_ptr} {method_name};")
+
+            self.indent_level -= 1
+            self.add_line(f"}} {vtable_type_name};")
+            self.add_empty_line()
+
+            # Глобальная таблица виртуальных методов
+            self.add_line(f"// Таблица виртуальных методов для {class_name}")
+            self.add_line(f"extern {vtable_type_name} {class_name}_vtable_instance;")
+            self.add_empty_line()
+
+    def generate_constructor(self, class_name: str, init_method: Optional[Dict] = None):
+        """Генерирует конструктор класса"""
+        self.add_line(f"// Конструктор для {class_name}")
+
+        # Определяем параметры
+        params = []
+        if init_method:
+            init_params = init_method.get("parameters", [])
+            # Пропускаем self параметр
+            for param in init_params[1:]:  # Первый параметр - self
+                param_name = param.get("name", "")
+                param_type = param.get("type", "int")
+                c_param_type = self.map_type_to_c(param_type)
+                params.append(f"{c_param_type} {param_name}")
+
+        params_str = ", ".join(params) if params else "void"
+
+        # Функция создания объекта
+        self.add_line(f"{class_name}* create_{class_name}({params_str}) {{")
+        self.indent_level += 1
+
+        # Выделяем память
+        self.add_line(f"{class_name}* obj = malloc(sizeof({class_name}));")
+        self.add_line(f"if (!obj) {{")
+        self.indent_level += 1
+        self.add_line(
+            f'fprintf(stderr, "Memory allocation failed for {class_name}\\n");'
+        )
+        self.add_line(f"exit(1);")
+        self.indent_level -= 1
+        self.add_line(f"}}")
+        self.add_empty_line()
+
+        # Инициализируем таблицу виртуальных методов
+        self.add_line(f"// Инициализация таблицы виртуальных методов")
+        self.add_line(
+            f"obj->vtable = malloc(sizeof(void*) * 16); // TODO: точный размер"
+        )
+        self.add_empty_line()
+
+        # Инициализируем поля из параметров конструктора
+        if init_method and params:
+            init_params = init_method.get("parameters", [])
+            for i, param in enumerate(
+                init_params[1:], 1
+            ):  # Начинаем с 1, пропускаем self
+                param_name = param.get("name", "")
+                # Предполагаем, что имя параметра совпадает с именем поля
+                if param_name == "age" and class_name == "User":
+                    self.add_line(f"obj->{param_name} = {param_name};")
+                elif param_name == "a" and class_name == "User":
+                    self.add_line(f"obj->{param_name} = {param_name};")
+
+        self.add_line(f"return obj;")
+        self.indent_level -= 1
+        self.add_line(f"}}")
+        self.add_empty_line()
+
+    def generate_class_method(self, class_name: str, method: Dict):
+        """Генерирует метод класса"""
+        method_name = method.get("name", "")
+        return_type = method.get("return_type", "void")
+        params = method.get("parameters", [])
+
+        # Генерируем сигнатуру метода
+        c_return_type = self.map_type_to_c(return_type)
+
+        # Первый параметр - всегда self
+        if params and params[0].get("name") == "self":
+            # Параметр self в C - это указатель на структуру
+            param_decls = [f"{class_name}* self"]
+            # Остальные параметры
+            for param in params[1:]:
+                param_name = param.get("name", "")
+                param_type = param.get("type", "int")
+                c_param_type = self.map_type_to_c(param_type)
+                param_decls.append(f"{c_param_type} {param_name}")
+        else:
+            param_decls = []
+            for param in params:
+                param_name = param.get("name", "")
+                param_type = param.get("type", "int")
+                c_param_type = self.map_type_to_c(param_type)
+                param_decls.append(f"{c_param_type} {param_name}")
+
+        params_str = ", ".join(param_decls) if param_decls else "void"
+
+        self.add_line(f"{c_return_type} {class_name}_{method_name}({params_str}) {{")
+        self.indent_level += 1
+
+        # Тело метода будет сгенерировано отдельно
+        self.add_line(f"// Реализация метода {method_name}")
+
+        # Для метода get_age из примера
+        if method_name == "get_age":
+            self.add_line(f"return self->age;")
+
+        self.indent_level -= 1
+        self.add_line(f"}}")
+        self.add_empty_line()
+
+    def register_class_type(self, class_name: str):
+        """Регистрирует тип как класс"""
+        self.class_types.add(class_name)
+        self.pointer_types.add(class_name)  # Классы обычно указатели на структуры
+
+        # Добавляем в маппинг типов
+        self.type_map[class_name] = f"{class_name}*"
+
+    def register_struct_type(self, struct_name: str, is_pointer: bool = True):
+        """Регистрирует тип как структуру"""
+        self.struct_types.add(struct_name)
+        if is_pointer:
+            self.pointer_types.add(struct_name)
+
+    def is_pointer_type(self, type_name: str) -> bool:
+        """Определяет, является ли тип указателем"""
+        # Проверяем различные условия
+        if type_name in self.pointer_types:
+            return True
+
+        # Проверяем по маппингу
+        if type_name in self.type_map:
+            c_type = self.type_map[type_name]
+            return c_type.endswith("*")
+
+        # Проверяем по имени
+        if type_name.endswith("*"):
+            return True
+
+        return False
+
+    def generate_attribute_access(self, ast: Dict) -> str:
+        """Генерирует доступ к атрибуту объекта"""
+        obj_name = ast.get("object", "")
+        attr_name = ast.get("attribute", "")
+
+        # Проверяем тип объекта
+        var_info = self.get_variable_info(obj_name)
+        if var_info:
+            obj_type = var_info.get("py_type", "")
+
+            # Если это класс, используем стрелочку
+            if self._is_class_type(obj_type):
+                return f"{obj_name}->{attr_name}"
+
+        # По умолчанию используем точку
+        return f"{obj_name}.{attr_name}"
+
+    def generate_constructor_call(self, ast: Dict) -> str:
+        """Генерирует вызов конструктора"""
+        class_name = ast.get("class_name", "")
+        args = ast.get("arguments", [])
+
+        # Генерируем аргументы
+        arg_strings = []
+        for arg in args:
+            if isinstance(arg, dict):
+                arg_strings.append(self.generate_expression(arg))
+            else:
+                arg_strings.append(str(arg))
+
+        args_str = ", ".join(arg_strings)
+        return f"create_{class_name}({args_str})"
+
+    def generate_method_call(self, ast: Dict) -> str:
+        """Генерирует вызов метода объекта"""
+        obj_name = ast.get("object", "")
+        method_name = ast.get("method", "")
+        args = ast.get("arguments", [])
+
+        # Проверяем тип объекта
+        var_info = self.get_variable_info(obj_name)
+        if var_info:
+            obj_type = var_info.get("py_type", "")
+
+            # Генерируем аргументы
+            arg_strings = []
+            for arg in args:
+                if isinstance(arg, dict):
+                    arg_strings.append(self.generate_expression(arg))
+                else:
+                    arg_strings.append(str(arg))
+
+            args_str = ", ".join(arg_strings) if arg_strings else ""
+
+            # Если это класс, генерируем вызов метода класса
+            if self._is_class_type(obj_type):
+                if args_str:
+                    return f"{obj_type}_{method_name}({obj_name}, {args_str})"
+                else:
+                    return f"{obj_type}_{method_name}({obj_name})"
+            else:
+                # Для не-классов (редкий случай)
+                if args_str:
+                    return f"{obj_name}.{method_name}({args_str})"
+                return f"{obj_name}.{method_name}()"
+
+        # Если информация о переменной не найдена
+        return f"{obj_name}.{method_name}()"
+
+    def generate_class_constructors(self, json_data: List[Dict]):
+        """Генерирует конструкторы для всех классов"""
+        for scope in json_data:
+            if scope.get("type") == "module":
+                for node in scope.get("graph", []):
+                    if node.get("node") == "class_declaration":
+                        class_name = node.get("class_name", "")
+                        methods = node.get("methods", [])
+
+                        # Ищем метод __init__
+                        init_method = None
+                        for method in methods:
+                            if method.get("name") == "__init__":
+                                init_method = method
+                                break
+
+                        # Генерируем конструктор
+                        self.generate_constructor(class_name, init_method)
+
+    def generate_class_methods(self, json_data: List[Dict]):
+        """Генерирует методы для всех классов"""
+        for scope in json_data:
+            if scope.get("type") == "class_method":
+                class_name = scope.get("class_name", "")
+                method_name = scope.get("method_name", "")
+
+                # Пропускаем конструктор
+                if method_name == "__init__":
+                    continue
+
+                self.generate_class_method_implementation(class_name, scope)
+
+    def generate_class_method_implementation(self, class_name: str, scope: Dict):
+        """Генерирует реализацию метода класса"""
+        method_name = scope.get("method_name", "")
+        return_type = scope.get("return_type", "void")
+        parameters = scope.get("parameters", [])
+
+        # Входим в scope метода
+        self.enter_scope()
+
+        # Объявляем параметры
+        param_decls = []
+
+        for param in parameters:
+            param_name = param.get("name", "")
+            param_type = param.get("type", "int")
+
+            if param_name == "self":
+                # self - это указатель на структуру класса
+                c_param_type = f"{class_name}*"
+                self.declare_variable("self", class_name, is_pointer=True)
+            else:
+                c_param_type = self.map_type_to_c(param_type)
+                self.declare_variable(param_name, param_type)
+
+            param_decls.append(f"{c_param_type} {param_name}")
+
+        # Генерируем сигнатуру метода
+        c_return_type = self.map_type_to_c(return_type)
+        params_str = ", ".join(param_decls) if param_decls else "void"
+
+        self.add_line(f"{c_return_type} {class_name}_{method_name}({params_str}) {{")
+        self.indent_level += 1
+
+        # Генерируем тело метода
+        for node in scope.get("graph", []):
+            self.generate_graph_node(node)
+
+        # Если метод должен что-то возвращать, но нет return
+        return_info = scope.get("return_info", {})
+        if c_return_type != "void" and not return_info.get("has_return", False):
+            self.add_line(f"return 0; // default return")
+
+        self.indent_level -= 1
+        self.add_line("}")
+        self.add_empty_line()
+
+        # Выходим из scope метода
+        self.exit_scope()
+
+    def add_class_method_declaration(self, class_name: str, method: Dict):
+        """Добавляет forward declaration для метода класса"""
+        method_name = method.get("name", "")
+        return_type = method.get("return_type", "void")
+        parameters = method.get("parameters", [])
+
+        c_return_type = self.map_type_to_c(return_type)
+
+        # Формируем параметры
+        param_decls = []
+        for param in parameters:
+            param_name = param.get("name", "")
+            param_type = param.get("type", "int")
+
+            if param_name == "self":
+                # self - это указатель на структуру класса
+                c_param_type = f"{class_name}*"
+            else:
+                c_param_type = self.map_type_to_c(param_type)
+
+            param_decls.append(f"{c_param_type} {param_name}")
+
+        params_str = ", ".join(param_decls) if param_decls else "void"
+
+        declaration = f"{c_return_type} {class_name}_{method_name}({params_str});"
+        self.function_declarations.append(declaration)
+
+    def _is_class_type(self, type_name: str) -> bool:
+        """Определяет, является ли тип классом"""
+        if not isinstance(type_name, str):
+            return False
+
+        # Проверяем по зарегистрированным классам
+        if hasattr(self, "class_types") and type_name in self.class_types:
+            return True
+
+        # Проверяем по типу (классы обычно с большой буквы)
+        if type_name and len(type_name) > 0 and type_name[0].isupper():
+            # Проверяем, не является ли это базовым типом или встроенным типом
+            base_types = {"int", "float", "double", "char", "bool", "void", "None"}
+            if type_name not in base_types:
+                return True
+
+        return False

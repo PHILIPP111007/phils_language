@@ -15,6 +15,7 @@ KEYS = [
     "if",
     "break",
     "continue",
+    "class",
 ]  # Добавили break и continue
 
 DATA_TYPES = [
@@ -48,6 +49,8 @@ DATA_TYPES = [
     "*bool",
     "*tuple",  # указатели
 ]
+
+METHOD_DECORATORS = ["@staticmethod", "@classmethod"]
 
 
 class CImportProcessor:
@@ -169,6 +172,7 @@ class SymbolTable:
     def __init__(self):
         self.symbols = {}
         self.deleted_symbols = set()  # Множество удаленных символов
+        self.class_hierarchy = {}  # Для хранения иерархии наследования
 
     def add_symbol(self, name, key, var_type, value=None, is_constant=False, **kwargs):
         symbol_id = name
@@ -226,6 +230,131 @@ class SymbolTable:
 
     def is_deleted(self, name):
         return name in self.deleted_symbols
+
+    def add_class(self, name, base_classes=None, **kwargs):
+        """Добавляет класс в таблицу символов"""
+        symbol_id = name
+
+        symbol_data = {
+            "name": name,
+            "key": "class",
+            "type": "class",
+            "value": None,
+            "id": symbol_id,
+            "is_deleted": False,
+            "methods": [],  # Список методов
+            "attributes": [],  # Список атрибутов
+            "static_methods": [],  # Статические методы
+            "class_methods": [],  # Методы класса
+            "base_classes": base_classes or [],  # Родительские классы
+            "access_modifiers": {},  # Модификаторы доступа
+        }
+
+        # Добавляем дополнительные атрибуты
+        for key, val in kwargs.items():
+            if val is not None:
+                symbol_data[key] = val
+
+        self.symbols[symbol_id] = symbol_data
+
+        # Добавляем в иерархию наследования
+        if base_classes:
+            self.class_hierarchy[name] = base_classes
+
+        return symbol_id
+
+    def add_class_method(
+        self, class_name, method_name, is_static=False, is_classmethod=False, **kwargs
+    ):
+        """Добавляет метод в класс"""
+        class_symbol = self.get_symbol(class_name)
+        if not class_symbol:
+            return False
+
+        method_data = {
+            "name": method_name,
+            "is_static": is_static,
+            "is_classmethod": is_classmethod,
+            "parameters": kwargs.get("parameters", []),
+            "return_type": kwargs.get("return_type", "None"),
+            "access": kwargs.get("access", "public"),
+        }
+
+        # Добавляем в соответствующий список
+        if is_static:
+            class_symbol["static_methods"].append(method_data)
+        elif is_classmethod:
+            class_symbol["class_methods"].append(method_data)
+        else:
+            class_symbol["methods"].append(method_data)
+
+        return True
+
+    def add_class_attribute(
+        self, class_name, attribute_name, attribute_type, access="public"
+    ):
+        """Добавляет атрибут в класс"""
+        class_symbol = self.get_symbol(class_name)
+        if not class_symbol:
+            return False
+
+        attribute_data = {
+            "name": attribute_name,
+            "type": attribute_type,
+            "access": access,
+        }
+
+        class_symbol["attributes"].append(attribute_data)
+        return True
+
+    def get_class_method(self, class_name, method_name):
+        """Получает метод класса (ищет в родительских классах)"""
+        class_symbol = self.get_symbol(class_name)
+        if not class_symbol:
+            return None
+
+        # Ищем в методах текущего класса
+        for method in class_symbol["methods"]:
+            if method["name"] == method_name:
+                return method
+
+        # Ищем в статических методах
+        for method in class_symbol["static_methods"]:
+            if method["name"] == method_name:
+                return method
+
+        # Ищем в методах класса
+        for method in class_symbol["class_methods"]:
+            if method["name"] == method_name:
+                return method
+
+        # Ищем в родительских классах
+        for base_class in class_symbol["base_classes"]:
+            method = self.get_class_method(base_class, method_name)
+            if method:
+                return method
+
+        return None
+
+    def is_subclass(self, subclass, superclass):
+        """Проверяет, является ли subclass наследником superclass"""
+        if subclass == superclass:
+            return True
+
+        class_symbol = self.get_symbol(subclass)
+        if not class_symbol:
+            return False
+
+        # Проверяем прямые родительские классы
+        if superclass in class_symbol["base_classes"]:
+            return True
+
+        # Рекурсивно проверяем родительские классы
+        for base in class_symbol["base_classes"]:
+            if self.is_subclass(base, superclass):
+                return True
+
+        return False
 
 
 class Parser:
@@ -475,140 +604,550 @@ class Parser:
     def parse_line(
         self, line: str, scope: dict, all_lines: list, current_index: int, indent: int
     ):
-        parsed = False
-
-        if line == "pass":
-            scope["graph"].append(
-                {"node": "pass", "content": "pass", "operations": [{"type": "PASS"}]}
-            )
+        """Основной метод парсинга строки с поддержкой всех конструкций"""
+        line = line.strip()
+        if not line:
             return current_index + 1
 
-        if line.startswith("cimport "):
-            return self.parse_cimport(line, scope, all_lines, current_index)
-
-        # ПРОВЕРЯЕМ elif и else ПЕРВЫМИ
-        if line.startswith("elif "):
-            # elif должен обрабатываться только внутри parse_if_statement
-            print(
-                f"Error: elif без предшествующего if в строке {current_index}: {line}"
-            )
-            return current_index + 1
-
-        if line == "else:":
-            # else должен обрабатываться только внутри parse_if_statement
-            print(f"Error: else без предшествующего if в строке {current_index}")
-            return current_index + 1
-
-        if line.startswith("@"):
-            parsed = self.parse_c_call(line, scope)
-            return current_index + 1
-
-        # Проверяем вызов метода: object.method(args)
-        # Пример: c.append(x)
-        method_pattern = (
-            r"([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)"
+        # Определяем реальный отступ текущей строки
+        actual_indent = (
+            self.calculate_indent_level(all_lines[current_index])
+            if current_index < len(all_lines)
+            else 0
         )
-        method_match = re.match(method_pattern, line)
 
-        if method_match:
-            obj_name, method_name, args_str = method_match.groups()
-            args = self.parse_function_arguments(args_str)
+        # Обрабатываем изменение отступа
+        self.handle_indent_change(actual_indent)
 
-            # Создаем узел для вызова метода
-            operations = [
-                {
-                    "type": "METHOD_CALL",
-                    "object": obj_name,
-                    "method": method_name,
-                    "arguments": args,
-                }
-            ]
+        # Получаем текущую область видимости для данного отступа
+        current_scope = self.get_current_scope_for_indent(actual_indent)
+        if not current_scope:
+            current_scope = scope
 
-            dependencies = [obj_name]
-            for arg in args:
-                if isinstance(arg, dict):
-                    deps = self.extract_dependencies_from_ast(arg)
-                    dependencies.extend(deps)
-                elif (
-                    arg and arg.isalpha() and arg not in KEYS and arg not in DATA_TYPES
-                ):
-                    dependencies.append(arg)
+        # ========== ОБРАБОТКА ДЕКОРАТОРОВ И СПЕЦИАЛЬНЫХ СИМВОЛОВ ==========
 
-            scope["graph"].append(
-                {
-                    "node": "method_call",
-                    "content": line,
-                    "object": obj_name,
-                    "method": method_name,
-                    "arguments": args,
-                    "operations": operations,
-                    "dependencies": dependencies,
-                }
-            )
-
+        # Декораторы методов
+        if line in METHOD_DECORATORS:
+            # Декораторы обрабатываются в parse_class_method_declaration
             return current_index + 1
+
+        # C-вызовы (@func())
+        if line.startswith("@"):
+            parsed = self.parse_c_call(line, current_scope)
+            return current_index + 1 if parsed else current_index + 1
+
+        # ========== ОБРАБОТКА КЛЮЧЕВЫХ СЛОВ ==========
 
         for key in KEYS:
             if line.startswith(key + " ") or line == key:
                 if key == "const":
-                    parsed = self.parse_const(line, scope)
-                    break
+                    parsed = self.parse_const(line, current_scope)
+                    return current_index + 1
                 elif key == "var":
-                    parsed = self.parse_var(line, scope)
-                    break
+                    parsed = self.parse_var(line, current_scope)
+                    return current_index + 1
                 elif key == "def":
-                    return self.parse_function_declaration(
-                        line, scope, all_lines, current_index
+                    # Проверяем, не является ли это методом класса
+                    if current_scope.get("type") in [
+                        "class_body",
+                        "class_method",
+                        "static_method",
+                        "classmethod",
+                    ]:
+                        # Метод класса уже обрабатывается в parse_class_declaration
+                        return current_index + 1
+                    else:
+                        return self.parse_function_declaration(
+                            line, current_scope, all_lines, current_index
+                        )
+                elif key == "class":
+                    return self.parse_class_declaration(
+                        line, current_scope, all_lines, current_index
                     )
                 elif key == "del":
-                    parsed = self.parse_delete(line, scope)
-                    break
-                elif key == "del_pointer":  # НОВОЕ
-                    parsed = self.parse_del_pointer(line, scope)
-                    break
+                    parsed = self.parse_delete(line, current_scope)
+                    return current_index + 1
+                elif key == "del_pointer":
+                    parsed = self.parse_del_pointer(line, current_scope)
+                    return current_index + 1
                 elif key == "return":
-                    parsed = self.parse_return(line, scope)
-                    break
+                    parsed = self.parse_return(line, current_scope)
+                    return current_index + 1
                 elif key == "while":
                     return self.parse_while_loop(
-                        line, scope, all_lines, current_index, indent
+                        line, current_scope, all_lines, current_index, actual_indent
                     )
                 elif key == "for":
                     return self.parse_for_loop(
-                        line, scope, all_lines, current_index, indent
+                        line, current_scope, all_lines, current_index, actual_indent
                     )
                 elif key == "if":
-                    return self.parse_if_statement(
-                        line, scope, all_lines, current_index, indent
-                    )
-                elif key == "break":  # Уже обработали выше, но оставляем для ясности
-                    parsed = self.parse_break(line, scope)
-                    break
-                elif key == "continue":  # Уже обработали выше, но оставляем для ясности
-                    parsed = self.parse_continue(line, scope)
-                    break
+                    # Проверяем, не вложен ли if в другой блок
+                    if current_scope.get("type") in [
+                        "while_loop_body",
+                        "for_loop_body",
+                        "if_body",
+                        "elif_body",
+                        "else_body",
+                    ]:
+                        return self.parse_nested_if(
+                            line, current_scope, all_lines, current_index, actual_indent
+                        )
+                    else:
+                        return self.parse_if_statement(
+                            line, current_scope, all_lines, current_index, actual_indent
+                        )
+                elif key == "break":
+                    parsed = self.parse_break(line, current_scope)
+                    return current_index + 1
+                elif key == "continue":
+                    parsed = self.parse_continue(line, current_scope)
+                    return current_index + 1
 
-        if not parsed:
-            # Проверяем, является ли строка вызовом встроенной функции
-            for func_name in self.builtin_functions:
-                if line.startswith(f"{func_name}("):
-                    parsed = self.parse_builtin_function_call(line, scope, func_name)
-                    break
+        # ========== ОБРАБОТКА C ИМПОРТОВ ==========
 
-            if not parsed:
-                # Проверяем другие варианты
-                if re.match(r"[a-zA-Z_][a-zA-Z0-9_]*\s*\(", line) and "var " in line:
-                    parsed = self.parse_function_call_assignment(line, scope)
-                elif re.match(r"[a-zA-Z_][a-zA-Z0-9_]*\s*\(", line):
-                    parsed = self.parse_function_call(line, scope)
-                elif "=" in line and not any(
-                    line.startswith(k + " ") for k in ["const", "var", "def"]
-                ):
-                    parsed = self.parse_assignment(line, scope)
-                elif "+=" in line or "-=" in line or "*=" in line or "/=" in line:
-                    parsed = self.parse_augmented_assignment(line, scope)
+        if line.startswith("cimport "):
+            return self.parse_cimport(line, current_scope, all_lines, current_index)
+
+        # ========== ОБРАБОТКА PASS ==========
+
+        if line == "pass":
+            current_scope["graph"].append(
+                {"node": "pass", "content": "pass", "operations": [{"type": "PASS"}]}
+            )
+            return current_index + 1
+
+        # ========== ОБРАБОТКА ВЫЗОВОВ МЕТОДОВ И ФУНКЦИЙ ==========
+
+        # 1. Вызов метода объекта: obj.method(args)
+        object_method_pattern = (
+            r"^([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*)\)$"
+        )
+        object_method_match = re.match(object_method_pattern, line)
+
+        # 2. Статический вызов метода: Class.method(args)
+        static_method_pattern = (
+            r"^([A-Z][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*)\)$"
+        )
+        static_method_match = re.match(static_method_pattern, line)
+
+        # 3. Обычный вызов функции: func(args)
+        function_call_pattern = r"^([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*)\)$"
+        function_call_match = re.match(function_call_pattern, line)
+
+        # 4. Присваивание результата вызова: var x: type = func(args)
+        func_assignment_pattern = r"^var\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*)\)$"
+        func_assignment_match = re.match(func_assignment_pattern, line)
+
+        # 5. Присваивание с созданием объекта: var x: Class = Class(args)
+        obj_creation_pattern = r"^var\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([A-Z][a-zA-Z0-9_]*)\s*=\s*([A-Z][a-zA-Z0-9_]*)\s*\((.*)\)$"
+        obj_creation_match = re.match(obj_creation_pattern, line)
+
+        # Приоритет проверок:
+        # 1. Создание объекта с присваиванием
+        if obj_creation_match:
+            var_name, var_type, class_name, args_str = obj_creation_match.groups()
+            if var_type == class_name:  # Проверяем соответствие типов
+                parsed = self.parse_object_creation_assignment(
+                    line, current_scope, var_name, class_name, args_str
+                )
+                return current_index + 1
+
+        # 2. Присваивание результата вызова функции
+        if func_assignment_match:
+            var_name, var_type, func_name, args_str = func_assignment_match.groups()
+            # Создаем выражение для вызова функции
+            func_call_expr = f"{func_name}({args_str})"
+            # Парсим как обычное присваивание с выражением
+            modified_line = f"var {var_name}: {var_type} = {func_call_expr}"
+            parsed = self.parse_var(modified_line, current_scope)
+            return current_index + 1
+
+        # 3. Вызов статического метода
+        if static_method_match:
+            class_name, method_name, args_str = static_method_match.groups()
+            # Упрощенная проверка - начинается с заглавной буквы
+            if class_name and class_name[0].isupper():
+                parsed = self.parse_static_method_call_node(
+                    line, current_scope, class_name, method_name, args_str
+                )
+                return current_index + 1
+
+        # 4. Вызов метода объекта
+        if object_method_match:
+            obj_name, method_name, args_str = object_method_match.groups()
+            parsed = self.parse_object_method_call_node(
+                line, current_scope, obj_name, method_name, args_str
+            )
+            return current_index + 1
+
+        # 5. Обычный вызов функции
+        if function_call_match:
+            func_name, args_str = function_call_match.groups()
+            # Проверяем, не является ли это вызовом конструктора без присваивания
+            if func_name and func_name[0].isupper():
+                # Это возможный вызов конструктора
+                parsed = self.parse_constructor_call(
+                    line, current_scope, func_name, args_str
+                )
+                return current_index + 1
+            else:
+                parsed = self.parse_function_call(line, current_scope)
+                return current_index + 1
+
+        # ========== ОБРАБОТКА ВСТРОЕННЫХ ФУНКЦИЙ ==========
+
+        # Проверяем встроенные функции (print, len, str, int, bool, range)
+        for func_name in self.builtin_functions:
+            if line.startswith(f"{func_name}("):
+                parsed = self.parse_builtin_function_call(
+                    line, current_scope, func_name
+                )
+                return current_index + 1
+
+        # ========== ОБРАБОТКА ПРИСВАИВАНИЙ ==========
+
+        # Проверяем различные виды присваиваний
+
+        # 1. Доступ к атрибуту с присваиванием: obj.attr = value
+        attr_assignment_pattern = (
+            r"^([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)$"
+        )
+        attr_assignment_match = re.match(attr_assignment_pattern, line)
+
+        if attr_assignment_match:
+            obj_name, attr_name, value = attr_assignment_match.groups()
+            parsed = self.parse_attribute_assignment(
+                line, current_scope, obj_name, attr_name, value
+            )
+            return current_index + 1
+
+        # 2. Обычное присваивание: var = value
+        simple_assignment_pattern = r"^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)$"
+        simple_assignment_match = re.match(simple_assignment_pattern, line)
+
+        if simple_assignment_match:
+            var_name, value = simple_assignment_match.groups()
+
+            # Проверяем, не является ли это разыменованием указателя (*p = value)
+            if var_name.startswith("*"):
+                parsed = self.parse_pointer_dereference_assignment(
+                    line, current_scope, var_name, value
+                )
+                return current_index + 1
+
+            # Проверяем, не является ли значение разыменованием (*p)
+            if value.strip().startswith("*"):
+                parsed = self.parse_pointer_to_variable_assignment(
+                    line, current_scope, var_name, value
+                )
+                return current_index + 1
+
+            # Обычное присваивание
+            parsed = self.parse_assignment(line, current_scope)
+            return current_index + 1
+
+        # 3. Составные операции присваивания: var += value
+        augmented_pattern = r"^([a-zA-Z_][a-zA-Z0-9_]*)\s*(\+=|-=|\*=|/=|//=|\%=|\*\*=|>>=|<<=|&=|\|=|\^=)\s*(.+)$"
+        augmented_match = re.match(augmented_pattern, line)
+
+        if augmented_match:
+            var_name, operator, value = augmented_match.groups()
+            parsed = self.parse_augmented_assignment(line, current_scope)
+            return current_index + 1
+
+        # ========== ОБРАБОТКА ДОСТУПА К АТРИБУТАМ ==========
+
+        # Доступ к атрибуту без вызова: obj.attr
+        attr_access_pattern = r"^([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)$"
+        attr_access_match = re.match(attr_access_pattern, line)
+
+        if attr_access_match:
+            # В изолированном виде это выражение не имеет смысла,
+            # но может быть частью более сложного выражения
+            # Парсим как выражение
+            expression_ast = self.parse_expression_to_ast(line)
+            current_scope["graph"].append(
+                {
+                    "node": "expression",
+                    "content": line,
+                    "expression_ast": expression_ast,
+                    "operations": [
+                        {"type": "EXPRESSION_EVAL", "expression": expression_ast}
+                    ],
+                    "dependencies": self.extract_dependencies_from_ast(expression_ast),
+                }
+            )
+            return current_index + 1
+
+        # ========== ОБРАБОТКА ВЫРАЖЕНИЙ ==========
+
+        # Если ничего не распознано, пробуем парсить как выражение
+        expression_ast = self.parse_expression_to_ast(line)
+        if expression_ast["type"] not in ["unknown", "empty"]:
+            current_scope["graph"].append(
+                {
+                    "node": "expression",
+                    "content": line,
+                    "expression_ast": expression_ast,
+                    "operations": [
+                        {"type": "EXPRESSION_EVAL", "expression": expression_ast}
+                    ],
+                    "dependencies": self.extract_dependencies_from_ast(expression_ast),
+                }
+            )
+            return current_index + 1
+
+        # ========== НЕРАСПОЗНАННАЯ СТРОКА ==========
+
+        # Если строка не распознана, создаем узел с ошибкой
+        print(f"Warning: Не удалось распарсить строку: {line}")
+        current_scope["graph"].append(
+            {
+                "node": "unparsed",
+                "content": line,
+                "operations": [{"type": "UNPARSED", "content": line}],
+                "dependencies": [],
+            }
+        )
 
         return current_index + 1
+
+    def parse_object_creation_assignment(
+        self, line: str, scope: dict, var_name: str, class_name: str, args_str: str
+    ) -> bool:
+        """Парсит создание объекта с присваиванием: var x: Class = Class(args)"""
+        # Парсим аргументы
+        args = []
+        if args_str.strip():
+            args = self.parse_function_arguments_to_ast(args_str)
+
+        # Проверяем существование класса (упрощенная проверка)
+        class_symbol = scope["symbol_table"].get_symbol(class_name)
+        is_class = class_symbol and class_symbol.get("key") == "class"
+
+        # Добавляем переменную в таблицу символов
+        scope["symbol_table"].add_symbol(name=var_name, key="var", var_type=class_name)
+
+        if var_name not in scope["local_variables"]:
+            scope["local_variables"].append(var_name)
+
+        # Создаем AST для вызова конструктора
+        constructor_ast = {
+            "type": "constructor_call",
+            "class_name": class_name,
+            "arguments": args,
+        }
+
+        # Создаем операции
+        operations = [
+            {"type": "NEW_VAR", "target": var_name, "var_type": class_name},
+            {
+                "type": "CONSTRUCTOR_CALL",
+                "class_name": class_name,
+                "target": var_name,
+                "arguments": args,
+            },
+        ]
+
+        # Собираем зависимости
+        dependencies = []
+        for arg in args:
+            deps = self.extract_dependencies_from_ast(arg)
+            dependencies.extend(deps)
+
+        # Создаем узел
+        scope["graph"].append(
+            {
+                "node": "object_creation",
+                "content": line,
+                "symbols": [var_name],
+                "var_name": var_name,
+                "var_type": class_name,
+                "class_name": class_name,
+                "arguments": args,
+                "operations": operations,
+                "dependencies": dependencies,
+                "expression_ast": constructor_ast,
+            }
+        )
+
+        return True
+
+    def parse_constructor_call(
+        self, line: str, scope: dict, class_name: str, args_str: str
+    ) -> bool:
+        """Парсит вызов конструктора без присваивания: Class(args)"""
+        # Парсим аргументы
+        args = []
+        if args_str.strip():
+            args = self.parse_function_arguments_to_ast(args_str)
+
+        operations = [
+            {"type": "CONSTRUCTOR_CALL", "class_name": class_name, "arguments": args}
+        ]
+
+        # Собираем зависимости
+        dependencies = []
+        for arg in args:
+            deps = self.extract_dependencies_from_ast(arg)
+            dependencies.extend(deps)
+
+        scope["graph"].append(
+            {
+                "node": "constructor_call",
+                "content": line,
+                "class_name": class_name,
+                "arguments": args,
+                "operations": operations,
+                "dependencies": dependencies,
+            }
+        )
+
+        return True
+
+    def parse_attribute_assignment(
+        self, line: str, scope: dict, obj_name: str, attr_name: str, value: str
+    ) -> bool:
+        """Парсит присваивание атрибуту: obj.attr = value"""
+        # Парсим значение
+        value_ast = self.parse_expression_to_ast(value)
+
+        # Проверяем существование объекта
+        obj_symbol = scope["symbol_table"].get_symbol(obj_name)
+        if not obj_symbol:
+            print(f"Error: Объект '{obj_name}' не определен")
+            return False
+
+        operations = [
+            {
+                "type": "ATTRIBUTE_ASSIGN",
+                "object": obj_name,
+                "attribute": attr_name,
+                "value": value_ast,
+            }
+        ]
+
+        # Собираем зависимости
+        dependencies = [obj_name]
+        deps = self.extract_dependencies_from_ast(value_ast)
+        dependencies.extend(deps)
+
+        scope["graph"].append(
+            {
+                "node": "attribute_assignment",
+                "content": line,
+                "object": obj_name,
+                "attribute": attr_name,
+                "value": value_ast,
+                "operations": operations,
+                "dependencies": dependencies,
+            }
+        )
+
+        return True
+
+    def parse_pointer_dereference_assignment(
+        self, line: str, scope: dict, pointer_expr: str, value: str
+    ) -> bool:
+        """Парсит присваивание через разыменование указателя: *p = value"""
+        # Извлекаем имя указателя
+        pointer_name = pointer_expr[1:].strip()
+
+        # Парсим значение
+        value_ast = self.parse_expression_to_ast(value)
+
+        # Проверяем существование указателя
+        pointer_symbol = scope["symbol_table"].get_symbol(pointer_name)
+        if not pointer_symbol:
+            print(f"Error: Указатель '{pointer_name}' не определен")
+            return False
+
+        if not pointer_symbol["type"].startswith("*"):
+            print(f"Error: '{pointer_name}' не является указателем")
+            return False
+
+        operations = [
+            {
+                "type": "WRITE_POINTER",
+                "pointer": pointer_name,
+                "value": value_ast,
+                "operation": "*=",
+            }
+        ]
+
+        # Собираем зависимости
+        dependencies = [pointer_name]
+        deps = self.extract_dependencies_from_ast(value_ast)
+        dependencies.extend(deps)
+
+        scope["graph"].append(
+            {
+                "node": "dereference_write",
+                "content": line,
+                "pointer": pointer_name,
+                "value": value_ast,
+                "operations": operations,
+                "dependencies": dependencies,
+            }
+        )
+
+        return True
+
+    def parse_pointer_to_variable_assignment(
+        self, line: str, scope: dict, var_name: str, pointer_expr: str
+    ) -> bool:
+        """Парсит присваивание значения указателя переменной: x = *p"""
+        # Извлекаем имя указателя
+        pointer_name = pointer_expr[1:].strip()
+
+        # Проверяем существование указателя
+        pointer_symbol = scope["symbol_table"].get_symbol(pointer_name)
+        if not pointer_symbol:
+            print(f"Error: Указатель '{pointer_name}' не определен")
+            return False
+
+        if not pointer_symbol["type"].startswith("*"):
+            print(f"Error: '{pointer_name}' не является указателем")
+            return False
+
+        # Проверяем существование переменной
+        var_symbol = scope["symbol_table"].get_symbol(var_name)
+        if not var_symbol:
+            print(f"Error: Переменная '{var_name}' не определена")
+            return False
+
+        # Создаем AST для разыменования
+        deref_ast = {"type": "dereference", "pointer": pointer_name}
+
+        operations = [
+            {
+                "type": "READ_POINTER",
+                "target": var_name,
+                "from": pointer_name,
+                "operation": "*",
+                "value": deref_ast,
+                "pointed_type": pointer_symbol["type"][1:],  # Убираем звездочку
+            }
+        ]
+
+        # Обновляем значение переменной
+        scope["symbol_table"].update_symbol(var_name, {"value": deref_ast})
+
+        dependencies = [pointer_name]
+
+        scope["graph"].append(
+            {
+                "node": "dereference_read",
+                "content": line,
+                "target": var_name,
+                "pointer": pointer_name,
+                "operations": operations,
+                "dependencies": dependencies,
+            }
+        )
+
+        return True
 
     def parse_builtin_function_call(self, line: str, scope: dict, func_name: str):
         """Парсит вызов встроенной функции"""
@@ -1696,331 +2235,411 @@ class Parser:
         return True
 
     def parse_expression_to_ast(self, expression: str) -> dict:
-        """Парсит выражение в AST (Abstract Syntax Tree)"""
+        """Парсит выражение в AST (Abstract Syntax Tree) с поддержкой всех конструкций"""
         expression = expression.strip()
 
         # Если пустая строка
         if not expression:
             return {"type": "empty", "value": ""}
 
-        if expression.startswith("(") and expression.endswith(")"):
-            # Проверяем, что это не просто выражение в скобках
-            if "," in expression[1:-1]:
-                return self.parse_tuple_literal(expression)
-            else:
-                # Выражение в скобках
-                inner = expression[1:-1].strip()
-                return self.parse_expression_to_ast(inner)
+        # Убираем лишние пробелы, но сохраняем для строк
+        if not self.is_string_literal(expression):
+            expression = re.sub(r"\s+", " ", expression)
 
-        # 1. Сначала проверяем литералы и простые конструкции
+        # ========== 1. ПРОВЕРКА НА ЛИТЕРАЛЫ ==========
 
-        # 1.1 Пустая строка
-        if expression == '""' or expression == "''":
-            return {"type": "literal", "value": "", "data_type": "str"}
-
-        # 1.2 Строковые литералы
+        # 1.1 Строковые литералы
         if (expression.startswith('"') and expression.endswith('"')) or (
             expression.startswith("'") and expression.endswith("'")
         ):
-            # Проверяем, что это не часть более сложного выражения
             if len(expression) > 1 and expression[0] == expression[-1]:
-                return {
-                    "type": "literal",
-                    "value": expression[1:-1],
-                    "data_type": "str",
-                }
+                # Проверяем экранирование
+                content = expression[1:-1]
+                # Заменяем экранированные кавычки
+                content = content.replace('\\"', '"').replace("\\'", "'")
+                return {"type": "literal", "value": content, "data_type": "str"}
 
-        # 1.3 Числа с плавающей точкой
-        if re.match(r"^-?\d+\.\d+$", expression) or re.match(
-            r"^-?\d+\.\d+[eE][+-]?\d+$", expression
-        ):
+        # 1.2 Числа с плавающей точкой
+        float_patterns = [
+            r"^-?\d+\.\d+$",  # 3.14
+            r"^-?\d+\.\d+[eE][+-]?\d+$",  # 3.14e10
+            r"^-?\d+[eE][+-]?\d+$",  # 3e10
+        ]
+        for pattern in float_patterns:
+            if re.match(pattern, expression):
+                try:
+                    return {
+                        "type": "literal",
+                        "value": float(expression),
+                        "data_type": "float",
+                    }
+                except ValueError:
+                    pass
+
+        # 1.3 Целые числа (десятичные, шестнадцатеричные, бинарные, восьмеричные)
+        if re.match(r"^-?\d+$", expression):
+            try:
+                return {"type": "literal", "value": int(expression), "data_type": "int"}
+            except ValueError:
+                pass
+
+        if re.match(r"^0[xX][0-9a-fA-F]+$", expression):
             try:
                 return {
                     "type": "literal",
-                    "value": float(expression),
-                    "data_type": "float",
+                    "value": int(expression, 16),
+                    "data_type": "int",
                 }
             except ValueError:
                 pass
 
-        # 1.4 Целые числа
-        if re.match(r"^-?\d+$", expression):
-            return {"type": "literal", "value": int(expression), "data_type": "int"}
+        if re.match(r"^0[bB][01]+$", expression):
+            try:
+                return {
+                    "type": "literal",
+                    "value": int(expression[2:], 2),
+                    "data_type": "int",
+                }
+            except ValueError:
+                pass
 
-        # 1.5 Шестнадцатеричные числа
-        if re.match(r"^0[xX][0-9a-fA-F]+$", expression):
-            return {"type": "literal", "value": int(expression, 16), "data_type": "int"}
+        if re.match(r"^0[oO]?[0-7]+$", expression):
+            try:
+                base = 8
+                if expression.startswith("0o") or expression.startswith("0O"):
+                    expression = expression[2:]
+                elif expression.startswith("0") and len(expression) > 1:
+                    expression = expression[1:]
+                return {
+                    "type": "literal",
+                    "value": int(expression, base),
+                    "data_type": "int",
+                }
+            except ValueError:
+                pass
 
-        # 1.6 Булевы значения
+        # 1.4 Булевы значения и None
         if expression == "True":
             return {"type": "literal", "value": True, "data_type": "bool"}
         if expression == "False":
             return {"type": "literal", "value": False, "data_type": "bool"}
-
-        # 1.7 None
         if expression == "None":
             return {"type": "literal", "value": None, "data_type": "None"}
-
-        # 1.8 null для указателей
         if expression == "null":
-            return {"type": "literal", "value": None, "data_type": "null"}
+            return {"type": "literal", "value": "null", "data_type": "null"}
 
-        # 2. Сложные литералы
+        # ========== 2. КОМПЛЕКСНЫЕ ЛИТЕРАЛЫ ==========
 
         # 2.1 Литералы списков
         if expression.startswith("[") and expression.endswith("]"):
             return self.parse_list_literal(expression)
 
-        # 2.2 Литералы словарей/множеств
+        # 2.2 Литералы кортежей
+        if expression.startswith("(") and expression.endswith(")"):
+            # Проверяем, действительно ли это кортеж или выражение в скобках
+            inner = expression[1:-1].strip()
+            if "," in inner or inner.endswith(","):
+                return self.parse_tuple_literal(expression)
+            # Иначе это выражение в скобках - рекурсивно парсим внутреннее выражение
+            return self.parse_expression_to_ast(inner)
+
+        # 2.3 Литералы словарей/множеств
         if expression.startswith("{") and expression.endswith("}"):
             content = expression[1:-1].strip()
-
-            # Проверяем, является ли это словарем
             if self.is_dict_literal(content):
                 return self.parse_dict_literal(expression)
             else:
-                # Иначе это множество
                 return self.parse_set_literal(expression)
 
-        # 3. Операции с указателями
+        # ========== 3. ОПЕРАЦИИ С УКАЗАТЕЛЯМИ ==========
 
         # 3.1 Адрес переменной (&x)
         if expression.startswith("&"):
-            var_name = expression[1:].strip()
-            # Проверяем, что это не часть более сложного выражения
-            if re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", var_name):
-                return {"type": "address_of", "variable": var_name, "value": expression}
+            rest = expression[1:].strip()
+            # Проверяем, что это просто имя переменной
+            if re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", rest):
+                return {"type": "address_of", "variable": rest, "operation": "&"}
+            # Или более сложное выражение
+            inner_ast = self.parse_expression_to_ast(rest)
+            return {"type": "address_of", "expression": inner_ast, "operation": "&"}
 
         # 3.2 Разыменование указателя (*p)
         if expression.startswith("*"):
-            pointer_name = expression[1:].strip()
-            # Проверяем, что это не умножение
-            if re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", pointer_name):
-                return {
-                    "type": "dereference",
-                    "pointer": pointer_name,
-                    "value": expression,
-                }
+            rest = expression[1:].strip()
+            # Проверяем, что это просто имя указателя
+            if re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", rest):
+                return {"type": "dereference", "pointer": rest, "operation": "*"}
+            # Или более сложное выражение
+            inner_ast = self.parse_expression_to_ast(rest)
+            return {"type": "dereference", "expression": inner_ast, "operation": "*"}
 
-        # 4. Вызовы функций
+        # ========== 4. ВЫЗОВЫ ФУНКЦИЙ И МЕТОДОВ ==========
 
-        # 4.1 Простые вызовы функций: func()
-        func_pattern_simple = r"^([a-zA-Z_][a-zA-Z0-9_]*)\s*\(\s*\)$"
-        simple_match = re.match(func_pattern_simple, expression)
-        if simple_match:
-            func_name = simple_match.group(1)
-            return {"type": "function_call", "function": func_name, "arguments": []}
+        # 4.1 Вызов метода объекта: obj.method(args)
+        obj_method_pattern = (
+            r"^([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*)\)$"
+        )
+        obj_method_match = re.match(obj_method_pattern, expression)
 
-        # 4.2 Вызовы функций с аргументами
+        if obj_method_match:
+            obj_name, method_name, args_str = obj_method_match.groups()
+            args = []
+            if args_str.strip():
+                args = self.parse_function_arguments_to_ast(args_str)
+
+            return {
+                "type": "method_call",
+                "object": obj_name,
+                "method": method_name,
+                "arguments": args,
+            }
+
+        # 4.2 Статический вызов метода: Class.method(args)
+        static_method_pattern = (
+            r"^([A-Z][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*)\)$"
+        )
+        static_method_match = re.match(static_method_pattern, expression)
+
+        if static_method_match:
+            class_name, method_name, args_str = static_method_match.groups()
+            args = []
+            if args_str.strip():
+                args = self.parse_function_arguments_to_ast(args_str)
+
+            return {
+                "type": "static_method_call",
+                "class_name": class_name,
+                "method": method_name,
+                "arguments": args,
+            }
+
+        # 4.3 Вызов конструктора: ClassName(args)
+        constructor_pattern = r"^([A-Z][a-zA-Z0-9_]*)\s*\((.*)\)$"
+        constructor_match = re.match(constructor_pattern, expression)
+
+        if constructor_match:
+            class_name, args_str = constructor_match.groups()
+            args = []
+            if args_str.strip():
+                args = self.parse_function_arguments_to_ast(args_str)
+
+            return {
+                "type": "constructor_call",
+                "class_name": class_name,
+                "arguments": args,
+            }
+
+        # 4.4 Обычный вызов функции: func(args)
         func_pattern = r"^([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*)\)$"
         func_match = re.match(func_pattern, expression)
-        if func_match:
-            func_name = func_match.group(1)
-            args_str = func_match.group(2)
 
-            # Проверяем, что нет лишних скобок после
-            if not self.has_unbalanced_parentheses(args_str):
+        if func_match:
+            func_name, args_str = func_match.groups()
+            args = []
+            if args_str.strip():
                 args = self.parse_function_arguments_to_ast(args_str)
+
+            return {"type": "function_call", "function": func_name, "arguments": args}
+
+        # ========== 5. ДОСТУП К АТРИБУТАМ И ИНДЕКСАЦИЯ ==========
+
+        # 5.1 Доступ к атрибуту объекта: obj.attr
+        attr_pattern = r"^([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)$"
+        attr_match = re.match(attr_pattern, expression)
+
+        if attr_match:
+            obj_name, attr_name = attr_match.groups()
+            return {
+                "type": "attribute_access",
+                "object": obj_name,
+                "attribute": attr_name,
+            }
+
+        # 5.2 Индексация: obj[index] или obj[start:end:step]
+        index_pattern = r"^([a-zA-Z_][a-zA-Z0-9_]*)\[(.+)\]$"
+        index_match = re.match(index_pattern, expression)
+
+        if index_match:
+            var_name, index_expr = index_match.groups()
+
+            # Проверяем, является ли это срезом
+            if ":" in index_expr:
+                # Парсим срез
+                slice_parts = index_expr.split(":")
+                if len(slice_parts) == 2:
+                    start, stop = slice_parts
+                    step = None
+                elif len(slice_parts) == 3:
+                    start, stop, step = slice_parts
+                else:
+                    # Некорректный срез
+                    return {
+                        "type": "index_access",
+                        "variable": var_name,
+                        "index": self.parse_expression_to_ast(index_expr),
+                    }
+
+                # Парсим части среза
+                start_ast = (
+                    self.parse_expression_to_ast(start.strip())
+                    if start.strip()
+                    else None
+                )
+                stop_ast = (
+                    self.parse_expression_to_ast(stop.strip()) if stop.strip() else None
+                )
+                step_ast = (
+                    self.parse_expression_to_ast(step.strip())
+                    if step and step.strip()
+                    else None
+                )
+
                 return {
-                    "type": "function_call",
-                    "function": func_name,
-                    "arguments": args,
+                    "type": "slice_access",
+                    "variable": var_name,
+                    "start": start_ast,
+                    "stop": stop_ast,
+                    "step": step_ast,
+                }
+            else:
+                # Обычная индексация
+                return {
+                    "type": "index_access",
+                    "variable": var_name,
+                    "index": self.parse_expression_to_ast(index_expr),
                 }
 
-        # 5. Переменные
-        if re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", expression):
-            return {"type": "variable", "value": expression}
+        # ========== 6. ТЕРНАРНЫЙ ОПЕРАТОР ==========
 
-        # 6. Сложные выражения с операторами
+        # x if condition else y
+        if " if " in expression and " else " in expression:
+            # Находим позиции if и else
+            if_pos = expression.find(" if ")
+            else_pos = expression.find(" else ")
 
-        # 6.1 Выражение в скобках - убираем внешние скобки и парсим заново
-        if expression.startswith("(") and expression.endswith(")"):
-            # Проверяем баланс скобок
-            if self.is_fully_parenthesized(expression):
-                inner = expression[1:-1].strip()
-                return self.parse_expression_to_ast(inner)
+            if if_pos < else_pos:
+                true_expr = expression[:if_pos].strip()
+                condition = expression[if_pos + 4 : else_pos].strip()
+                false_expr = expression[else_pos + 6 :].strip()
 
-        # 6.2 Бинарные операции
-        # Ищем оператор с наименьшим приоритетом
+                return {
+                    "type": "ternary_operator",
+                    "condition": self.parse_expression_to_ast(condition),
+                    "true_expr": self.parse_expression_to_ast(true_expr),
+                    "false_expr": self.parse_expression_to_ast(false_expr),
+                    "operator": "if-else",
+                }
 
-        # Сначала логические OR
-        or_index = self.find_operator_outside_parentheses(expression, "or")
-        if or_index != -1:
-            left = expression[:or_index].strip()
-            right = expression[or_index + 2 :].strip()
-            return {
-                "type": "binary_operation",
-                "operator": "OR",
-                "operator_symbol": "or",
-                "left": self.parse_expression_to_ast(left),
-                "right": self.parse_expression_to_ast(right),
-            }
+        # ========== 7. БИНАРНЫЕ И УНАРНЫЕ ОПЕРАЦИИ ==========
 
-        # Затем логические AND
-        and_index = self.find_operator_outside_parentheses(expression, "and")
-        if and_index != -1:
-            left = expression[:and_index].strip()
-            right = expression[and_index + 3 :].strip()
-            return {
-                "type": "binary_operation",
-                "operator": "AND",
-                "operator_symbol": "and",
-                "left": self.parse_expression_to_ast(left),
-                "right": self.parse_expression_to_ast(right),
-            }
-
-        # Сравнения
-        comparison_ops = [
+        # Определяем приоритеты операторов
+        OPERATOR_PRECEDENCE = [
+            # Логические OR
+            ("or", "LOGICAL_OR"),
+            # Логические AND
+            ("and", "LOGICAL_AND"),
+            # Сравнения
             ("==", "EQUAL"),
             ("!=", "NOT_EQUAL"),
             ("<", "LESS_THAN"),
-            (">", "GREATER_THAN"),
             ("<=", "LESS_EQUAL"),
+            (">", "GREATER_THAN"),
             (">=", "GREATER_EQUAL"),
             ("is", "IS"),
             ("is not", "IS_NOT"),
             ("in", "IN"),
             ("not in", "NOT_IN"),
-        ]
-
-        for op_symbol, op_type in comparison_ops:
-            index = self.find_operator_outside_parentheses(expression, op_symbol)
-            if index != -1:
-                left = expression[:index].strip()
-                right = expression[index + len(op_symbol) :].strip()
-                return {
-                    "type": "binary_operation",
-                    "operator": op_type,
-                    "operator_symbol": op_symbol,
-                    "left": self.parse_expression_to_ast(left),
-                    "right": self.parse_expression_to_ast(right),
-                }
-
-        # Битовая OR
-        bitwise_or_index = self.find_operator_outside_parentheses(expression, "|")
-        if bitwise_or_index != -1:
-            left = expression[:bitwise_or_index].strip()
-            right = expression[bitwise_or_index + 1 :].strip()
-            return {
-                "type": "binary_operation",
-                "operator": "BITWISE_OR",
-                "operator_symbol": "|",
-                "left": self.parse_expression_to_ast(left),
-                "right": self.parse_expression_to_ast(right),
-            }
-
-        # Битовая XOR
-        bitwise_xor_index = self.find_operator_outside_parentheses(expression, "^")
-        if bitwise_xor_index != -1:
-            left = expression[:bitwise_xor_index].strip()
-            right = expression[bitwise_xor_index + 1 :].strip()
-            return {
-                "type": "binary_operation",
-                "operator": "BITWISE_XOR",
-                "operator_symbol": "^",
-                "left": self.parse_expression_to_ast(left),
-                "right": self.parse_expression_to_ast(right),
-            }
-
-        # Битовая AND
-        bitwise_and_index = self.find_operator_outside_parentheses(expression, "&")
-        if bitwise_and_index != -1:
-            # Проверяем, что это не оператор адреса (&x)
-            if bitwise_and_index > 0 and expression[bitwise_and_index - 1] != " ":
-                # Возможно, это адресная операция
-                pass
-            else:
-                left = expression[:bitwise_and_index].strip()
-                right = expression[bitwise_and_index + 1 :].strip()
-                return {
-                    "type": "binary_operation",
-                    "operator": "BITWISE_AND",
-                    "operator_symbol": "&",
-                    "left": self.parse_expression_to_ast(left),
-                    "right": self.parse_expression_to_ast(right),
-                }
-
-        # Сдвиги
-        shift_ops = [("<<", "LEFT_SHIFT"), (">>", "RIGHT_SHIFT")]
-        for op_symbol, op_type in shift_ops:
-            index = self.find_operator_outside_parentheses(expression, op_symbol)
-            if index != -1:
-                left = expression[:index].strip()
-                right = expression[index + len(op_symbol) :].strip()
-                return {
-                    "type": "binary_operation",
-                    "operator": op_type,
-                    "operator_symbol": op_symbol,
-                    "left": self.parse_expression_to_ast(left),
-                    "right": self.parse_expression_to_ast(right),
-                }
-
-        # Сложение и вычитание
-        add_sub_ops = [("+", "ADD"), ("-", "SUBTRACT")]
-        for op_symbol, op_type in add_sub_ops:
-            index = self.find_operator_outside_parentheses(expression, op_symbol)
-            if index != -1:
-                # Проверяем, что это не унарный оператор
-                if index == 0 and op_symbol == "-":
-                    # Унарный минус
-                    operand = expression[1:].strip()
-                    return {
-                        "type": "unary_operation",
-                        "operator": "NEGATIVE",
-                        "operator_symbol": "-",
-                        "operand": self.parse_expression_to_ast(operand),
-                    }
-                elif index == 0 and op_symbol == "+":
-                    # Унарный плюс (обычно игнорируется)
-                    operand = expression[1:].strip()
-                    return self.parse_expression_to_ast(operand)
-                else:
-                    left = expression[:index].strip()
-                    right = expression[index + len(op_symbol) :].strip()
-                    return {
-                        "type": "binary_operation",
-                        "operator": op_type,
-                        "operator_symbol": op_symbol,
-                        "left": self.parse_expression_to_ast(left),
-                        "right": self.parse_expression_to_ast(right),
-                    }
-
-        # Умножение, деление и остальные
-        mul_div_ops = [
+            # Битовая OR
+            ("|", "BITWISE_OR"),
+            # Битовая XOR
+            ("^", "BITWISE_XOR"),
+            # Битовая AND
+            ("&", "BITWISE_AND"),
+            # Сдвиги
+            ("<<", "LEFT_SHIFT"),
+            (">>", "RIGHT_SHIFT"),
+            # Сложение/вычитание
+            ("+", "ADD"),
+            ("-", "SUBTRACT"),
+            # Умножение/деление/остаток
             ("*", "MULTIPLY"),
             ("/", "DIVIDE"),
             ("//", "INTEGER_DIVIDE"),
             ("%", "MODULO"),
+            # Возведение в степень
+            ("**", "POWER"),
         ]
-        for op_symbol, op_type in mul_div_ops:
-            index = self.find_operator_outside_parentheses(expression, op_symbol)
-            if index != -1:
-                left = expression[:index].strip()
-                right = expression[index + len(op_symbol) :].strip()
-                return {
-                    "type": "binary_operation",
-                    "operator": op_type,
-                    "operator_symbol": op_symbol,
-                    "left": self.parse_expression_to_ast(left),
-                    "right": self.parse_expression_to_ast(right),
-                }
 
-        # Возведение в степень
-        power_index = self.find_operator_outside_parentheses(expression, "**")
-        if power_index != -1:
-            left = expression[:power_index].strip()
-            right = expression[power_index + 2 :].strip()
-            return {
-                "type": "binary_operation",
-                "operator": "POWER",
-                "operator_symbol": "**",
-                "left": self.parse_expression_to_ast(left),
-                "right": self.parse_expression_to_ast(right),
-            }
+        # Сначала проверяем выражения в скобках
+        if self.is_fully_parenthesized(expression):
+            inner = expression[1:-1].strip()
+            return self.parse_expression_to_ast(inner)
 
-        # 7. Унарные операции
+        # Ищем оператор с наименьшим приоритетом (начинаем с конца списка)
+        for op_symbol, op_type in reversed(OPERATOR_PRECEDENCE):
+            # Для операторов из двух слов ищем их как целое
+            if " " in op_symbol:
+                if op_symbol in expression:
+                    # Находим позицию оператора вне скобок и строк
+                    pos = self.find_operator_outside_parentheses(expression, op_symbol)
+                    if pos != -1:
+                        left = expression[:pos].strip()
+                        right = expression[pos + len(op_symbol) :].strip()
 
-        # 7.1 Унарный not
+                        return {
+                            "type": "binary_operation",
+                            "operator": op_type,
+                            "operator_symbol": op_symbol,
+                            "left": self.parse_expression_to_ast(left),
+                            "right": self.parse_expression_to_ast(right),
+                        }
+            else:
+                # Для односимвольных операторов нужно быть аккуратнее
+                # чтобы не перепутать с унарными операциями или другими контекстами
+                pos = self.find_operator_outside_parentheses(expression, op_symbol)
+
+                if pos != -1:
+                    # Проверяем специальные случаи
+
+                    # 1. Унарный минус/плюс в начале выражения
+                    if pos == 0 and op_symbol in "+-":
+                        operand = expression[1:].strip()
+                        return {
+                            "type": "unary_operation",
+                            "operator": "NEGATIVE" if op_symbol == "-" else "POSITIVE",
+                            "operator_symbol": op_symbol,
+                            "operand": self.parse_expression_to_ast(operand),
+                        }
+
+                    # 2. Оператор не должен быть частью другого оператора (например, ** содержит *)
+                    if op_symbol == "*":
+                        # Проверяем, не является ли это частью **
+                        if pos + 1 < len(expression) and expression[pos + 1] == "*":
+                            continue  # Пропускаем, это часть **
+
+                    # 3. Проверяем, что слева и справа есть корректные выражения
+                    left = expression[:pos].strip()
+                    right = expression[pos + len(op_symbol) :].strip()
+
+                    if left and right:
+                        # Проверяем, что оператор не внутри имени или числа
+                        if (pos > 0 and expression[pos - 1].isalnum()) or (
+                            pos + len(op_symbol) < len(expression)
+                            and expression[pos + len(op_symbol)].isalnum()
+                        ):
+                            continue
+
+                        return {
+                            "type": "binary_operation",
+                            "operator": op_type,
+                            "operator_symbol": op_symbol,
+                            "left": self.parse_expression_to_ast(left),
+                            "right": self.parse_expression_to_ast(right),
+                        }
+
+        # ========== 8. УНАРНЫЕ ОПЕРАЦИИ ==========
+
+        # 8.1 Унарный not
         if expression.startswith("not "):
             operand = expression[4:].strip()
             return {
@@ -2030,7 +2649,7 @@ class Parser:
                 "operand": self.parse_expression_to_ast(operand),
             }
 
-        # 7.2 Унарный ~ (битовое НЕ)
+        # 8.2 Унарный ~ (битовое НЕ)
         if expression.startswith("~"):
             operand = expression[1:].strip()
             return {
@@ -2040,47 +2659,130 @@ class Parser:
                 "operand": self.parse_expression_to_ast(operand),
             }
 
-        # 8. Индексация (массивы, словари)
-        index_pattern = r"^([a-zA-Z_][a-zA-Z0-9_]*)\[(.+)\]$"
-        index_match = re.match(index_pattern, expression)
-        if index_match:
-            var_name = index_match.group(1)
-            index_expr = index_match.group(2)
-            return {
-                "type": "index_access",
-                "variable": var_name,
-                "index": self.parse_expression_to_ast(index_expr),
-            }
+        # 8.3 Унарные + и - (уже обработаны в бинарных операциях)
 
-        # 9. Атрибуты (объекты)
-        attr_pattern = r"^([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)$"
-        attr_match = re.match(attr_pattern, expression)
-        if attr_match:
-            obj_name = attr_match.group(1)
-            attr_name = attr_match.group(2)
-            return {
-                "type": "attribute_access",
-                "object": obj_name,
-                "attribute": attr_name,
-            }
+        # ========== 9. ПЕРЕМЕННЫЕ ==========
 
-        # 10. Тернарный оператор (x if cond else y)
-        ternary_match = re.search(r"\sif\s", expression)
-        if ternary_match:
-            else_match = re.search(r"\selse\s", expression)
-            if else_match and ternary_match.start() < else_match.start():
-                condition = expression[: ternary_match.start()].strip()
-                true_expr = expression[ternary_match.end() : else_match.start()].strip()
-                false_expr = expression[else_match.end() :].strip()
-                return {
-                    "type": "ternary_operation",
-                    "condition": self.parse_expression_to_ast(condition),
-                    "true_expr": self.parse_expression_to_ast(true_expr),
-                    "false_expr": self.parse_expression_to_ast(false_expr),
-                }
+        # Если это просто имя переменной
+        if re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", expression):
+            return {"type": "variable", "name": expression, "value": expression}
+
+        # ========== 10. ФОРМАТИРОВАННЫЕ СТРОКИ ==========
+
+        # f"Hello {name}"
+        f_string_pattern = r'^f["\'](.*)["\']$'
+        f_string_match = re.match(f_string_pattern, expression)
+
+        if f_string_match:
+            content = f_string_match.group(1)
+            # Находим все выражения в фигурных скобках
+            import re as regex
+
+            pattern = r"\{(.+?)\}"
+            parts = []
+            last_end = 0
+
+            for match in regex.finditer(pattern, content):
+                # Добавляем текст до выражения
+                if match.start() > last_end:
+                    text_part = content[last_end : match.start()]
+                    parts.append({"type": "string_part", "value": text_part})
+
+                # Добавляем выражение
+                expr = match.group(1).strip()
+                parts.append(
+                    {
+                        "type": "fstring_expr",
+                        "expression": self.parse_expression_to_ast(expr),
+                    }
+                )
+
+                last_end = match.end()
+
+            # Добавляем остаток строки
+            if last_end < len(content):
+                text_part = content[last_end:]
+                parts.append({"type": "string_part", "value": text_part})
+
+            return {"type": "fstring", "parts": parts}
+
+        # ========== 11. ВЫРАЖЕНИЯ СО СКОБКАМИ (повторная проверка) ==========
+
+        if expression.startswith("(") and ")" in expression:
+            # Находим соответствующую закрывающую скобку
+            balance = 0
+            in_string = False
+            string_char = None
+            escaped = False
+
+            for i, char in enumerate(expression):
+                # Обработка экранирования
+                if escaped:
+                    escaped = False
+                    continue
+
+                if char == "\\":
+                    escaped = True
+                    continue
+
+                # Обработка строк
+                if not in_string and char in ['"', "'"]:
+                    in_string = True
+                    string_char = char
+                elif in_string and char == string_char:
+                    in_string = False
+                    string_char = None
+
+                # Обработка скобок (только вне строк)
+                if not in_string:
+                    if char == "(":
+                        balance += 1
+                    elif char == ")":
+                        balance -= 1
+                        if balance == 0:
+                            # Нашли закрывающую скобку
+                            if i == len(expression) - 1:
+                                # Весь expression в скобках
+                                inner = expression[1:-1].strip()
+                                return self.parse_expression_to_ast(inner)
+                            else:
+                                # Часть выражения в скобках
+                                left = expression[: i + 1].strip()
+                                rest = expression[i + 1 :].strip()
+
+                                # Парсим оставшуюся часть как бинарную операцию
+                                # Находим первый оператор после скобок
+                                for op_symbol, op_type in reversed(OPERATOR_PRECEDENCE):
+                                    if rest.startswith(op_symbol) or (
+                                        len(op_symbol) > 1 and rest.find(op_symbol) == 0
+                                    ):
+                                        right = rest[len(op_symbol) :].strip()
+                                        return {
+                                            "type": "binary_operation",
+                                            "operator": op_type,
+                                            "operator_symbol": op_symbol,
+                                            "left": self.parse_expression_to_ast(left),
+                                            "right": self.parse_expression_to_ast(
+                                                right
+                                            ),
+                                        }
+
+                                # Если не нашли оператор, возвращаем как неизвестное выражение
+                                break
+
+            # Если дошли сюда, значит не смогли корректно распарсить
+            return {"type": "unknown", "value": expression, "original": expression}
+
+        # ========== 12. НЕРАСПОЗНАННОЕ ВЫРАЖЕНИЕ ==========
 
         # Если ничего не распознано
         return {"type": "unknown", "value": expression, "original": expression}
+
+    def is_string_literal(self, expression: str) -> bool:
+        """Проверяет, является ли выражение строковым литералом"""
+        return (expression.startswith('"') and expression.endswith('"')) or (
+            expression.startswith("'") and expression.endswith("'")
+        )
 
     def is_dict_literal(self, content: str) -> bool:
         """Определяет, является ли содержимое литералом словаря"""
@@ -2174,14 +2876,28 @@ class Parser:
         balance = 0
         in_string = False
         string_char = None
+        escaped = False
 
         for i, char in enumerate(expression):
+            # Обработка экранирования
+            if escaped:
+                escaped = False
+                continue
+
+            if char == "\\":
+                escaped = True
+                continue
+
+            # Обработка строк
             if not in_string and char in ['"', "'"]:
                 in_string = True
                 string_char = char
             elif in_string and char == string_char:
                 in_string = False
-            elif not in_string:
+                string_char = None
+
+            # Обработка скобок (только вне строк)
+            if not in_string:
                 if char == "(":
                     balance += 1
                 elif char == ")":
@@ -2727,26 +3443,41 @@ class Parser:
 
         return None
 
+    def is_identifier_char(self, char: str) -> bool:
+        """Проверяет, является ли символ частью идентификатора"""
+        return char.isalnum() or char == "_"
+
     def find_operator_outside_parentheses(self, expression: str, operator: str) -> int:
-        """Находит позицию оператора вне скобок и строк"""
-        balance = 0
-        brace_balance = 0
-        bracket_balance = 0
-        in_string = False
-        string_char = None
+        """Находит позицию оператора вне скобок, строк и комментариев"""
+        balance = 0  # Баланс круглых скобок
+        brace_balance = 0  # Баланс фигурных скобок
+        bracket_balance = 0  # Баланс квадратных скобок
+        in_string = False  # Находимся ли внутри строки
+        string_char = None  # Символ, открывший строку
+        escaped = False  # Экранирован ли текущий символ
 
         i = 0
         while i < len(expression):
             char = expression[i]
+
+            # Обработка экранирования
+            if escaped:
+                escaped = False
+                i += 1
+                continue
+
+            if char == "\\":
+                escaped = True
+                i += 1
+                continue
 
             # Обработка строк
             if not in_string and char in ['"', "'"]:
                 in_string = True
                 string_char = char
             elif in_string and char == string_char:
-                # Проверяем экранирование
-                if i == 0 or expression[i - 1] != "\\":
-                    in_string = False
+                in_string = False
+                string_char = None
 
             # Обработка скобок (только вне строк)
             if not in_string:
@@ -2762,15 +3493,18 @@ class Parser:
                     bracket_balance += 1
                 elif char == "]":
                     bracket_balance -= 1
-                elif balance == 0 and brace_balance == 0 and bracket_balance == 0:
-                    # Проверяем оператор
+
+                # Проверяем оператор, если мы на верхнем уровне всех скобок
+                if balance == 0 and brace_balance == 0 and bracket_balance == 0:
+                    # Проверяем совпадение оператора
                     if expression[i : i + len(operator)] == operator:
-                        # Проверяем контекст (чтобы не было части другого оператора)
-                        before_ok = i == 0 or not expression[i - 1].isalnum()
-                        after_ok = (
-                            i + len(operator) >= len(expression)
-                            or not expression[i + len(operator)].isalnum()
+                        # Проверяем контекст, чтобы не перепутать с частью другого оператора или идентификатора
+                        before_ok = i == 0 or not self.is_identifier_char(
+                            expression[i - 1]
                         )
+                        after_ok = i + len(operator) >= len(
+                            expression
+                        ) or not self.is_identifier_char(expression[i + len(operator)])
 
                         if before_ok and after_ok:
                             return i
@@ -2821,7 +3555,8 @@ class Parser:
         func_name, args_str = match.groups()
         args = []
         if args_str.strip():
-            args = [arg.strip() for arg in args_str.split(",")]
+            # Парсим аргументы в AST, а не оставляем строкой
+            args = self.parse_function_arguments_to_ast(args_str)
 
         operations = [
             {"type": "FUNCTION_CALL", "function": func_name, "arguments": args}
@@ -2829,8 +3564,8 @@ class Parser:
 
         dependencies = []
         for arg in args:
-            if arg.isalpha() and arg not in KEYS and arg not in DATA_TYPES:
-                dependencies.append(arg)
+            deps = self.extract_dependencies_from_ast(arg)
+            dependencies.extend(deps)
 
         scope["graph"].append(
             {
@@ -2845,8 +3580,9 @@ class Parser:
 
         return True
 
-    def parse_function_call_assignment(self, line: str, scope: dict):
-        """Парсит присваивание результата вызова функции"""
+    def parse_function_call_assignment(self, line: str, scope: dict) -> bool:
+        """Парсит присваивание результата вызова функции: var x: type = func(args)"""
+        # Используем более простой паттерн, так как сложный не всегда работает
         pattern = (
             r"var\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)"
         )
@@ -2855,26 +3591,57 @@ class Parser:
         if not match:
             return False
 
-        var_name, var_type, value = match.groups()
+        var_name, var_type, value_expr = match.groups()
+
+        # Парсим значение как выражение
+        value_ast = self.parse_expression_to_ast(value_expr)
 
         # Проверяем, является ли значение вызовом функции
-        func_call_pattern = r"([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)"
-        func_match = re.match(func_call_pattern, value.strip())
+        if value_ast.get("type") in [
+            "function_call",
+            "method_call",
+            "static_method_call",
+            "constructor_call",
+        ]:
+            # Добавляем переменную
+            scope["symbol_table"].add_symbol(
+                name=var_name, key="var", var_type=var_type
+            )
 
-        if func_match:
-            func_name, args_str = func_match.groups()
-            args = self.parse_function_arguments(args_str) if args_str.strip() else []
+            if var_name not in scope["local_variables"]:
+                scope["local_variables"].append(var_name)
 
-            # Определяем, является ли функция встроенной
-            if func_name in self.builtin_functions:
-                return self.parse_builtin_function_assignment(
-                    line, scope, var_name, var_type, func_name, args
-                )
-            else:
-                # Пользовательская функция
-                return self.parse_user_function_assignment(
-                    line, scope, var_name, var_type, func_name, args
-                )
+            operations = [
+                {"type": "NEW_VAR", "target": var_name, "var_type": var_type},
+                {"type": "ASSIGN", "target": var_name, "value": value_ast},
+            ]
+
+            # Собираем зависимости из выражения
+            dependencies = self.extract_dependencies_from_ast(value_ast)
+
+            # Определяем тип узла
+            node_type = "function_call_assignment"
+            if value_ast.get("type") == "constructor_call":
+                node_type = "object_creation"
+            elif value_ast.get("type") == "static_method_call":
+                node_type = "static_method_assignment"
+            elif value_ast.get("type") == "method_call":
+                node_type = "method_call_assignment"
+
+            scope["graph"].append(
+                {
+                    "node": node_type,
+                    "content": line,
+                    "symbols": [var_name],
+                    "var_name": var_name,
+                    "var_type": var_type,
+                    "value_ast": value_ast,
+                    "operations": operations,
+                    "dependencies": dependencies,
+                }
+            )
+
+            return True
 
         return False
 
@@ -3352,21 +4119,33 @@ class Parser:
         return True
 
     def parse_function_arguments_to_ast(self, args_str: str) -> list:
-        """Разбирает аргументы функции в AST"""
+        """Парсит аргументы функции в список AST"""
         if not args_str.strip():
             return []
 
         args = []
         current_arg = ""
-        depth = 0  # Для скобок
-        brace_depth = 0  # Для фигурных скобок
-        bracket_depth = 0  # Для квадратных скобок
+        depth = 0
         in_string = False
         string_char = None
+        escaped = False
 
         i = 0
         while i < len(args_str):
             char = args_str[i]
+
+            # Обработка экранирования
+            if escaped:
+                current_arg += char
+                escaped = False
+                i += 1
+                continue
+
+            if char == "\\":
+                escaped = True
+                current_arg += char
+                i += 1
+                continue
 
             # Обработка строк
             if not in_string and char in ['"', "'"]:
@@ -3374,13 +4153,13 @@ class Parser:
                 string_char = char
                 current_arg += char
             elif in_string and char == string_char:
-                # Проверяем экранирование
-                if i > 0 and args_str[i - 1] == "\\":
-                    current_arg += char
-                else:
-                    in_string = False
-                    current_arg += char
-            # Обработка скобок
+                in_string = False
+                string_char = None
+                current_arg += char
+            elif in_string:
+                current_arg += char
+
+            # Обработка скобок (только вне строк)
             elif not in_string:
                 if char == "(":
                     depth += 1
@@ -3388,24 +4167,20 @@ class Parser:
                 elif char == ")":
                     depth -= 1
                     current_arg += char
-                elif char == "{":
-                    brace_depth += 1
-                    current_arg += char
-                elif char == "}":
-                    brace_depth -= 1
-                    current_arg += char
                 elif char == "[":
-                    bracket_depth += 1
+                    depth += 1
                     current_arg += char
                 elif char == "]":
-                    bracket_depth -= 1
+                    depth -= 1
                     current_arg += char
-                elif (
-                    char == ","
-                    and depth == 0
-                    and brace_depth == 0
-                    and bracket_depth == 0
-                ):
+                elif char == "{":
+                    depth += 1
+                    current_arg += char
+                elif char == "}":
+                    depth -= 1
+                    current_arg += char
+                elif char == "," and depth == 0:
+                    # Нашли разделитель аргументов на верхнем уровне
                     if current_arg.strip():
                         args.append(self.parse_expression_to_ast(current_arg.strip()))
                     current_arg = ""
@@ -3416,7 +4191,7 @@ class Parser:
 
             i += 1
 
-        # Последний аргумент
+        # Обрабатываем последний аргумент
         if current_arg.strip():
             args.append(self.parse_expression_to_ast(current_arg.strip()))
 
@@ -3433,22 +4208,43 @@ class Parser:
             node_type = node.get("type")
 
             if node_type == "variable":
-                var_name = node.get("value")
+                var_name = node.get("name") or node.get("value")
                 if var_name and var_name not in dependencies:
-                    # Игнорируем строки в кавычках
+                    # Проверяем, что это не ключевое слово или тип данных
                     if (
-                        isinstance(var_name, str)
-                        and not (var_name.startswith('"') and var_name.endswith('"'))
-                        and not (var_name.startswith("'") and var_name.endswith("'"))
-                        and var_name not in KEYS
+                        var_name not in KEYS
                         and var_name not in DATA_TYPES
                         and var_name not in self.builtin_functions
+                        and not var_name.startswith('"')
+                        and not var_name.endswith('"')
                     ):
                         dependencies.append(var_name)
 
+            elif node_type == "attribute_access":
+                obj_name = node.get("object")
+                if obj_name and obj_name not in dependencies:
+                    dependencies.append(obj_name)
+
+            elif node_type == "method_call":
+                obj_name = node.get("object")
+                if obj_name and obj_name not in dependencies:
+                    dependencies.append(obj_name)
+
+                for arg in node.get("arguments", []):
+                    traverse(arg)
+
+            elif node_type == "static_method_call":
+                # Статические методы не требуют зависимостей от объектов
+                for arg in node.get("arguments", []):
+                    traverse(arg)
+
+            elif node_type == "constructor_call":
+                for arg in node.get("arguments", []):
+                    traverse(arg)
+
             elif node_type == "function_call":
                 func_name = node.get("function")
-                # Только пользовательские функции
+                # Только пользовательские функции добавляем как зависимости
                 if func_name and func_name not in self.builtin_functions:
                     if func_name not in dependencies:
                         dependencies.append(func_name)
@@ -3463,33 +4259,62 @@ class Parser:
             elif node_type == "unary_operation":
                 traverse(node.get("operand"))
 
+            elif node_type == "ternary_operator":
+                traverse(node.get("condition"))
+                traverse(node.get("true_expr"))
+                traverse(node.get("false_expr"))
+
             elif node_type == "address_of":
+                expr = node.get("expression") or node.get("variable")
+                if isinstance(expr, dict):
+                    traverse(expr)
+                elif expr and expr not in dependencies:
+                    dependencies.append(expr)
+
+            elif node_type == "dereference":
+                expr = node.get("expression") or node.get("pointer")
+                if isinstance(expr, dict):
+                    traverse(expr)
+                elif expr and expr not in dependencies:
+                    dependencies.append(expr)
+
+            elif node_type == "index_access":
                 var_name = node.get("variable")
                 if var_name and var_name not in dependencies:
                     dependencies.append(var_name)
+                traverse(node.get("index"))
 
-            elif node_type == "dereference":
-                pointer_name = node.get("pointer")
-                if pointer_name and pointer_name not in dependencies:
-                    dependencies.append(pointer_name)
+            elif node_type == "slice_access":
+                var_name = node.get("variable")
+                if var_name and var_name not in dependencies:
+                    dependencies.append(var_name)
+                traverse(node.get("start"))
+                traverse(node.get("stop"))
+                traverse(node.get("step"))
 
             elif node_type == "list_literal":
                 for item in node.get("items", []):
                     traverse(item)
 
+            elif node_type == "tuple_literal":
+                for item in node.get("items", []):
+                    traverse(item)
+
             elif node_type == "dict_literal":
                 for key, value in node.get("pairs", {}).items():
-                    traverse(value)  # Ключи обычно литералы
+                    traverse(value)
 
             elif node_type == "set_literal":
                 for item in node.get("items", []):
                     traverse(item)
 
-            # Литералы НЕ добавляем в зависимости!
-            # node_type == "literal" - пропускаем
+            elif node_type == "fstring":
+                for part in node.get("parts", []):
+                    if part.get("type") == "fstring_expr":
+                        traverse(part.get("expression"))
 
         traverse(ast)
-        return dependencies
+        return list(set(dependencies))  # Убираем дубликаты
 
     def parse_literal_to_ast(self, value: str) -> dict:
         """Парсит литералы в AST"""
@@ -4308,3 +5133,570 @@ class Parser:
             ast = self.parse_expression_to_ast(value)
 
         return ast
+
+    # CLASS
+
+    def parse_class_declaration(
+        self, line: str, scope: dict, all_lines: list, current_index: int
+    ):
+        """Парсит объявление класса"""
+        pattern = r"class\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:\(([^)]*)\))?\s*:"
+        match = re.match(pattern, line)
+
+        if not match:
+            return current_index + 1
+
+        class_name = match.group(1)
+        base_classes_str = match.group(2)
+
+        # Парсим родительские классы
+        base_classes = []
+        if base_classes_str:
+            base_classes = [bc.strip() for bc in base_classes_str.split(",")]
+
+        # Добавляем класс в таблицу символов
+        symbol_id = scope["symbol_table"].add_class(
+            name=class_name, base_classes=base_classes
+        )
+
+        # Находим тело класса
+        body_start = current_index + 1
+        base_indent = self.calculate_indent_level(all_lines[current_index])
+        body_end = self.find_indented_block_end(all_lines, body_start, base_indent)
+
+        # Создаем узел объявления класса
+        class_node = {
+            "node": "class_declaration",
+            "content": line,
+            "class_name": class_name,
+            "symbol_id": symbol_id,
+            "base_classes": base_classes,
+            "body_level": scope["level"] + 1,
+            "methods": [],
+            "attributes": [],
+            "static_methods": [],
+            "class_methods": [],
+        }
+
+        scope["graph"].append(class_node)
+
+        # Парсим тело класса
+        saved_indent = self.current_indent
+        self.current_indent = base_indent + 1
+
+        # Создаем временную область видимости для тела класса
+        class_body_scope = {
+            "level": scope["level"] + 1,
+            "type": "class_body",
+            "parent_scope": scope["level"],
+            "class_name": class_name,
+            "graph": [],
+            "symbol_table": SymbolTable(),
+            "methods": [],
+            "attributes": [],
+        }
+
+        i = body_start
+        current_decorator = None
+
+        while i < body_end:
+            body_line = all_lines[i]
+            if not body_line.strip():
+                i += 1
+                continue
+
+            body_indent = self.calculate_indent_level(body_line)
+            body_content = body_line.strip()
+
+            # Проверяем декораторы методов
+            if body_content.startswith("@"):
+                current_decorator = body_content
+                i += 1
+                continue
+
+            # Парсим методы класса
+            if body_content.startswith("def "):
+                # Определяем тип метода
+                is_static = current_decorator == "@staticmethod"
+                is_classmethod = current_decorator == "@classmethod"
+
+                # Парсим объявление метода
+                method_index = self.parse_class_method_declaration(
+                    body_content,
+                    scope,
+                    all_lines,
+                    i,
+                    body_indent,
+                    class_name,
+                    is_static,
+                    is_classmethod,
+                    class_node,
+                )
+
+                if method_index > i:
+                    i = method_index
+                    current_decorator = None
+                    continue
+
+            # Парсим атрибуты класса (var self.attr: type = value)
+            elif body_content.startswith("var ") and "self." in body_content:
+                self.parse_class_attribute(
+                    body_content, class_body_scope, class_name, class_node
+                )
+                i += 1
+                continue
+
+            i += 1
+
+        # Восстанавливаем отступ
+        self.current_indent = saved_indent
+
+        return body_end
+
+    def parse_class_method_declaration(
+        self,
+        line: str,
+        parent_scope: dict,
+        all_lines: list,
+        current_index: int,
+        indent: int,
+        class_name: str,
+        is_static: bool,
+        is_classmethod: bool,
+        class_node: dict,
+    ):
+        """Парсит объявление метода класса"""
+        # Определяем паттерн для метода
+        pattern = r"def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)\s*(?:->\s*([a-zA-Z_][a-zA-Z0-9_]*))?\s*:"
+        match = re.match(pattern, line)
+
+        if not match:
+            return current_index + 1
+
+        method_name, params_str, return_type = match.groups()
+        return_type = return_type if return_type else "None"
+
+        # Парсим параметры
+        parameters = []
+        if params_str.strip():
+            # Для обычных методов первый параметр - self или cls
+            if not is_static:
+                # Проверяем первый параметр
+                params_list = [p.strip() for p in params_str.split(",")]
+                if params_list:
+                    first_param = params_list[0]
+                    if ":" in first_param:
+                        # param: type
+                        param_parts = first_param.split(":")
+                        param_name = param_parts[0].strip()
+                        param_type = (
+                            param_parts[1].strip() if len(param_parts) > 1 else "any"
+                        )
+                    else:
+                        param_name = first_param.strip()
+                        param_type = (
+                            class_name
+                            if param_name == "self"
+                            else "type"
+                            if param_name == "cls"
+                            else "any"
+                        )
+
+                    parameters.append({"name": param_name, "type": param_type})
+
+                    # Обрабатываем остальные параметры
+                    for param_str in params_list[1:]:
+                        if ":" in param_str:
+                            param_parts = param_str.split(":")
+                            param_name = param_parts[0].strip()
+                            param_type = (
+                                param_parts[1].strip()
+                                if len(param_parts) > 1
+                                else "any"
+                            )
+                            parameters.append({"name": param_name, "type": param_type})
+                        else:
+                            parameters.append(
+                                {"name": param_str.strip(), "type": "any"}
+                            )
+            else:
+                # Для статических методов обрабатываем все параметры
+                for param_str in params_str.split(","):
+                    param_str = param_str.strip()
+                    if not param_str:
+                        continue
+
+                    if ":" in param_str:
+                        param_parts = param_str.split(":")
+                        param_name = param_parts[0].strip()
+                        param_type = (
+                            param_parts[1].strip() if len(param_parts) > 1 else "any"
+                        )
+                    else:
+                        param_name = param_str.strip()
+                        param_type = "any"
+
+                    parameters.append({"name": param_name, "type": param_type})
+
+        # Добавляем метод в класс
+        parent_scope["symbol_table"].add_class_method(
+            class_name=class_name,
+            method_name=method_name,
+            is_static=is_static,
+            is_classmethod=is_classmethod,
+            parameters=parameters,
+            return_type=return_type,
+        )
+
+        # Обновляем узел класса
+        method_info = {
+            "name": method_name,
+            "parameters": parameters,
+            "return_type": return_type,
+            "is_static": is_static,
+            "is_classmethod": is_classmethod,
+        }
+
+        if is_static:
+            class_node["static_methods"].append(method_info)
+        elif is_classmethod:
+            class_node["class_methods"].append(method_info)
+        else:
+            class_node["methods"].append(method_info)
+
+        # Находим тело метода
+        body_start = current_index + 1
+        body_end = self.find_indented_block_end(all_lines, body_start, indent)
+
+        # Создаем область видимости для метода
+        method_level = parent_scope["level"] + 2  # класс + метод
+        method_scope = {
+            "level": method_level,
+            "type": "class_method"
+            if not is_static and not is_classmethod
+            else "static_method"
+            if is_static
+            else "classmethod",
+            "parent_scope": parent_scope["level"],
+            "class_name": class_name,
+            "method_name": method_name,
+            "parameters": parameters,
+            "return_type": return_type,
+            "local_variables": [],
+            "graph": [],
+            "symbol_table": SymbolTable(),
+            "return_info": {
+                "has_return": False,
+                "return_value": None,
+                "return_type": return_type,
+            },
+        }
+
+        # Добавляем параметры в таблицу символов метода
+        for param in parameters:
+            method_scope["symbol_table"].add_symbol(
+                name=param["name"], key="parameter", var_type=param["type"]
+            )
+            method_scope["local_variables"].append(param["name"])
+
+        # Добавляем область видимости метода в общий список
+        self.scopes.append(method_scope)
+        self.scope_stack.append(method_scope)
+
+        # Парсим тело метода
+        saved_indent = self.current_indent
+        self.current_indent = indent + 1
+
+        i = body_start
+        while i < body_end:
+            method_line = all_lines[i]
+            if not method_line.strip():
+                i += 1
+                continue
+
+            method_indent = self.calculate_indent_level(method_line)
+            method_content = method_line.strip()
+
+            # Парсим строку метода
+            i = self.parse_line(
+                method_content, method_scope, all_lines, i, method_indent
+            )
+
+        # Восстанавливаем отступ и удаляем scope метода из стека
+        self.current_indent = saved_indent
+        self.scope_stack.pop()
+
+        return body_end
+
+    def parse_class_attribute(
+        self, line: str, scope: dict, class_name: str, class_node: dict
+    ):
+        """Парсит атрибут класса (var self.attr: type = value)"""
+        pattern = r"var\s+self\.([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)"
+        match = re.match(pattern, line)
+
+        if not match:
+            return False
+
+        attr_name, attr_type, value = match.groups()
+
+        # Добавляем атрибут в класс
+        scope["symbol_table"].add_class_attribute(
+            class_name=class_name, attribute_name=attr_name, attribute_type=attr_type
+        )
+
+        # Добавляем в узел класса
+        class_node["attributes"].append(
+            {
+                "name": attr_name,
+                "type": attr_type,
+                "access": "public",  # По умолчанию публичный
+            }
+        )
+
+        # Парсим значение
+        value_ast = self.parse_expression_to_ast(value)
+
+        # Создаем узел для инициализации атрибута
+        attr_node = {
+            "node": "class_attribute_init",
+            "content": line,
+            "class_name": class_name,
+            "attribute_name": attr_name,
+            "attribute_type": attr_type,
+            "value": value_ast,
+            "operations": [
+                {
+                    "type": "CLASS_ATTRIBUTE_INIT",
+                    "class_name": class_name,
+                    "attribute": attr_name,
+                    "value": value_ast,
+                }
+            ],
+        }
+
+        scope["graph"].append(attr_node)
+        return True
+
+    def parse_object_creation(self, expression: str) -> dict:
+        """Парсит создание объекта: ClassName(arg1, arg2, ...)"""
+        pattern = r"([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)"
+        match = re.match(pattern, expression)
+
+        if not match:
+            return {"type": "unknown", "value": expression}
+
+        class_name, args_str = match.groups()
+
+        # Парсим аргументы
+        args = []
+        if args_str.strip():
+            args = self.parse_function_arguments_to_ast(args_str)
+
+        return {"type": "constructor_call", "class_name": class_name, "arguments": args}
+
+    def parse_attribute_access(self, expression: str) -> dict:
+        """Парсит доступ к атрибуту: obj.attr или obj.method()"""
+        # Проверяем доступ к атрибуту
+        if "." in expression:
+            parts = expression.split(".", 1)
+            if len(parts) == 2:
+                obj_name, rest = parts
+
+                # Проверяем, является ли rest вызовом метода
+                method_pattern = r"([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)"
+                method_match = re.match(method_pattern, rest)
+
+                if method_match:
+                    # Это вызов метода: obj.method(args)
+                    method_name, args_str = method_match.groups()
+                    args = []
+                    if args_str.strip():
+                        args = self.parse_function_arguments_to_ast(args_str)
+
+                    return {
+                        "type": "method_call_expression",
+                        "object": obj_name,
+                        "method": method_name,
+                        "arguments": args,
+                    }
+                else:
+                    # Просто доступ к атрибуту: obj.attr
+                    return {
+                        "type": "attribute_access",
+                        "object": obj_name,
+                        "attribute": rest,
+                    }
+
+        return {"type": "unknown", "value": expression}
+
+    def parse_static_method_call(self, expression: str) -> dict:
+        """Парсит вызов статического метода: ClassName.method(args)"""
+        pattern = r"([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)"
+        match = re.match(pattern, expression)
+
+        if not match:
+            return {"type": "unknown", "value": expression}
+
+        class_name, method_name, args_str = match.groups()
+
+        args = []
+        if args_str.strip():
+            args = self.parse_function_arguments_to_ast(args_str)
+
+        return {
+            "type": "static_method_call",
+            "class_name": class_name,
+            "method": method_name,
+            "arguments": args,
+        }
+
+    def parse_object_creation_node(
+        self, line: str, scope: dict, var_name: str, class_name: str, args_str: str
+    ):
+        """Создает узел для создания объекта"""
+        args = []
+        if args_str.strip():
+            args = self.parse_function_arguments_to_ast(args_str)
+
+        # Добавляем переменную в таблицу символов
+        scope["symbol_table"].add_symbol(name=var_name, key="var", var_type=class_name)
+
+        # Создаем AST для вызова конструктора
+        constructor_ast = {
+            "type": "constructor_call",
+            "class_name": class_name,
+            "arguments": args,
+        }
+
+        operations = [
+            {"type": "NEW_VAR", "target": var_name, "var_type": class_name},
+            {
+                "type": "CONSTRUCTOR_CALL",
+                "class_name": class_name,
+                "target": var_name,
+                "arguments": args,
+            },
+        ]
+
+        # Собираем зависимости из аргументов
+        dependencies = []
+        for arg in args:
+            deps = self.extract_dependencies_from_ast(arg)
+            dependencies.extend(deps)
+
+        # Создаем узел
+        scope["graph"].append(
+            {
+                "node": "object_creation",
+                "content": line,
+                "symbols": [var_name],
+                "var_name": var_name,
+                "var_type": class_name,
+                "class_name": class_name,
+                "arguments": args,
+                "operations": operations,
+                "dependencies": dependencies,
+                "expression_ast": constructor_ast,
+            }
+        )
+
+        return True
+
+    def parse_object_method_call_node(
+        self, line: str, scope: dict, obj_name: str, method_name: str, args_str: str
+    ) -> bool:
+        """Парсит вызов метода объекта: obj.method(args)"""
+        # Парсим аргументы из строки в список AST
+        args = []
+        if args_str.strip():
+            args = self.parse_function_arguments_to_ast(args_str)
+
+        operations = [
+            {
+                "type": "METHOD_CALL",
+                "object": obj_name,
+                "method": method_name,
+                "arguments": args,
+            }
+        ]
+
+        # Собираем зависимости
+        dependencies = [obj_name]
+        for arg in args:
+            deps = self.extract_dependencies_from_ast(arg)
+            dependencies.extend(deps)
+
+        scope["graph"].append(
+            {
+                "node": "method_call",
+                "content": line,
+                "object": obj_name,
+                "method": method_name,
+                "arguments": args,
+                "operations": operations,
+                "dependencies": dependencies,
+            }
+        )
+
+        return True
+
+    def parse_static_method_call_node(
+        self, line: str, scope: dict, class_name: str, method_name: str, args_str: str
+    ) -> bool:
+        """Парсит вызов статического метода: Class.method(args)"""
+        # Парсим аргументы из строки в список AST
+        args = []
+        if args_str.strip():
+            args = self.parse_function_arguments_to_ast(args_str)
+
+        operations = [
+            {
+                "type": "STATIC_METHOD_CALL",
+                "class_name": class_name,
+                "method": method_name,
+                "arguments": args,
+            }
+        ]
+
+        # Собираем зависимости
+        dependencies = []
+        for arg in args:
+            deps = self.extract_dependencies_from_ast(arg)
+            dependencies.extend(deps)
+
+        scope["graph"].append(
+            {
+                "node": "static_method_call",
+                "content": line,
+                "class_name": class_name,
+                "method": method_name,
+                "arguments": args,
+                "operations": operations,
+                "dependencies": dependencies,
+            }
+        )
+
+        return True
+
+    def is_class_name(self, name: str, scope: dict) -> bool:
+        """Проверяет, является ли имя именем класса"""
+        # Простая проверка - начинается с заглавной буквы
+        if name and name[0].isupper():
+            # Дополнительно проверяем в таблице символов
+            symbol = scope["symbol_table"].get_symbol(name)
+            if symbol and symbol.get("key") == "class":
+                return True
+            # Если символ не найден, все равно считаем это именем класса
+            # (может быть определен в другом модуле)
+            return True
+
+        # Проверяем в родительских scope'ах
+        if "parent_scope" in scope:
+            parent_level = scope["parent_scope"]
+            for parent in self.scopes:
+                if parent["level"] == parent_level:
+                    if self.is_class_name(name, parent):
+                        return True
+
+        return False
