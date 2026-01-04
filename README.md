@@ -46,6 +46,15 @@ def main() -> int:
     return 0
 ```
 
+Cycles:
+
+```python
+def main() -> int:
+    for i in range(0, 10, -1):
+        print("i = ", i)
+    return 0
+```
+
 del:
 
 ```python
