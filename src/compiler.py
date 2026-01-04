@@ -1363,8 +1363,9 @@ class CCodeGenerator:
         self.add_line(f"printf({format_str}, {args_str});")
 
     def generate_while_loop(self, node: Dict):
-        """Генерирует while loop"""
-        condition_ast = node.get("condition_ast")
+        """Генерирует while loop с правильной обработкой структуры JSON"""
+        # В вашем JSON ключ "condition", а не "condition_ast"
+        condition_ast = node.get("condition")
         if not condition_ast:
             return
 
@@ -1376,8 +1377,9 @@ class CCodeGenerator:
         # Входим в scope цикла
         self.enter_scope()
 
-        # Генерируем тело цикла
-        for body_node in node.get("body", []):
+        # Генерируем тело цикла из списка body
+        body_nodes = node.get("body", [])
+        for body_node in body_nodes:
             self.generate_graph_node(body_node)
 
         # Выходим из scope цикла
