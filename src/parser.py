@@ -29,6 +29,10 @@ class Parser:
         )  # Добавляем процессор импортов
         self.c_import_processor = CImportProcessor(base_path=base_path)
 
+    ###############################################################################################
+    # INDENT
+    ###############################################################################################
+
     def detect_indent_type(self, line: str):
         if not line.startswith((" ", "\t")):
             return None
@@ -83,111 +87,6 @@ class Parser:
 
         return ("tab", 1)
 
-    def handle_indent_change(self, indent: int):
-        if indent > self.current_indent:
-            self.current_indent = indent
-        elif indent < self.current_indent:
-            while self.current_indent > indent and len(self.scope_stack) > 1:
-                self.scope_stack.pop()
-                self.current_indent -= 1
-
-    def parse_cimport(
-        self, line: str, scope: dict, all_lines: list, current_index: int
-    ):
-        """Парсит C импорт"""
-        import_info = self.c_import_processor.resolve_cimport(line)
-
-        if import_info:
-            # Добавляем узел C импорта
-            scope["graph"].append(
-                {
-                    "node": "c_import",
-                    "content": line,
-                    "header": import_info["header"],
-                    "is_system": import_info["is_system"],
-                    "operations": [
-                        {
-                            "type": "C_IMPORT",
-                            "header": import_info["header"],
-                            "is_system": import_info["is_system"],
-                        }
-                    ],
-                }
-            )
-            print(
-                f"Добавлен C импорт: {import_info['header']} (системный: {import_info['is_system']})"
-            )
-
-        return current_index + 1
-
-    def parse_code(self, code: str, file_path: str = "") -> list[dict]:
-        if file_path:
-            base_dir = os.path.dirname(file_path)
-            self.import_processor.base_path = base_dir
-
-        processed_code = self.import_processor.process_imports(code, file_path)
-
-        return self._parse_processed_code(processed_code)
-
-    def _parse_processed_code(self, code: str) -> list[dict]:
-        code = re.sub(r"#.*", "", code)
-        code = re.sub(r"'''.*?'''", "", code, flags=re.DOTALL)
-        code = re.sub(r'""".*?"""', "", code, flags=re.DOTALL)
-
-        lines = code.split("\n")
-
-        if any(line.startswith((" ", "\t")) for line in lines if line.strip()):
-            self.indent_char, self.indent_size = self.analyze_indent_pattern(lines)
-
-        global_scope = {
-            "level": 0,
-            "type": "module",
-            "parent_scope": None,
-            "local_variables": [],
-            "graph": [],
-            "symbol_table": SymbolTable(),
-        }
-        self.scopes.append(global_scope)
-        self.scope_stack = [global_scope]
-        self.current_indent = 0
-
-        i = 0
-        while i < len(lines):
-            line = lines[i]
-
-            if not line.strip():
-                i += 1
-                continue
-
-            indent = self.calculate_indent_level(line)
-            line_content = line.strip()
-
-            # Обработка отступов
-            if indent < self.current_indent:
-                # Уменьшаем стек scope'ов при уменьшении отступа
-                while len(self.scope_stack) > 1 and self.current_indent > indent:
-                    self.scope_stack.pop()
-                    self.current_indent -= 1
-
-            self.current_indent = indent
-
-            if line_content:
-                # Получаем текущую область видимости
-                current_scope = (
-                    self.scope_stack[-1] if self.scope_stack else global_scope
-                )
-
-                i = self.parse_line(line_content, current_scope, lines, i, indent)
-            else:
-                i += 1
-
-        # Преобразуем SymbolTable в словарь для JSON
-        for scope in self.scopes:
-            if hasattr(scope["symbol_table"], "symbols"):
-                scope["symbol_table"] = scope["symbol_table"].symbols
-
-        return self.scopes
-
     def get_current_scope_for_indent(self, indent: int):
         """Возвращает область видимости для заданного уровня отступа"""
         # Если отступ 0 - возвращаем глобальную область
@@ -205,6 +104,14 @@ class Parser:
 
         # Если не нашли, возвращаем последнюю область
         return self.scope_stack[-1] if self.scope_stack else None
+
+    def handle_indent_change(self, indent: int):
+        if indent > self.current_indent:
+            self.current_indent = indent
+        elif indent < self.current_indent:
+            while self.current_indent > indent and len(self.scope_stack) > 1:
+                self.scope_stack.pop()
+                self.current_indent -= 1
 
     def calculate_indent_level(self, line: str) -> int:
         if not line.startswith((" ", "\t")):
@@ -240,6 +147,36 @@ class Parser:
 
         return 0
 
+    def find_indented_block_end(
+        self, lines: list, start_index: int, base_indent: int
+    ) -> int:
+        """Находит конец блока с отступом"""
+        if start_index >= len(lines):
+            return start_index
+
+        i = start_index
+        while i < len(lines):
+            line = lines[i]
+
+            # Пропускаем пустые строки
+            if not line.strip():
+                i += 1
+                continue
+
+            current_indent = self.calculate_indent_level(line)
+
+            # Если отступ стал меньше или равен базовому - конец блока
+            if current_indent <= base_indent:
+                return i
+
+            i += 1
+
+        return len(lines)  # Дошли до конца файла
+
+    ###############################################################################################
+    # SCOPE
+    ###############################################################################################
+
     def get_current_scope(self, indent):
         """Определяет текущий scope на основе отступа"""
         if indent == 0:
@@ -251,6 +188,111 @@ class Parser:
                 return scope
 
         return self.scopes[0]
+
+    ###############################################################################################
+    # IMPORTS
+    ###############################################################################################
+
+    def parse_cimport(
+        self, line: str, scope: dict, all_lines: list, current_index: int
+    ):
+        """Парсит C импорт"""
+        import_info = self.c_import_processor.resolve_cimport(line)
+
+        if import_info:
+            # Добавляем узел C импорта
+            scope["graph"].append(
+                {
+                    "node": "c_import",
+                    "content": line,
+                    "header": import_info["header"],
+                    "is_system": import_info["is_system"],
+                    "operations": [
+                        {
+                            "type": "C_IMPORT",
+                            "header": import_info["header"],
+                            "is_system": import_info["is_system"],
+                        }
+                    ],
+                }
+            )
+            print(
+                f"Добавлен C импорт: {import_info['header']} (системный: {import_info['is_system']})"
+            )
+
+        return current_index + 1
+
+    ###############################################################################################
+    # PARSE
+    ###############################################################################################
+
+    def parse_code(self, code: str, file_path: str = "") -> list[dict]:
+        def _parse_processed_code(code: str) -> list[dict]:
+            code = re.sub(r"#.*", "", code)
+            code = re.sub(r"'''.*?'''", "", code, flags=re.DOTALL)
+            code = re.sub(r'""".*?"""', "", code, flags=re.DOTALL)
+
+            lines = code.split("\n")
+
+            if any(line.startswith((" ", "\t")) for line in lines if line.strip()):
+                self.indent_char, self.indent_size = self.analyze_indent_pattern(lines)
+
+            global_scope = {
+                "level": 0,
+                "type": "module",
+                "parent_scope": None,
+                "local_variables": [],
+                "graph": [],
+                "symbol_table": SymbolTable(),
+            }
+            self.scopes.append(global_scope)
+            self.scope_stack = [global_scope]
+            self.current_indent = 0
+
+            i = 0
+            while i < len(lines):
+                line = lines[i]
+
+                if not line.strip():
+                    i += 1
+                    continue
+
+                indent = self.calculate_indent_level(line)
+                line_content = line.strip()
+
+                # Обработка отступов
+                if indent < self.current_indent:
+                    # Уменьшаем стек scope'ов при уменьшении отступа
+                    while len(self.scope_stack) > 1 and self.current_indent > indent:
+                        self.scope_stack.pop()
+                        self.current_indent -= 1
+
+                self.current_indent = indent
+
+                if line_content:
+                    # Получаем текущую область видимости
+                    current_scope = (
+                        self.scope_stack[-1] if self.scope_stack else global_scope
+                    )
+
+                    i = self.parse_line(line_content, current_scope, lines, i, indent)
+                else:
+                    i += 1
+
+            # Преобразуем SymbolTable в словарь для JSON
+            for scope in self.scopes:
+                if hasattr(scope["symbol_table"], "symbols"):
+                    scope["symbol_table"] = scope["symbol_table"].symbols
+
+            return self.scopes
+
+        if file_path:
+            base_dir = os.path.dirname(file_path)
+            self.import_processor.base_path = base_dir
+
+        processed_code = self.import_processor.process_imports(code, file_path)
+
+        return _parse_processed_code(processed_code)
 
     def parse_line(
         self, line: str, scope: dict, all_lines: list, current_index: int, indent: int
@@ -1014,24 +1056,6 @@ class Parser:
             "is_immutable": True,
         }
 
-    def get_builtin_return_type(self, func_name: str, args: list) -> str:
-        """Определяет тип возвращаемого значения для встроенной функции"""
-        if func_name == "len":
-            return "int"
-        elif func_name == "str":
-            return "str"
-        elif func_name == "int":
-            return "int"
-        elif func_name == "bool":
-            return "bool"
-        elif func_name == "print":
-            return "None"
-        elif func_name == "range":
-            return "range"
-        elif func_name == "input":  # ДОБАВЛЕНО
-            return "str"  # input всегда возвращает строку
-        return "unknown"
-
     def parse_global_line(
         self, line: str, scope: dict, all_lines: list, current_index: int
     ):
@@ -1314,32 +1338,6 @@ class Parser:
             self.scopes.append(func_scope)
             return current_index + 1
 
-    def find_indented_block_end(
-        self, lines: list, start_index: int, base_indent: int
-    ) -> int:
-        """Находит конец блока с отступом"""
-        if start_index >= len(lines):
-            return start_index
-
-        i = start_index
-        while i < len(lines):
-            line = lines[i]
-
-            # Пропускаем пустые строки
-            if not line.strip():
-                i += 1
-                continue
-
-            current_indent = self.calculate_indent_level(line)
-
-            # Если отступ стал меньше или равен базовому - конец блока
-            if current_indent <= base_indent:
-                return i
-
-            i += 1
-
-        return len(lines)  # Дошли до конца файла
-
     def parse_const(self, line: str, scope: dict):
         pattern = r"const\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)"
         match = re.match(pattern, line)
@@ -1372,87 +1370,6 @@ class Parser:
 
             return True
         return False
-
-    def extract_list_element_type(self, list_type: str) -> str:
-        """Извлекает тип элементов из объявления типа списка, учитывая вложенность"""
-        # Убираем "list[" в начале и "]" в конце
-        if list_type.startswith("list[") and list_type.endswith("]"):
-            inner = list_type[5:-1]  # Убираем "list[" и "]"
-
-            # Теперь нужно найти баланс скобок
-            balance = 0
-            end_index = -1
-
-            for i, char in enumerate(inner):
-                if char == "[":
-                    balance += 1
-                elif char == "]":
-                    balance -= 1
-                    if balance < 0:
-                        # Недопустимая строка
-                        return "any"
-
-                # Когда баланс становится 0, мы нашли конец
-                if balance == 0:
-                    end_index = i
-                    break
-
-            if end_index != -1:
-                return inner[: end_index + 1]
-
-        return "any"
-
-    def find_equals_outside_brackets(self, s: str) -> int:
-        """Находит позицию символа '=', которая не находится внутри скобок"""
-        depth = 0
-        in_string = False
-        string_char = None
-
-        for i, char in enumerate(s):
-            # Обработка строк
-            if not in_string and char in ['"', "'"]:
-                in_string = True
-                string_char = char
-            elif in_string and char == string_char:
-                # Проверяем экранирование
-                if i == 0 or s[i - 1] != "\\":
-                    in_string = False
-            # Обработка скобок (только вне строк)
-            elif not in_string:
-                if char == "[":
-                    depth += 1
-                elif char == "]":
-                    depth -= 1
-                elif char == "=" and depth == 0:
-                    return i
-
-        return -1
-
-    def extract_content_inside_brackets(
-        self, s: str, prefix: str, closing_bracket: str
-    ) -> str:
-        """Извлекает содержимое внутри скобок, учитывая вложенность"""
-        if not s.startswith(prefix):
-            return ""
-
-        content = s[len(prefix) :]
-        depth = 0
-        result = []
-
-        for i, char in enumerate(content):
-            if char == "[":
-                depth += 1
-                result.append(char)
-            elif char == "]":
-                if depth == 0:
-                    # Нашли закрывающую скобку
-                    return "".join(result)
-                depth -= 1
-                result.append(char)
-            else:
-                result.append(char)
-
-        return "".join(result)
 
     def parse_var(self, line: str, scope: dict):
         """Парсит объявление переменной с поддержкой tuple и list"""
@@ -1778,18 +1695,6 @@ class Parser:
         )
 
         return True
-
-    def extract_element_type(self, type_str: str, container: str) -> str:
-        """Извлекает тип элементов из объявления типа"""
-        pattern = rf"{container}\[([^\]]+)\]"
-        match = re.search(pattern, type_str)
-        if match:
-            return match.group(1).strip()
-        return "any"
-
-    def extract_tuple_size(self, tuple_ast: dict) -> int:
-        """Извлекает размер кортежа из AST"""
-        return len(tuple_ast.get("items", []))
 
     def parse_delete(self, line: str, scope: dict):
         """Парсит оператор del (полное удаление)"""
@@ -2450,136 +2355,6 @@ class Parser:
         # Если ничего не распознано
         return {"type": "unknown", "value": expression, "original": expression}
 
-    def is_string_literal(self, expression: str) -> bool:
-        """Проверяет, является ли выражение строковым литералом"""
-        return (expression.startswith('"') and expression.endswith('"')) or (
-            expression.startswith("'") and expression.endswith("'")
-        )
-
-    def is_dict_literal(self, content: str) -> bool:
-        """Определяет, является ли содержимое литералом словаря"""
-        if not content:
-            # Пустой {} - может быть и словарем и множеством
-            # По умолчанию считаем словарем
-            return True
-
-        # Проверяем наличие хотя бы одного ':' вне строк и вложенных структур
-        in_string = False
-        string_char = None
-        depth = 0  # Для вложенных структур
-
-        i = 0
-        while i < len(content):
-            char = content[i]
-
-            if not in_string and char in ['"', "'"]:
-                in_string = True
-                string_char = char
-            elif in_string and char == string_char:
-                if i > 0 and content[i - 1] == "\\":
-                    pass  # Экранированная кавычка
-                else:
-                    in_string = False
-            elif not in_string:
-                if char in ["[", "{", "("]:
-                    depth += 1
-                elif char in ["]", "}", ")"]:
-                    depth -= 1
-                elif char == ":" and depth == 0:
-                    return True  # Нашли ':' на верхнем уровне - это словарь
-
-            i += 1
-
-        return False  # Не нашли ':' - вероятно множество
-
-    def is_set_literal(self, content: str) -> bool:
-        """Проверяет, является ли содержимое литералом множества"""
-        # Множество не содержит двоеточий
-        if ":" in content:
-            return False
-
-        # Проверяем баланс скобок
-        balance = 0
-        in_string = False
-        string_char = None
-
-        for char in content:
-            if not in_string and char in ['"', "'"]:
-                in_string = True
-                string_char = char
-            elif in_string and char == string_char:
-                in_string = False
-            elif not in_string:
-                if char == "{":
-                    balance += 1
-                elif char == "}":
-                    balance -= 1
-
-        return balance == 0
-
-    def has_unbalanced_parentheses(self, s: str) -> bool:
-        """Проверяет, есть ли несбалансированные скобки"""
-        balance = 0
-        in_string = False
-        string_char = None
-
-        for char in s:
-            if not in_string and char in ['"', "'"]:
-                in_string = True
-                string_char = char
-            elif in_string and char == string_char:
-                in_string = False
-            elif not in_string:
-                if char == "(":
-                    balance += 1
-                elif char == ")":
-                    balance -= 1
-                    if balance < 0:
-                        return True
-
-        return balance != 0
-
-    def is_fully_parenthesized(self, expression: str) -> bool:
-        """Проверяет, полностью ли выражение заключено в скобки"""
-        if not expression.startswith("(") or not expression.endswith(")"):
-            return False
-
-        # Проверяем баланс скобок
-        balance = 0
-        in_string = False
-        string_char = None
-        escaped = False
-
-        for i, char in enumerate(expression):
-            # Обработка экранирования
-            if escaped:
-                escaped = False
-                continue
-
-            if char == "\\":
-                escaped = True
-                continue
-
-            # Обработка строк
-            if not in_string and char in ['"', "'"]:
-                in_string = True
-                string_char = char
-            elif in_string and char == string_char:
-                in_string = False
-                string_char = None
-
-            # Обработка скобок (только вне строк)
-            if not in_string:
-                if char == "(":
-                    balance += 1
-                elif char == ")":
-                    balance -= 1
-                    # Если баланс стал 0 до конца строки
-                    if balance == 0 and i < len(expression) - 1:
-                        return False
-
-        return balance == 0
-
     def parse_assignment(self, line: str, scope: dict):
         print(
             f"      parse_assignment: парсим '{line}' в scope {scope.get('type', 'unknown')}"
@@ -3022,7 +2797,7 @@ class Parser:
         )
 
         # Вспомогательная функция для разбора части выражения
-        def parse_subexpression(subexpr: str, side: str):
+        def _parse_subexpression(subexpr: str, side: str):
             subexpr = subexpr.strip()
             if not subexpr:
                 return
@@ -3059,162 +2834,8 @@ class Parser:
                     dependencies.append(clean_subexpr)
 
         # Рекурсивно разбираем левую и правую части
-        parse_subexpression(left, "left")
-        parse_subexpression(right, "right")
-
-    def is_fully_parenthesized(self, expression: str) -> bool:
-        """Проверяет, полностью ли выражение заключено в скобки"""
-        if not expression.startswith("(") or not expression.endswith(")"):
-            return False
-
-        # Проверяем баланс скобок
-        balance = 0
-        for i, char in enumerate(expression):
-            if char == "(":
-                balance += 1
-            elif char == ")":
-                balance -= 1
-                # Если баланс стал 0 до конца строки, это не полное обрамление
-                if balance == 0 and i < len(expression) - 1:
-                    return False
-
-        return balance == 0
-
-    def find_lowest_priority_operator(self, expression: str):
-        """Находит оператор с наименьшим приоритетом вне скобок"""
-        # Приоритет операций (от низшего к высшему)
-        operator_levels = [
-            # Уровень 1 (наименьший приоритет)
-            [("|", "BITWISE_OR")],
-            # Уровень 2
-            [("^", "BITWISE_XOR")],
-            # Уровень 3
-            [("&", "BITWISE_AND")],
-            # Уровень 4
-            [("<<", "LEFT_SHIFT"), (">>", "RIGHT_SHIFT")],
-            # Уровень 5
-            [("+", "ADD"), ("-", "SUBTRACT")],
-            # Уровень 6
-            [
-                ("*", "MULTIPLY"),
-                ("/", "DIVIDE"),
-                ("//", "INTEGER_DIVIDE"),
-                ("%", "MODULO"),
-            ],
-            # Уровень 7 (наивысший приоритет)
-            [("**", "POWER")],
-        ]
-
-        # Ищем операторы от низшего приоритета к высшему
-        for level in operator_levels:
-            for op_symbol, op_type in level:
-                # Ищем оператор вне скобок
-                index = self.find_operator_outside_parentheses(expression, op_symbol)
-                if index != -1:
-                    return (op_symbol, op_type, index)
-
-        return None
-
-    def is_identifier_char(self, char: str) -> bool:
-        """Проверяет, является ли символ частью идентификатора"""
-        return char.isalnum() or char == "_"
-
-    def find_operator_outside_parentheses(self, expression: str, operator: str) -> int:
-        """Находит позицию оператора вне скобок, строк и комментариев"""
-        balance = 0  # Баланс круглых скобок
-        brace_balance = 0  # Баланс фигурных скобок
-        bracket_balance = 0  # Баланс квадратных скобок
-        in_string = False  # Находимся ли внутри строки
-        string_char = None  # Символ, открывший строку
-        escaped = False  # Экранирован ли текущий символ
-
-        i = 0
-        while i < len(expression):
-            char = expression[i]
-
-            # Обработка экранирования
-            if escaped:
-                escaped = False
-                i += 1
-                continue
-
-            if char == "\\":
-                escaped = True
-                i += 1
-                continue
-
-            # Обработка строк
-            if not in_string and char in ['"', "'"]:
-                in_string = True
-                string_char = char
-            elif in_string and char == string_char:
-                in_string = False
-                string_char = None
-
-            # Обработка скобок (только вне строк)
-            if not in_string:
-                if char == "(":
-                    balance += 1
-                elif char == ")":
-                    balance -= 1
-                elif char == "{":
-                    brace_balance += 1
-                elif char == "}":
-                    brace_balance -= 1
-                elif char == "[":
-                    bracket_balance += 1
-                elif char == "]":
-                    bracket_balance -= 1
-
-                # Проверяем оператор, если мы на верхнем уровне всех скобок
-                if balance == 0 and brace_balance == 0 and bracket_balance == 0:
-                    # Проверяем совпадение оператора
-                    if expression[i : i + len(operator)] == operator:
-                        # Проверяем контекст, чтобы не перепутать с частью другого оператора или идентификатора
-                        before_ok = i == 0 or not self.is_identifier_char(
-                            expression[i - 1]
-                        )
-                        after_ok = i + len(operator) >= len(
-                            expression
-                        ) or not self.is_identifier_char(expression[i + len(operator)])
-
-                        if before_ok and after_ok:
-                            return i
-
-            i += 1
-
-        return -1
-
-    def contains_operator(self, expression: str) -> bool:
-        """Проверяет, содержит ли выражение какой-либо оператор"""
-        expression = expression.strip()
-
-        # Сначала убираем внешние скобки
-        while self.is_fully_parenthesized(expression):
-            expression = expression[1:-1].strip()
-
-        operators = ["+", "-", "*", "/", "//", "%", "**", ">>", "<<", "&", "|", "^"]
-
-        balance = 0
-        for i, char in enumerate(expression):
-            if char == "(":
-                balance += 1
-            elif char == ")":
-                balance -= 1
-            elif balance == 0:  # Мы вне скобок
-                for op in operators:
-                    if expression[i : i + len(op)] == op:
-                        # Проверяем контекст
-                        before_ok = i == 0 or not expression[i - 1].isalnum()
-                        after_ok = (
-                            i + len(op) >= len(expression)
-                            or not expression[i + len(op)].isalnum()
-                        )
-
-                        if before_ok and after_ok:
-                            return True
-
-        return False
+        _parse_subexpression(left, "left")
+        _parse_subexpression(right, "right")
 
     def parse_function_call(self, line: str, scope: dict):
         """Парсит вызов функции"""
@@ -3437,29 +3058,6 @@ class Parser:
 
         return True
 
-    # def parse_condition(self, condition: str) -> dict:
-    #     """Парсит условие для циклов и if"""
-    #     operators = ['<', '>', '<=', '>=', '==', '!=', 'and', 'or']
-
-    #     # Простая реализация - ищем операторы сравнения
-    #     for op in operators:
-    #         if op in condition:
-    #             parts = condition.split(op, 1)
-    #             if len(parts) == 2:
-    #                 left, right = parts[0].strip(), parts[1].strip()
-    #                 return {
-    #                     "type": "COMPARISON",
-    #                     "operator": op,
-    #                     "left": left,
-    #                     "right": right
-    #                 }
-
-    #     # Если не нашли оператор сравнения, предполагаем булевое выражение
-    #     return {
-    #         "type": "EXPRESSION",
-    #         "value": condition
-    #     }
-
     def parse_condition(self, condition: str) -> dict:
         """Парсит условие для циклов и if"""
         # Используем AST парсер для сложных условий
@@ -3525,33 +3123,6 @@ class Parser:
 
         # Другие итерируемые объекты
         return {"type": "ITERABLE", "expression": iterable_expr}
-
-    def find_loop_body_end(
-        self, lines: list, start_index: int, base_indent: int
-    ) -> int:
-        """Находит конец тела цикла"""
-        if start_index >= len(lines):
-            return start_index
-
-        # Преобразуем base_indent в реальный отступ
-        base_real_indent = base_indent + 1
-
-        i = start_index
-        while i < len(lines):
-            line = lines[i]
-            if not line.strip():
-                i += 1
-                continue
-
-            current_indent = self.calculate_indent_level(line)
-
-            # Если отступ стал меньше или равен базовому отступу (не включая увеличение для тела)
-            if current_indent <= base_indent:
-                return i
-
-            i += 1
-
-        return len(lines)
 
     def parse_while_loop(
         self, line: str, scope: dict, all_lines: list, current_index: int, indent: int
@@ -3869,131 +3440,6 @@ class Parser:
 
         return args
 
-    def extract_dependencies_from_ast(self, ast: dict) -> list:
-        """Извлекает зависимости (используемые переменные) из AST"""
-        dependencies = []
-
-        def traverse(node):
-            if not isinstance(node, dict):
-                return
-
-            node_type = node.get("type")
-
-            if node_type == "variable":
-                var_name = node.get("name") or node.get("value")
-                if var_name and var_name not in dependencies:
-                    # Проверяем, что это не ключевое слово или тип данных
-                    if (
-                        var_name not in KEYS
-                        and var_name not in DATA_TYPES
-                        and var_name not in self.builtin_functions
-                        and not var_name.startswith('"')
-                        and not var_name.endswith('"')
-                    ):
-                        dependencies.append(var_name)
-
-            elif node_type == "attribute_access":
-                obj_name = node.get("object")
-                if obj_name and obj_name not in dependencies:
-                    # Проверяем, что это не ключевое слово
-                    if (
-                        obj_name not in KEYS
-                        and obj_name not in DATA_TYPES
-                        and obj_name not in self.builtin_functions
-                    ):
-                        dependencies.append(obj_name)
-
-            elif node_type == "method_call":
-                obj_name = node.get("object")
-                if obj_name and obj_name not in dependencies:
-                    dependencies.append(obj_name)
-
-                for arg in node.get("arguments", []):
-                    traverse(arg)
-
-            elif node_type == "static_method_call":
-                # Статические методы не требуют зависимостей от объектов
-                for arg in node.get("arguments", []):
-                    traverse(arg)
-
-            elif node_type == "constructor_call":
-                for arg in node.get("arguments", []):
-                    traverse(arg)
-
-            elif node_type == "function_call":
-                func_name = node.get("function")
-                # Только пользовательские функции добавляем как зависимости
-                if func_name and func_name not in self.builtin_functions:
-                    if func_name not in dependencies:
-                        dependencies.append(func_name)
-
-                for arg in node.get("arguments", []):
-                    traverse(arg)
-
-            elif node_type == "binary_operation":
-                traverse(node.get("left"))
-                traverse(node.get("right"))
-
-            elif node_type == "unary_operation":
-                traverse(node.get("operand"))
-
-            elif node_type == "ternary_operator":
-                traverse(node.get("condition"))
-                traverse(node.get("true_expr"))
-                traverse(node.get("false_expr"))
-
-            elif node_type == "address_of":
-                expr = node.get("expression") or node.get("variable")
-                if isinstance(expr, dict):
-                    traverse(expr)
-                elif expr and expr not in dependencies:
-                    dependencies.append(expr)
-
-            elif node_type == "dereference":
-                expr = node.get("expression") or node.get("pointer")
-                if isinstance(expr, dict):
-                    traverse(expr)
-                elif expr and expr not in dependencies:
-                    dependencies.append(expr)
-
-            elif node_type == "index_access":
-                var_name = node.get("variable")
-                if var_name and var_name not in dependencies:
-                    dependencies.append(var_name)
-                traverse(node.get("index"))
-
-            elif node_type == "slice_access":
-                var_name = node.get("variable")
-                if var_name and var_name not in dependencies:
-                    dependencies.append(var_name)
-                traverse(node.get("start"))
-                traverse(node.get("stop"))
-                traverse(node.get("step"))
-
-            elif node_type == "list_literal":
-                for item in node.get("items", []):
-                    traverse(item)
-
-            elif node_type == "tuple_literal":
-                for item in node.get("items", []):
-                    traverse(item)
-
-            elif node_type == "dict_literal":
-                for key, value in node.get("pairs", {}).items():
-                    traverse(value)
-
-            elif node_type == "set_literal":
-                for item in node.get("items", []):
-                    traverse(item)
-
-            elif node_type == "fstring":
-                for part in node.get("parts", []):
-                    if part.get("type") == "fstring_expr":
-                        traverse(part.get("expression"))
-
-        traverse(ast)
-        return list(set(dependencies))  # Убираем дубликаты
-
     def parse_literal_to_ast(self, value: str) -> dict:
         """Парсит литералы в AST"""
         if value.startswith('"') and value.endswith('"'):
@@ -4017,114 +3463,6 @@ class Parser:
 
         # Если это не литерал, пытаемся парсить как выражение
         return self.parse_expression_to_ast(value)
-
-    def build_operations_from_ast(
-        self, ast: dict, target: str, operations: list, dependencies: list, scope: dict
-    ):
-        """Строит операции из AST выражения"""
-
-        if ast["type"] == "variable":
-            operations.append({"type": "ASSIGN", "target": target, "value": ast})
-            if ast["value"] not in dependencies:
-                dependencies.append(ast["value"])
-
-        elif ast["type"] == "literal":
-            operations.append({"type": "ASSIGN", "target": target, "value": ast})
-
-        elif ast["type"] == "binary_operation":
-            # Создаем временные переменные для левой и правой частей
-            left_temp = f"{target}_left"
-            right_temp = f"{target}_right"
-
-            # Рекурсивно обрабатываем левую часть
-            self.build_operations_from_ast(
-                ast["left"], left_temp, operations, dependencies, scope
-            )
-
-            # Рекурсивно обрабатываем правую часть
-            self.build_operations_from_ast(
-                ast["right"], right_temp, operations, dependencies, scope
-            )
-
-            # Добавляем бинарную операцию
-            operations.append(
-                {
-                    "type": "BINARY_OPERATION",
-                    "target": target,
-                    "operator": ast["operator"],
-                    "operator_symbol": ast["operator_symbol"],
-                    "left": {"type": "variable", "value": left_temp},
-                    "right": {"type": "variable", "value": right_temp},
-                }
-            )
-
-        elif ast["type"] == "function_call":
-            # Обрабатываем аргументы
-            arg_operations = []
-            for i, arg_ast in enumerate(ast["arguments"]):
-                arg_temp = f"{target}_arg_{i}"
-                self.build_operations_from_ast(
-                    arg_ast, arg_temp, arg_operations, dependencies, scope
-                )
-
-            # Добавляем операции аргументов
-            operations.extend(arg_operations)
-
-            # Добавляем вызов функции
-            arg_values = [
-                {"type": "variable", "value": f"{target}_arg_{i}"}
-                for i in range(len(ast["arguments"]))
-            ]
-
-            operations.append(
-                {
-                    "type": "FUNCTION_CALL_ASSIGN",
-                    "target": target,
-                    "function": ast["function"],
-                    "arguments": arg_values,
-                }
-            )
-
-        elif ast["type"] == "dereference":
-            operations.append(
-                {
-                    "type": "READ_POINTER",
-                    "target": target,
-                    "from": ast["pointer"],
-                    "operation": "*",
-                    "value": ast,
-                }
-            )
-            if ast["pointer"] not in dependencies:
-                dependencies.append(ast["pointer"])
-
-    def find_symbol_recursive(self, current_scope, target_name, visited=None):
-        """Рекурсивно ищет символ в текущем и родительских scope'ах"""
-        if visited is None:
-            visited = set()
-
-        # Проверяем, не посещали ли мы уже этот scope
-        scope_id = id(current_scope)
-        if scope_id in visited:
-            return None
-        visited.add(scope_id)
-
-        # Ищем символ в текущем scope
-        symbol = current_scope["symbol_table"].get_symbol(target_name)
-        if symbol:
-            return symbol, current_scope
-
-        # Если не нашли и есть родительский scope, ищем там
-        if "parent_scope" in current_scope:
-            parent_level = current_scope["parent_scope"]
-            # Ищем scope с нужным уровнем
-            for parent in self.scopes:
-                if parent["level"] == parent_level:
-                    result = self.find_symbol_recursive(parent, target_name, visited)
-                    if result:
-                        return result
-
-        return None
 
     def parse_list_literal(self, value: str) -> dict:
         """Парсит литерал списка: [1, 2, 3] или [[1, 2], [3, 4]]"""
@@ -4792,41 +4130,9 @@ class Parser:
 
         return True
 
-    def clean_value(self, value: str):
-        """Очищает значение от лишних пробелов, но для сложных выражений возвращает AST"""
-        value = value.strip()
-
-        if not value:
-            return {"type": "empty", "value": ""}
-
-        # Сначала проверяем простые литералы
-        if value.isdigit():
-            return {"type": "literal", "value": int(value), "data_type": "int"}
-        elif value == "True":
-            return {"type": "literal", "value": True, "data_type": "bool"}
-        elif value == "False":
-            return {"type": "literal", "value": False, "data_type": "bool"}
-        elif value == "None":
-            return {"type": "literal", "value": None, "data_type": "None"}
-        elif value == "null":
-            return {"type": "literal", "value": "null", "data_type": "null"}
-        elif (value.startswith('"') and value.endswith('"')) or (
-            value.startswith("'") and value.endswith("'")
-        ):
-            content = value[1:-1]
-            content = content.replace('\\"', '"').replace("\\'", "'")
-            return {"type": "literal", "value": content, "data_type": "str"}
-
-        # Если это не простой литерал, парсим как выражение
-        ast = self.parse_expression_to_ast(value)
-
-        # Если парсинг не удался, возвращаем как неизвестное
-        if ast["type"] == "unknown":
-            return {"type": "literal", "value": value, "data_type": "any"}
-
-        return ast
-
-    # CLASS
+    ###############################################################################################
+    # CLASSES
+    ###############################################################################################
 
     def parse_class_declaration(
         self, line: str, scope: dict, all_lines: list, current_index: int
@@ -5211,37 +4517,6 @@ class Parser:
             self.scope_stack.remove(method_scope)
 
         return body_end
-
-    def parse_single_parameter(self, param_str: str) -> dict:
-        """Парсит один параметр: name: type = default_value"""
-        param_str = param_str.strip()
-        if not param_str:
-            return None
-
-        # Проверяем наличие типа и значения по умолчанию
-        if ":" in param_str and "=" in param_str:
-            # name: type = value
-            name_type_part, value_part = param_str.split("=", 1)
-            if ":" in name_type_part:
-                name, type_part = name_type_part.split(":", 1)
-                return {
-                    "name": name.strip(),
-                    "type": type_part.strip(),
-                    "default_value": value_part.strip(),
-                }
-        elif ":" in param_str:
-            # name: type
-            name, type_part = param_str.split(":", 1)
-            return {"name": name.strip(), "type": type_part.strip()}
-        elif "=" in param_str:
-            # name = value
-            name, value = param_str.split("=", 1)
-            return {"name": name.strip(), "type": "any", "default_value": value.strip()}
-        else:
-            # Просто name
-            return {"name": param_str.strip(), "type": "any"}
-
-        return None
 
     def parse_class_attribute(
         self, line: str, scope: dict, class_name: str, class_node: dict
@@ -5702,6 +4977,697 @@ class Parser:
 
         print(f"DEBUG: Не удалось распарсить строку как инициализацию атрибута: {line}")
         return False
+
+    ###############################################################################################
+    # LITERAL
+    ###############################################################################################
+
+    def is_string_literal(self, expression: str) -> bool:
+        """Проверяет, является ли выражение строковым литералом"""
+        return (expression.startswith('"') and expression.endswith('"')) or (
+            expression.startswith("'") and expression.endswith("'")
+        )
+
+    def is_dict_literal(self, content: str) -> bool:
+        """Определяет, является ли содержимое литералом словаря"""
+        if not content:
+            # Пустой {} - может быть и словарем и множеством
+            # По умолчанию считаем словарем
+            return True
+
+        # Проверяем наличие хотя бы одного ':' вне строк и вложенных структур
+        in_string = False
+        string_char = None
+        depth = 0  # Для вложенных структур
+
+        i = 0
+        while i < len(content):
+            char = content[i]
+
+            if not in_string and char in ['"', "'"]:
+                in_string = True
+                string_char = char
+            elif in_string and char == string_char:
+                if i > 0 and content[i - 1] == "\\":
+                    pass  # Экранированная кавычка
+                else:
+                    in_string = False
+            elif not in_string:
+                if char in ["[", "{", "("]:
+                    depth += 1
+                elif char in ["]", "}", ")"]:
+                    depth -= 1
+                elif char == ":" and depth == 0:
+                    return True  # Нашли ':' на верхнем уровне - это словарь
+
+            i += 1
+
+        return False  # Не нашли ':' - вероятно множество
+
+    def is_set_literal(self, content: str) -> bool:
+        """Проверяет, является ли содержимое литералом множества"""
+        # Множество не содержит двоеточий
+        if ":" in content:
+            return False
+
+        # Проверяем баланс скобок
+        balance = 0
+        in_string = False
+        string_char = None
+
+        for char in content:
+            if not in_string and char in ['"', "'"]:
+                in_string = True
+                string_char = char
+            elif in_string and char == string_char:
+                in_string = False
+            elif not in_string:
+                if char == "{":
+                    balance += 1
+                elif char == "}":
+                    balance -= 1
+
+        return balance == 0
+
+    ###############################################################################################
+    # EXTRACT
+    ###############################################################################################
+
+    def extract_element_type(self, type_str: str, container: str) -> str:
+        """Извлекает тип элементов из объявления типа"""
+        pattern = rf"{container}\[([^\]]+)\]"
+        match = re.search(pattern, type_str)
+        if match:
+            return match.group(1).strip()
+        return "any"
+
+    def extract_tuple_size(self, tuple_ast: dict) -> int:
+        """Извлекает размер кортежа из AST"""
+        return len(tuple_ast.get("items", []))
+
+    def extract_list_element_type(self, list_type: str) -> str:
+        """Извлекает тип элементов из объявления типа списка, учитывая вложенность"""
+        # Убираем "list[" в начале и "]" в конце
+        if list_type.startswith("list[") and list_type.endswith("]"):
+            inner = list_type[5:-1]  # Убираем "list[" и "]"
+
+            # Теперь нужно найти баланс скобок
+            balance = 0
+            end_index = -1
+
+            for i, char in enumerate(inner):
+                if char == "[":
+                    balance += 1
+                elif char == "]":
+                    balance -= 1
+                    if balance < 0:
+                        # Недопустимая строка
+                        return "any"
+
+                # Когда баланс становится 0, мы нашли конец
+                if balance == 0:
+                    end_index = i
+                    break
+
+            if end_index != -1:
+                return inner[: end_index + 1]
+
+        return "any"
+
+    def extract_content_inside_brackets(
+        self, s: str, prefix: str, closing_bracket: str
+    ) -> str:
+        """Извлекает содержимое внутри скобок, учитывая вложенность"""
+        if not s.startswith(prefix):
+            return ""
+
+        content = s[len(prefix) :]
+        depth = 0
+        result = []
+
+        for i, char in enumerate(content):
+            if char == "[":
+                depth += 1
+                result.append(char)
+            elif char == "]":
+                if depth == 0:
+                    # Нашли закрывающую скобку
+                    return "".join(result)
+                depth -= 1
+                result.append(char)
+            else:
+                result.append(char)
+
+        return "".join(result)
+
+    def extract_dependencies_from_ast(self, ast: dict) -> list:
+        """Извлекает зависимости (используемые переменные) из AST"""
+        dependencies = []
+
+        def traverse(node):
+            if not isinstance(node, dict):
+                return
+
+            node_type = node.get("type")
+
+            if node_type == "variable":
+                var_name = node.get("name") or node.get("value")
+                if var_name and var_name not in dependencies:
+                    # Проверяем, что это не ключевое слово или тип данных
+                    if (
+                        var_name not in KEYS
+                        and var_name not in DATA_TYPES
+                        and var_name not in self.builtin_functions
+                        and not var_name.startswith('"')
+                        and not var_name.endswith('"')
+                    ):
+                        dependencies.append(var_name)
+
+            elif node_type == "attribute_access":
+                obj_name = node.get("object")
+                if obj_name and obj_name not in dependencies:
+                    # Проверяем, что это не ключевое слово
+                    if (
+                        obj_name not in KEYS
+                        and obj_name not in DATA_TYPES
+                        and obj_name not in self.builtin_functions
+                    ):
+                        dependencies.append(obj_name)
+
+            elif node_type == "method_call":
+                obj_name = node.get("object")
+                if obj_name and obj_name not in dependencies:
+                    dependencies.append(obj_name)
+
+                for arg in node.get("arguments", []):
+                    traverse(arg)
+
+            elif node_type == "static_method_call":
+                # Статические методы не требуют зависимостей от объектов
+                for arg in node.get("arguments", []):
+                    traverse(arg)
+
+            elif node_type == "constructor_call":
+                for arg in node.get("arguments", []):
+                    traverse(arg)
+
+            elif node_type == "function_call":
+                func_name = node.get("function")
+                # Только пользовательские функции добавляем как зависимости
+                if func_name and func_name not in self.builtin_functions:
+                    if func_name not in dependencies:
+                        dependencies.append(func_name)
+
+                for arg in node.get("arguments", []):
+                    traverse(arg)
+
+            elif node_type == "binary_operation":
+                traverse(node.get("left"))
+                traverse(node.get("right"))
+
+            elif node_type == "unary_operation":
+                traverse(node.get("operand"))
+
+            elif node_type == "ternary_operator":
+                traverse(node.get("condition"))
+                traverse(node.get("true_expr"))
+                traverse(node.get("false_expr"))
+
+            elif node_type == "address_of":
+                expr = node.get("expression") or node.get("variable")
+                if isinstance(expr, dict):
+                    traverse(expr)
+                elif expr and expr not in dependencies:
+                    dependencies.append(expr)
+
+            elif node_type == "dereference":
+                expr = node.get("expression") or node.get("pointer")
+                if isinstance(expr, dict):
+                    traverse(expr)
+                elif expr and expr not in dependencies:
+                    dependencies.append(expr)
+
+            elif node_type == "index_access":
+                var_name = node.get("variable")
+                if var_name and var_name not in dependencies:
+                    dependencies.append(var_name)
+                traverse(node.get("index"))
+
+            elif node_type == "slice_access":
+                var_name = node.get("variable")
+                if var_name and var_name not in dependencies:
+                    dependencies.append(var_name)
+                traverse(node.get("start"))
+                traverse(node.get("stop"))
+                traverse(node.get("step"))
+
+            elif node_type == "list_literal":
+                for item in node.get("items", []):
+                    traverse(item)
+
+            elif node_type == "tuple_literal":
+                for item in node.get("items", []):
+                    traverse(item)
+
+            elif node_type == "dict_literal":
+                for key, value in node.get("pairs", {}).items():
+                    traverse(value)
+
+            elif node_type == "set_literal":
+                for item in node.get("items", []):
+                    traverse(item)
+
+            elif node_type == "fstring":
+                for part in node.get("parts", []):
+                    if part.get("type") == "fstring_expr":
+                        traverse(part.get("expression"))
+
+        traverse(ast)
+        return list(set(dependencies))  # Убираем дубликаты
+
+    ###############################################################################################
+    # OTHER
+    ###############################################################################################
+
+    def is_fully_parenthesized(self, expression: str) -> bool:
+        """Проверяет, полностью ли выражение заключено в скобки"""
+        if not expression.startswith("(") or not expression.endswith(")"):
+            return False
+
+        # Проверяем баланс скобок
+        balance = 0
+        for i, char in enumerate(expression):
+            if char == "(":
+                balance += 1
+            elif char == ")":
+                balance -= 1
+                # Если баланс стал 0 до конца строки, это не полное обрамление
+                if balance == 0 and i < len(expression) - 1:
+                    return False
+
+        return balance == 0
+
+    def find_lowest_priority_operator(self, expression: str):
+        """Находит оператор с наименьшим приоритетом вне скобок"""
+        # Приоритет операций (от низшего к высшему)
+        operator_levels = [
+            # Уровень 1 (наименьший приоритет)
+            [("|", "BITWISE_OR")],
+            # Уровень 2
+            [("^", "BITWISE_XOR")],
+            # Уровень 3
+            [("&", "BITWISE_AND")],
+            # Уровень 4
+            [("<<", "LEFT_SHIFT"), (">>", "RIGHT_SHIFT")],
+            # Уровень 5
+            [("+", "ADD"), ("-", "SUBTRACT")],
+            # Уровень 6
+            [
+                ("*", "MULTIPLY"),
+                ("/", "DIVIDE"),
+                ("//", "INTEGER_DIVIDE"),
+                ("%", "MODULO"),
+            ],
+            # Уровень 7 (наивысший приоритет)
+            [("**", "POWER")],
+        ]
+
+        # Ищем операторы от низшего приоритета к высшему
+        for level in operator_levels:
+            for op_symbol, op_type in level:
+                # Ищем оператор вне скобок
+                index = self.find_operator_outside_parentheses(expression, op_symbol)
+                if index != -1:
+                    return (op_symbol, op_type, index)
+
+        return None
+
+    def is_identifier_char(self, char: str) -> bool:
+        """Проверяет, является ли символ частью идентификатора"""
+        return char.isalnum() or char == "_"
+
+    def find_operator_outside_parentheses(self, expression: str, operator: str) -> int:
+        """Находит позицию оператора вне скобок, строк и комментариев"""
+        balance = 0  # Баланс круглых скобок
+        brace_balance = 0  # Баланс фигурных скобок
+        bracket_balance = 0  # Баланс квадратных скобок
+        in_string = False  # Находимся ли внутри строки
+        string_char = None  # Символ, открывший строку
+        escaped = False  # Экранирован ли текущий символ
+
+        i = 0
+        while i < len(expression):
+            char = expression[i]
+
+            # Обработка экранирования
+            if escaped:
+                escaped = False
+                i += 1
+                continue
+
+            if char == "\\":
+                escaped = True
+                i += 1
+                continue
+
+            # Обработка строк
+            if not in_string and char in ['"', "'"]:
+                in_string = True
+                string_char = char
+            elif in_string and char == string_char:
+                in_string = False
+                string_char = None
+
+            # Обработка скобок (только вне строк)
+            if not in_string:
+                if char == "(":
+                    balance += 1
+                elif char == ")":
+                    balance -= 1
+                elif char == "{":
+                    brace_balance += 1
+                elif char == "}":
+                    brace_balance -= 1
+                elif char == "[":
+                    bracket_balance += 1
+                elif char == "]":
+                    bracket_balance -= 1
+
+                # Проверяем оператор, если мы на верхнем уровне всех скобок
+                if balance == 0 and brace_balance == 0 and bracket_balance == 0:
+                    # Проверяем совпадение оператора
+                    if expression[i : i + len(operator)] == operator:
+                        # Проверяем контекст, чтобы не перепутать с частью другого оператора или идентификатора
+                        before_ok = i == 0 or not self.is_identifier_char(
+                            expression[i - 1]
+                        )
+                        after_ok = i + len(operator) >= len(
+                            expression
+                        ) or not self.is_identifier_char(expression[i + len(operator)])
+
+                        if before_ok and after_ok:
+                            return i
+
+            i += 1
+
+        return -1
+
+    def contains_operator(self, expression: str) -> bool:
+        """Проверяет, содержит ли выражение какой-либо оператор"""
+        expression = expression.strip()
+
+        # Сначала убираем внешние скобки
+        while self.is_fully_parenthesized(expression):
+            expression = expression[1:-1].strip()
+
+        operators = ["+", "-", "*", "/", "//", "%", "**", ">>", "<<", "&", "|", "^"]
+
+        balance = 0
+        for i, char in enumerate(expression):
+            if char == "(":
+                balance += 1
+            elif char == ")":
+                balance -= 1
+            elif balance == 0:  # Мы вне скобок
+                for op in operators:
+                    if expression[i : i + len(op)] == op:
+                        # Проверяем контекст
+                        before_ok = i == 0 or not expression[i - 1].isalnum()
+                        after_ok = (
+                            i + len(op) >= len(expression)
+                            or not expression[i + len(op)].isalnum()
+                        )
+
+                        if before_ok and after_ok:
+                            return True
+
+        return False
+
+    def find_loop_body_end(
+        self, lines: list, start_index: int, base_indent: int
+    ) -> int:
+        """Находит конец тела цикла"""
+        if start_index >= len(lines):
+            return start_index
+
+        # Преобразуем base_indent в реальный отступ
+        base_real_indent = base_indent + 1
+
+        i = start_index
+        while i < len(lines):
+            line = lines[i]
+            if not line.strip():
+                i += 1
+                continue
+
+            current_indent = self.calculate_indent_level(line)
+
+            # Если отступ стал меньше или равен базовому отступу (не включая увеличение для тела)
+            if current_indent <= base_indent:
+                return i
+
+            i += 1
+
+        return len(lines)
+
+    def get_builtin_return_type(self, func_name: str, args: list) -> str:
+        """Определяет тип возвращаемого значения для встроенной функции"""
+        if func_name == "len":
+            return "int"
+        elif func_name == "str":
+            return "str"
+        elif func_name == "int":
+            return "int"
+        elif func_name == "bool":
+            return "bool"
+        elif func_name == "print":
+            return "None"
+        elif func_name == "range":
+            return "range"
+        elif func_name == "input":  # ДОБАВЛЕНО
+            return "str"  # input всегда возвращает строку
+        return "unknown"
+
+    def find_equals_outside_brackets(self, s: str) -> int:
+        """Находит позицию символа '=', которая не находится внутри скобок"""
+        depth = 0
+        in_string = False
+        string_char = None
+
+        for i, char in enumerate(s):
+            # Обработка строк
+            if not in_string and char in ['"', "'"]:
+                in_string = True
+                string_char = char
+            elif in_string and char == string_char:
+                # Проверяем экранирование
+                if i == 0 or s[i - 1] != "\\":
+                    in_string = False
+            # Обработка скобок (только вне строк)
+            elif not in_string:
+                if char == "[":
+                    depth += 1
+                elif char == "]":
+                    depth -= 1
+                elif char == "=" and depth == 0:
+                    return i
+
+        return -1
+
+    def has_unbalanced_parentheses(self, s: str) -> bool:
+        """Проверяет, есть ли несбалансированные скобки"""
+        balance = 0
+        in_string = False
+        string_char = None
+
+        for char in s:
+            if not in_string and char in ['"', "'"]:
+                in_string = True
+                string_char = char
+            elif in_string and char == string_char:
+                in_string = False
+            elif not in_string:
+                if char == "(":
+                    balance += 1
+                elif char == ")":
+                    balance -= 1
+                    if balance < 0:
+                        return True
+
+        return balance != 0
+
+    def build_operations_from_ast(
+        self, ast: dict, target: str, operations: list, dependencies: list, scope: dict
+    ):
+        """Строит операции из AST выражения"""
+
+        if ast["type"] == "variable":
+            operations.append({"type": "ASSIGN", "target": target, "value": ast})
+            if ast["value"] not in dependencies:
+                dependencies.append(ast["value"])
+
+        elif ast["type"] == "literal":
+            operations.append({"type": "ASSIGN", "target": target, "value": ast})
+
+        elif ast["type"] == "binary_operation":
+            # Создаем временные переменные для левой и правой частей
+            left_temp = f"{target}_left"
+            right_temp = f"{target}_right"
+
+            # Рекурсивно обрабатываем левую часть
+            self.build_operations_from_ast(
+                ast["left"], left_temp, operations, dependencies, scope
+            )
+
+            # Рекурсивно обрабатываем правую часть
+            self.build_operations_from_ast(
+                ast["right"], right_temp, operations, dependencies, scope
+            )
+
+            # Добавляем бинарную операцию
+            operations.append(
+                {
+                    "type": "BINARY_OPERATION",
+                    "target": target,
+                    "operator": ast["operator"],
+                    "operator_symbol": ast["operator_symbol"],
+                    "left": {"type": "variable", "value": left_temp},
+                    "right": {"type": "variable", "value": right_temp},
+                }
+            )
+
+        elif ast["type"] == "function_call":
+            # Обрабатываем аргументы
+            arg_operations = []
+            for i, arg_ast in enumerate(ast["arguments"]):
+                arg_temp = f"{target}_arg_{i}"
+                self.build_operations_from_ast(
+                    arg_ast, arg_temp, arg_operations, dependencies, scope
+                )
+
+            # Добавляем операции аргументов
+            operations.extend(arg_operations)
+
+            # Добавляем вызов функции
+            arg_values = [
+                {"type": "variable", "value": f"{target}_arg_{i}"}
+                for i in range(len(ast["arguments"]))
+            ]
+
+            operations.append(
+                {
+                    "type": "FUNCTION_CALL_ASSIGN",
+                    "target": target,
+                    "function": ast["function"],
+                    "arguments": arg_values,
+                }
+            )
+
+        elif ast["type"] == "dereference":
+            operations.append(
+                {
+                    "type": "READ_POINTER",
+                    "target": target,
+                    "from": ast["pointer"],
+                    "operation": "*",
+                    "value": ast,
+                }
+            )
+            if ast["pointer"] not in dependencies:
+                dependencies.append(ast["pointer"])
+
+    def find_symbol_recursive(self, current_scope, target_name, visited=None):
+        """Рекурсивно ищет символ в текущем и родительских scope'ах"""
+        if visited is None:
+            visited = set()
+
+        # Проверяем, не посещали ли мы уже этот scope
+        scope_id = id(current_scope)
+        if scope_id in visited:
+            return None
+        visited.add(scope_id)
+
+        # Ищем символ в текущем scope
+        symbol = current_scope["symbol_table"].get_symbol(target_name)
+        if symbol:
+            return symbol, current_scope
+
+        # Если не нашли и есть родительский scope, ищем там
+        if "parent_scope" in current_scope:
+            parent_level = current_scope["parent_scope"]
+            # Ищем scope с нужным уровнем
+            for parent in self.scopes:
+                if parent["level"] == parent_level:
+                    result = self.find_symbol_recursive(parent, target_name, visited)
+                    if result:
+                        return result
+
+        return None
+
+    def clean_value(self, value: str):
+        """Очищает значение от лишних пробелов, но для сложных выражений возвращает AST"""
+        value = value.strip()
+
+        if not value:
+            return {"type": "empty", "value": ""}
+
+        # Сначала проверяем простые литералы
+        if value.isdigit():
+            return {"type": "literal", "value": int(value), "data_type": "int"}
+        elif value == "True":
+            return {"type": "literal", "value": True, "data_type": "bool"}
+        elif value == "False":
+            return {"type": "literal", "value": False, "data_type": "bool"}
+        elif value == "None":
+            return {"type": "literal", "value": None, "data_type": "None"}
+        elif value == "null":
+            return {"type": "literal", "value": "null", "data_type": "null"}
+        elif (value.startswith('"') and value.endswith('"')) or (
+            value.startswith("'") and value.endswith("'")
+        ):
+            content = value[1:-1]
+            content = content.replace('\\"', '"').replace("\\'", "'")
+            return {"type": "literal", "value": content, "data_type": "str"}
+
+        # Если это не простой литерал, парсим как выражение
+        ast = self.parse_expression_to_ast(value)
+
+        # Если парсинг не удался, возвращаем как неизвестное
+        if ast["type"] == "unknown":
+            return {"type": "literal", "value": value, "data_type": "any"}
+
+        return ast
+
+    def parse_single_parameter(self, param_str: str) -> dict:
+        """Парсит один параметр: name: type = default_value"""
+        param_str = param_str.strip()
+        if not param_str:
+            return None
+
+        # Проверяем наличие типа и значения по умолчанию
+        if ":" in param_str and "=" in param_str:
+            # name: type = value
+            name_type_part, value_part = param_str.split("=", 1)
+            if ":" in name_type_part:
+                name, type_part = name_type_part.split(":", 1)
+                return {
+                    "name": name.strip(),
+                    "type": type_part.strip(),
+                    "default_value": value_part.strip(),
+                }
+        elif ":" in param_str:
+            # name: type
+            name, type_part = param_str.split(":", 1)
+            return {"name": name.strip(), "type": type_part.strip()}
+        elif "=" in param_str:
+            # name = value
+            name, value = param_str.split("=", 1)
+            return {"name": name.strip(), "type": "any", "default_value": value.strip()}
+        else:
+            # Просто name
+            return {"name": param_str.strip(), "type": "any"}
+
+        return None
 
     def _infer_type_from_ast(self, ast: dict) -> str:
         """Выводит тип из AST выражения"""

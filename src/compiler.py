@@ -3400,9 +3400,13 @@ class CCodeGenerator:
 
         args_str = ", ".join(arg_strings) if arg_strings else ""
 
+        if self._is_class_type(obj_type):
+            # Это класс - используем формат ClassName_methodName
+            # Первым аргументом идет указатель на объект (self)
+            return f"{obj_type}_{method_name}({object_name}, {args_str})"
         # Обработка методов для списков
         # Обработка методов для строк
-        if obj_type == "str":
+        elif obj_type == "str":
             if method_name == "upper":
                 if is_standalone:
                     # Для a.upper() как standalone - результат должен быть присвоен обратно в a
@@ -5401,3 +5405,32 @@ class CCodeGenerator:
     """)
 
         self.generated_helpers.extend(helpers)
+
+    def compile_method_call(self, node):
+        """Компилирует вызов метода: obj.method(args)"""
+        obj_name = node.get("object")
+        method_name = node.get("method")
+        args = node.get("arguments", [])
+
+        # Получаем информацию о классе
+        class_info = self.get_class_of_object(obj_name)
+
+        # Генерируем код вызова
+        arg_code = ", ".join(self.compile_expression(arg) for arg in args)
+        return f"{obj_name}->{method_name}({arg_code})"
+
+    def compile_assignment(self, node):
+        """Компилирует присваивание с вызовом метода"""
+        if node.get("is_method_call_assignment"):
+            # var x: type = obj.method(args)
+            target = node["var_name"]
+            obj_name = node["object"]
+            method_name = node["method"]
+            args = node["arguments"]
+
+            # Генерируем вызов метода
+            method_call = self.compile_method_call(
+                {"object": obj_name, "method": method_name, "arguments": args}
+            )
+
+            return f"{target} = {method_call};"
