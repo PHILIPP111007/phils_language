@@ -2178,8 +2178,6 @@ class CCodeGenerator:
     ):
         """Генерирует функции для работы со списком"""
 
-        print("WDOKWDKWKDOKWDWKDWODKWDOWDOW\n\n\n\n\n\n\n\n\n\n\n")
-
         print(
             f"DEBUG _generate_list_functions: struct_name={struct_name}, element_type={element_type}, is_c_type={is_c_type}"
         )

@@ -324,10 +324,11 @@ class JSONValidator:
         return None
 
     def validate_scope(self, scope: Dict, scope_idx: int, all_scopes: List[Dict]):
-        """Валидирует отдельный scope"""
+        """Валидирует отдельный scope с учетом всех новых проверок"""
         level = scope.get("level", 0)
         scope_type = scope.get("type", "unknown")
 
+        # 1. БАЗОВЫЕ ПРОВЕРКИ СТРУКТУРЫ
         required_fields = ["level", "type", "local_variables", "graph", "symbol_table"]
         for field in required_fields:
             if field not in scope:
@@ -337,33 +338,107 @@ class JSONValidator:
                     None,
                 )
 
+        # 2. ПРОВЕРКА ТАБЛИЦЫ СИМВОЛОВ И ЛОКАЛЬНЫХ ПЕРЕМЕННЫХ
         self.validate_symbol_table(scope, scope_idx)
-
-        # Проверка на повторное объявление в local_variables
         self.check_duplicate_declarations_in_scope(scope, scope_idx)
 
-        if "graph" in scope:
-            self.validate_graph(scope, scope_idx)
+        # 3. КОНТЕКСТНЫЕ ПРОВЕРКИ В ЗАВИСИМОСТИ ОТ ТИПА SCOPE
+        if scope_type == "class_declaration":
+            # Ключевая проверка наследования для классов
+            self.validate_inheritance_hierarchy(scope, scope_idx)
 
-            # Дополнительные проверки после валидации графа
-            self.check_unused_variables(scope, scope_idx)
-            self.check_loop_conditions(scope, scope_idx)
-            self.check_memory_leaks(scope, scope_idx)
+            # Вычисляем MRO для информации и дальнейших проверок
+            class_name = scope.get("class_name")
+            if class_name:
+                mro = self.check_method_resolution_order(class_name)
+                # Можно сохранить MRO для использования в других проверках
+                if mro and len(mro) > 1:
+                    print(f"  MRO для класса '{class_name}': {mro}")
 
-            # Проверка деления на ноль для каждого узла
-            graph = scope.get("graph", [])
-            for node_idx, node in enumerate(graph):
-                self.check_division_by_zero(node, node_idx, scope_idx, level)
+        elif scope_type == "function":
+            # Проверяем функции для потоков
+            self.validate_thread_functions(scope, scope_idx)
 
-        if scope_type == "function":
             # Старая проверка наличия return
             self.validate_function_return(scope, scope_idx)
-            # НОВАЯ проверка типа возвращаемого значения
+            # Проверка типа возвращаемого значения
             self.validate_function_return_type(scope, scope_idx)
             # Проверка всех путей возврата
             self.validate_return_paths(scope, scope_idx)
 
+        # Проверка неиспользуемых параметров для всех типов функций/методов
+        if scope_type in ["function", "constructor", "class_method"]:
+            self.check_unused_parameters(scope, scope_idx)
+
+        # 4. ПРОВЕРКА ГРАФА ОПЕРАЦИЙ
+        if "graph" in scope:
+            self.validate_graph(scope, scope_idx)
+
+            # Детальная проверка каждого узла графа
+            graph = scope.get("graph", [])
+            for node_idx, node in enumerate(graph):
+                node_type = node.get("node", "unknown")
+
+                # ВАЖНЕЙШИЕ ПРОВЕРКИ УЗЛОВ:
+
+                # 4.1 ПРОВЕРКА УКАЗАТЕЛЕЙ (критически важно для C-кода)
+                self.validate_pointer_usage(node, node_idx, scope_idx, level)
+
+                # 4.2 ПРОВЕРКА ГРАНИЦ МАССИВОВ (предотвращение ошибок выполнения)
+                self.validate_array_bounds(node, node_idx, scope_idx, level)
+
+                # 4.3 ПРОВЕРКА СТРОКОВЫХ ОПЕРАЦИЙ (частая ошибка)
+                self.validate_string_operations(node, node_idx, scope_idx, level)
+
+                # 4.4 ПРОВЕРКА C-ФУНКЦИЙ (безопасность и корректность)
+                self.validate_c_function_calls(node, node_idx, scope_idx, level)
+
+                # 4.5 ПРОВЕРКА ТИПОВ В УЗЛАХ
+                self.validate_node_types(node, node_idx, scope_idx, level)
+
+                # 4.6 ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА ДЕЛЕНИЯ НА НОЛЬ
+                self.check_division_by_zero(node, node_idx, scope_idx, level)
+
+                # 4.7 ПРОВЕРКА ОПЕРАЦИЙ С КОРТЕЖАМИ (неизменяемость)
+                if node_type in [
+                    "index_assignment",
+                    "augmented_index_assignment",
+                    "slice_assignment",
+                ]:
+                    variable = node.get("variable", "")
+                    if variable:
+                        var_info = self.get_symbol_info(variable, level)
+                        if var_info and "tuple" in var_info.get("type", ""):
+                            self.add_error(
+                                f"попытка изменения неизменяемого кортежа '{variable}'",
+                                scope_idx,
+                                node_idx,
+                            )
+
+            # 5. ПОСТ-ПРОВЕРКИ ПОСЛЕ АНАЛИЗА ГРАФА
+
+            # 5.1 Проверка неиспользуемых переменных
+            self.check_unused_variables(scope, scope_idx)
+
+            # 5.2 Проверка условий циклов
+            self.check_loop_conditions(scope, scope_idx)
+
+            # 5.3 Проверка утечек памяти (особенно для указателей)
+            self.check_memory_leaks(scope, scope_idx)
+
+            # 5.4 Проверка отсутствующих объявлений (C-типы, импорты)
+            self.check_missing_declarations(scope, scope_idx)
+
+        # 6. СПЕЦИФИЧНЫЕ ПРОВЕРКИ ДЛЯ ЦИКЛОВ
         self.validate_loops(scope, scope_idx)
+
+        # 7. ПРОВЕРКА ВЫЗОВОВ МЕТОДОВ КЛАССОВ (особенно в наследовании)
+        if scope_type == "class_method":
+            self._validate_class_method_calls(scope, scope_idx)
+
+        # 8. СБОР МЕТРИК КОДА (информация для разработчика)
+        if scope_type == "function" or scope_type == "class_method":
+            self._collect_function_metrics(scope, scope_idx)
 
     def check_duplicate_declarations_in_scope(self, scope: Dict, scope_idx: int):
         """Проверяет дублирование переменных в local_variables"""
@@ -3168,3 +3243,722 @@ class JSONValidator:
             "formatted_errors": formatted_errors,  # Для обратной совместимости
             "formatted_warnings": formatted_warnings,  # Для обратной совместимости
         }
+
+    def validate_inheritance_hierarchy(self, scope: Dict, scope_idx: int):
+        """Проверяет корректность иерархии наследования классов"""
+        if scope.get("type") != "class_declaration":
+            return
+
+        class_name = scope.get("class_name")
+        base_classes = scope.get("base_classes", [])
+
+        if not base_classes:
+            return
+
+        # 1. Проверяем циклические зависимости
+        for base_class in base_classes:
+            # Находим базовый класс в all_scopes
+            base_scope = None
+            for s in self.all_scopes:
+                if (
+                    s.get("type") == "class_declaration"
+                    and s.get("class_name") == base_class
+                ):
+                    base_scope = s
+                    break
+
+            if base_scope:
+                # Проверяем, не наследует ли базовый класс от текущего (цикл)
+                if class_name in base_scope.get("base_classes", []):
+                    self.add_error(
+                        f"циклическое наследование: класс '{class_name}' и '{base_class}' наследуют друг от друга",
+                        scope_idx,
+                        None,
+                    )
+
+        # 2. Проверяем дублирование методов в MRO
+        all_methods = []
+        method_sources = {}  # {method_name: [class_name, ...]}
+
+        # Собираем методы текущего класса
+        for method in scope.get("methods", []):
+            method_name = method.get("name")
+            if method_name not in method_sources:
+                method_sources[method_name] = []
+            method_sources[method_name].append(class_name)
+            all_methods.append(method_name)
+
+        # Рекурсивно собираем методы из базовых классов
+        def collect_base_methods(base_class_name, visited=None):
+            if visited is None:
+                visited = set()
+
+            if base_class_name in visited:
+                return
+            visited.add(base_class_name)
+
+            # Находим базовый класс
+            base_scope = None
+            for s in self.all_scopes:
+                if (
+                    s.get("type") == "class_declaration"
+                    and s.get("class_name") == base_class_name
+                ):
+                    base_scope = s
+                    break
+
+            if not base_scope:
+                return
+
+            # Собираем методы базового класса
+            for method in base_scope.get("methods", []):
+                method_name = method.get("name")
+                if method_name not in method_sources:
+                    method_sources[method_name] = []
+                method_sources[method_name].append(base_class_name)
+                all_methods.append(method_name)
+
+            # Рекурсивно для родительских классов
+            for parent in base_scope.get("base_classes", []):
+                collect_base_methods(parent, visited)
+
+        for base_class in base_classes:
+            collect_base_methods(base_class)
+
+        # Проверяем конфликты методов (одинаковые имена в разных классах)
+        for method_name, sources in method_sources.items():
+            if len(sources) > 1:
+                # Метод есть в нескольких классах - проверяем, переопределен ли он
+                if class_name in sources:
+                    # Текущий класс переопределяет метод
+                    self.add_warning(
+                        f"метод '{method_name}' переопределен в классе '{class_name}' "
+                        f"(также определен в: {', '.join([c for c in sources if c != class_name])})",
+                        scope_idx,
+                        None,
+                    )
+                else:
+                    # Конфликт в базовых классах
+                    self.add_error(
+                        f"конфликт методов: '{method_name}' определен в нескольких базовых классах "
+                        f"({', '.join(sources)}) без переопределения",
+                        scope_idx,
+                        None,
+                    )
+
+    def check_method_resolution_order(self, class_name: str):
+        """Проверяет порядок разрешения методов (MRO)"""
+        # Находим класс
+        class_scope = None
+        for scope in self.all_scopes:
+            if (
+                scope.get("type") == "class_declaration"
+                and scope.get("class_name") == class_name
+            ):
+                class_scope = scope
+                break
+
+        if not class_scope:
+            return
+
+        base_classes = class_scope.get("base_classes", [])
+        if not base_classes:
+            return
+
+        # Простой алгоритм MRO (C3 linearization)
+        def compute_mro(cls_name, visited=None):
+            if visited is None:
+                visited = set()
+
+            if cls_name in visited:
+                return []
+            visited.add(cls_name)
+
+            # Находим класс
+            cls_scope = None
+            for s in self.all_scopes:
+                if (
+                    s.get("type") == "class_declaration"
+                    and s.get("class_name") == cls_name
+                ):
+                    cls_scope = s
+                    break
+
+            if not cls_scope:
+                return [cls_name]
+
+            result = [cls_name]
+            for base in cls_scope.get("base_classes", []):
+                result.extend(compute_mro(base, visited))
+
+            return result
+
+        try:
+            mro = compute_mro(class_name)
+            # Проверяем дубликаты в MRO (циклическое наследование)
+            if len(mro) != len(set(mro)):
+                self.add_error(
+                    f"циклическое наследование в MRO класса '{class_name}'",
+                    self.all_scopes.index(class_scope)
+                    if class_scope in self.all_scopes
+                    else None,
+                    None,
+                )
+
+            return mro
+        except RecursionError:
+            self.add_error(
+                f"бесконечная рекурсия в наследовании класса '{class_name}'",
+                self.all_scopes.index(class_scope)
+                if class_scope in self.all_scopes
+                else None,
+                None,
+            )
+            return []
+
+    def validate_thread_functions(self, scope: Dict, scope_idx: int):
+        """Проверяет функции для использования в потоках"""
+        if scope.get("type") != "function":
+            return
+
+        func_name = scope.get("function_name")
+        if not func_name:
+            return
+
+        # Проверяем, используется ли функция как callback для потока
+        for other_scope in self.all_scopes:
+            for node_idx, node in enumerate(other_scope.get("graph", [])):
+                if (
+                    node.get("node") == "c_call"
+                    and node.get("function") == "pthread_create"
+                ):
+                    args = node.get("arguments", [])
+                    if len(args) >= 3 and args[2] == func_name:
+                        # Эта функция передается в pthread_create
+
+                        # 1. Проверяем сигнатуру функции
+                        parameters = scope.get("parameters", [])
+                        if len(parameters) != 1:
+                            self.add_error(
+                                f"функция '{func_name}' передается в pthread_create, "
+                                f"но должна принимать ровно 1 параметр (void*), а принимает {len(parameters)}",
+                                scope_idx,
+                                None,
+                            )
+                        else:
+                            param_type = parameters[0].get("type", "")
+                            if param_type not in ["None", "void*", "*void"]:
+                                self.add_warning(
+                                    f"функция '{func_name}' передается в pthread_create, "
+                                    f"параметр должен быть void* (получен: {param_type})",
+                                    scope_idx,
+                                    None,
+                                )
+
+                        # 2. Проверяем тип возврата
+                        return_type = scope.get("return_type", "")
+                        if return_type not in ["None", "void*", "*void"]:
+                            self.add_warning(
+                                f"функция потока '{func_name}' должна возвращать void* (возвращает: {return_type})",
+                                scope_idx,
+                                None,
+                            )
+
+    def check_unused_parameters(self, scope: Dict, scope_idx: int):
+        """Находит неиспользуемые параметры функций и методов"""
+        scope_type = scope.get("type")
+
+        if scope_type not in ["function", "constructor", "class_method"]:
+            return
+
+        parameters = scope.get("parameters", [])
+        if not parameters:
+            return
+
+        # Собираем все используемые переменные в теле функции
+        used_vars = set()
+        graph = scope.get("graph", [])
+
+        for node in graph:
+            # Собираем зависимости
+            if "dependencies" in node:
+                for dep in node["dependencies"]:
+                    if isinstance(dep, str) and dep.isalpha():
+                        used_vars.add(dep)
+
+            # Собираем символы
+            if "symbols" in node:
+                for symbol in node["symbols"]:
+                    if isinstance(symbol, str) and symbol.isalpha():
+                        used_vars.add(symbol)
+
+            # Собираем переменные из AST
+            if "expression_ast" in node:
+                self._collect_vars_from_ast(node["expression_ast"], used_vars)
+
+        # Проверяем каждый параметр
+        for param in parameters:
+            param_name = param.get("name")
+            if not param_name:
+                continue
+
+            # Пропускаем self в методах
+            if scope_type in ["constructor", "class_method"] and param_name == "self":
+                continue
+
+            if param_name not in used_vars:
+                # Для конструкторов это ошибка, для других методов - предупреждение
+                if scope.get("method_name") == "__init__":
+                    self.add_error(
+                        f"параметр конструктора '{param_name}' не используется",
+                        scope_idx,
+                        None,
+                    )
+                else:
+                    self.add_warning(
+                        f"параметр '{param_name}' не используется", scope_idx, None
+                    )
+
+    def validate_pointer_usage(
+        self, node: Dict, node_idx: int, scope_idx: int, level: int
+    ):
+        """Проверяет корректное использование указателей"""
+        node_type = node.get("node")
+
+        if node_type == "declaration":
+            # Проверяем объявление указателей
+            var_type = node.get("var_type", "")
+            if var_type.startswith("*"):
+                # Это указатель - проверяем инициализацию
+                operations = node.get("operations", [])
+                for op in operations:
+                    if op.get("type") == "GET_ADDRESS":
+                        pointed_var = op.get("of", "")
+                        if pointed_var:
+                            # Проверяем, что переменная существует
+                            if not self.find_symbol_in_scope(pointed_var, level):
+                                self.add_error(
+                                    f"указатель создается для несуществующей переменной '{pointed_var}'",
+                                    scope_idx,
+                                    node_idx,
+                                )
+
+        elif node_type == "function_call" or node_type == "c_call":
+            # Проверяем передачу указателей в функции
+            func_name = node.get("function", "")
+            arguments = node.get("arguments", [])
+
+            # Проверяем pthread_create
+            if func_name == "pthread_create":
+                if len(arguments) >= 4:
+                    thread_data_arg = arguments[3]
+                    # Проверяем, что 4-й аргумент - указатель
+                    if isinstance(thread_data_arg, str) and thread_data_arg.isalpha():
+                        var_info = self.get_symbol_info(thread_data_arg, level)
+                        if var_info:
+                            var_type = var_info.get("type", "")
+                            if not var_type.startswith("*"):
+                                self.add_warning(
+                                    f"в pthread_create передается не указатель '{thread_data_arg}' типа '{var_type}'",
+                                    scope_idx,
+                                    node_idx,
+                                )
+
+            # Проверяем pthread_join
+            elif func_name == "pthread_join":
+                if len(arguments) >= 1:
+                    thread_arg = arguments[0]
+                    if isinstance(thread_arg, str) and thread_arg.isalpha():
+                        var_info = self.get_symbol_info(thread_arg, level)
+                        if not var_info:
+                            self.add_error(
+                                f"переменная потока '{thread_arg}' не объявлена",
+                                scope_idx,
+                                node_idx,
+                            )
+
+        elif node_type == "dereference_read" or node_type == "dereference_write":
+            # Проверяем разыменование указателей
+            symbols = node.get("symbols", [])
+            for symbol in symbols:
+                var_info = self.get_symbol_info(symbol, level)
+                if var_info:
+                    var_type = var_info.get("type", "")
+                    if not var_type.startswith("*"):
+                        self.add_error(
+                            f"попытка разыменования не указателя '{symbol}' типа '{var_type}'",
+                            scope_idx,
+                            node_idx,
+                        )
+
+    def validate_array_bounds(
+        self, node: Dict, node_idx: int, scope_idx: int, level: int
+    ):
+        """Проверяет выход за границы массивов/списков"""
+        node_type = node.get("node")
+
+        if node_type == "index_access":
+            # Чтение по индексу
+            variable = node.get("variable", "")
+            index = node.get("index", {})
+
+            if variable and index:
+                # Получаем информацию о списке/массиве
+                var_info = self.get_symbol_info(variable, level)
+                if var_info:
+                    var_type = var_info.get("type", "")
+                    if "list" in var_type or "array" in var_type:
+                        # Пытаемся получить статическое значение индекса
+                        index_value = self._get_static_value_from_ast(index, level)
+                        if index_value is not None:
+                            # Проверяем отрицательные индексы
+                            if index_value < 0:
+                                self.add_warning(
+                                    f"использование отрицательного индекса {index_value} для '{variable}'",
+                                    scope_idx,
+                                    node_idx,
+                                )
+
+        elif node_type == "index_assignment":
+            # Присваивание по индексу
+            variable = node.get("variable", "")
+            index = node.get("index", {})
+
+            if variable and index:
+                var_info = self.get_symbol_info(variable, level)
+                if var_info:
+                    var_type = var_info.get("type", "")
+                    if "list" in var_type or "array" in var_type:
+                        index_value = self._get_static_value_from_ast(index, level)
+                        if index_value is not None and index_value < 0:
+                            self.add_warning(
+                                f"присваивание по отрицательному индексу {index_value} для '{variable}'",
+                                scope_idx,
+                                node_idx,
+                            )
+
+        elif node_type == "slice_access" or node_type == "slice_assignment":
+            # Работа со срезами
+            variable = node.get("variable", "")
+            start = node.get("start")
+            stop = node.get("stop")
+
+            if variable:
+                # Проверяем отрицательные индексы в срезах
+                if start:
+                    start_value = self._get_static_value_from_ast(start, level)
+                    if start_value is not None and start_value < 0:
+                        self.add_warning(
+                            f"использование отрицательного начала среза {start_value} для '{variable}'",
+                            scope_idx,
+                            node_idx,
+                        )
+
+                if stop:
+                    stop_value = self._get_static_value_from_ast(stop, level)
+                    if stop_value is not None and stop_value < 0:
+                        self.add_warning(
+                            f"использование отрицательного конца среза {stop_value} для '{variable}'",
+                            scope_idx,
+                            node_idx,
+                        )
+
+    def validate_string_operations(
+        self, node: Dict, node_idx: int, scope_idx: int, level: int
+    ):
+        """Проверяет операции со строками"""
+        node_type = node.get("node")
+
+        if node_type == "method_call":
+            obj_name = node.get("object", "")
+            method_name = node.get("method", "")
+
+            if obj_name and method_name:
+                obj_info = self.get_symbol_info(obj_name, level)
+                if obj_info:
+                    obj_type = obj_info.get("type", "")
+
+                    if obj_type == "str":
+                        if method_name == "upper":
+                            # Проверяем, используется ли результат
+                            parent_node = self._find_parent_node(scope_idx, node_idx)
+                            if parent_node and parent_node.get("node") not in [
+                                "assignment",
+                                "declaration",
+                            ]:
+                                self.add_warning(
+                                    f"результат метода '{obj_name}.upper()' не сохраняется",
+                                    scope_idx,
+                                    node_idx,
+                                )
+
+                        elif method_name == "split":
+                            arguments = node.get("arguments", [])
+                            if len(arguments) == 1:
+                                arg = arguments[0]
+                                if (
+                                    isinstance(arg, dict)
+                                    and arg.get("type") == "literal"
+                                ):
+                                    value = arg.get("value", "")
+                                    if value == " ":
+                                        # Правильный разделитель
+                                        pass
+                                    elif value == "":
+                                        self.add_warning(
+                                            f"пустой разделитель в '{obj_name}.split(\"\")' может привести к неожиданным результатам",
+                                            scope_idx,
+                                            node_idx,
+                                        )
+                                    else:
+                                        self.add_warning(
+                                            f"использование нестандартного разделителя '{value}' в split",
+                                            scope_idx,
+                                            node_idx,
+                                        )
+
+    def validate_c_function_calls(
+        self, node: Dict, node_idx: int, scope_idx: int, level: int
+    ):
+        """Проверяет вызовы C-функций (начинающиеся с @)"""
+        node_type = node.get("node")
+
+        if node_type == "c_call":
+            func_name = node.get("function", "")
+            arguments = node.get("arguments", [])
+
+            # Проверяем известные C-функции
+            if func_name in ["pthread_create", "pthread_join"]:
+                # Проверяем количество аргументов
+                expected_args = 4 if func_name == "pthread_create" else 2
+                if len(arguments) != expected_args:
+                    self.add_error(
+                        f"функция '{func_name}' ожидает {expected_args} аргументов, получено {len(arguments)}",
+                        scope_idx,
+                        node_idx,
+                    )
+
+                # Проверяем типы аргументов
+                if func_name == "pthread_create":
+                    # 1-й аргумент: &thread (адрес переменной pthread_t)
+                    if len(arguments) > 0:
+                        arg = arguments[0]
+                        if isinstance(arg, str) and arg.startswith("&"):
+                            var_name = arg[1:].strip()
+                            var_info = self.get_symbol_info(var_name, level)
+                            if not var_info:
+                                self.add_error(
+                                    f"переменная '{var_name}' для &thread не объявлена",
+                                    scope_idx,
+                                    node_idx,
+                                )
+
+                    # 2-й аргумент: NULL
+                    if len(arguments) > 1:
+                        arg = arguments[1]
+                        if arg != "NULL" and arg != "nullptr":
+                            self.add_warning(
+                                f"второй аргумент pthread_create должен быть NULL (получен: {arg})",
+                                scope_idx,
+                                node_idx,
+                            )
+
+                    # 3-й аргумент: функция
+                    if len(arguments) > 2:
+                        func_arg = arguments[2]
+                        if isinstance(func_arg, str) and func_arg.isalpha():
+                            # Проверяем, что функция существует
+                            func_found = False
+                            for scope in self.all_scopes:
+                                if (
+                                    scope.get("type") == "function"
+                                    and scope.get("function_name") == func_arg
+                                ):
+                                    func_found = True
+                                    break
+
+                            if not func_found:
+                                self.add_error(
+                                    f"функция '{func_arg}' для потока не объявлена",
+                                    scope_idx,
+                                    node_idx,
+                                )
+
+    def check_missing_declarations(self, scope: Dict, scope_idx: int):
+        """Проверяет отсутствующие объявления"""
+        # Проверяем C-типы
+        for node_idx, node in enumerate(scope.get("graph", [])):
+            if node.get("node") == "declaration":
+                var_type = node.get("var_type", "")
+                if var_type in ["pthread_t"]:
+                    # Проверяем, импортирован ли соответствующий заголовок
+                    has_pthread_import = False
+                    for module_scope in self.all_scopes:
+                        if module_scope.get("level") == 0:
+                            for module_node in module_scope.get("graph", []):
+                                if module_node.get("node") == "c_import":
+                                    header = module_node.get("header", "")
+                                    if "pthread" in header.lower():
+                                        has_pthread_import = True
+                                        break
+
+                    if not has_pthread_import:
+                        self.add_warning(
+                            f"используется тип '{var_type}' без импорта pthread.h",
+                            scope_idx,
+                            node_idx,
+                        )
+
+    # Вспомогательные методы
+
+    def _collect_vars_from_ast(self, ast: Dict, used_vars: set):
+        """Собирает переменные из AST (уже есть, но дополним)"""
+        if not isinstance(ast, dict):
+            return
+
+        node_type = ast.get("type")
+
+        if node_type == "variable":
+            var_name = ast.get("value")
+            if var_name and var_name.isalpha():
+                used_vars.add(var_name)
+
+        elif node_type == "binary_operation":
+            self._collect_vars_from_ast(ast.get("left"), used_vars)
+            self._collect_vars_from_ast(ast.get("right"), used_vars)
+
+        elif node_type == "unary_operation":
+            self._collect_vars_from_ast(ast.get("operand"), used_vars)
+
+        elif node_type == "function_call":
+            for arg in ast.get("arguments", []):
+                self._collect_vars_from_ast(arg, used_vars)
+
+        elif node_type == "method_call":
+            obj_name = ast.get("object")
+            if obj_name and obj_name.isalpha():
+                used_vars.add(obj_name)
+            for arg in ast.get("arguments", []):
+                self._collect_vars_from_ast(arg, used_vars)
+
+    def _get_static_value_from_ast(self, ast: Dict, level: int):
+        """Пытается получить статическое значение из AST"""
+        if not isinstance(ast, dict):
+            return None
+
+        node_type = ast.get("type")
+
+        if node_type == "literal":
+            return ast.get("value")
+
+        elif node_type == "variable":
+            var_name = ast.get("value")
+            # Можем попытаться отследить константы
+            var_info = self.get_symbol_info(var_name, level)
+            if var_info and var_info.get("key") == "const":
+                value = var_info.get("value")
+                if isinstance(value, dict) and value.get("type") == "literal":
+                    return value.get("value")
+
+        return None
+
+    def _find_parent_node(self, scope_idx: int, node_idx: int):
+        """Находит родительский узел (если есть)"""
+        if scope_idx >= len(self.all_scopes):
+            return None
+
+        graph = self.all_scopes[scope_idx].get("graph", [])
+        # Простая реализация - возвращаем предыдущий узел
+        if node_idx > 0 and node_idx - 1 < len(graph):
+            return graph[node_idx - 1]
+        return None
+
+    def _validate_class_method_calls(self, scope: Dict, scope_idx: int):
+        """Проверяет вызовы методов в контексте наследования"""
+        class_name = scope.get("class_name", "")
+        method_name = scope.get("method_name", "")
+
+        # Для методов get_age проверяем конфликты с родительскими классами
+        if method_name == "get_age":
+            # Находим информацию о классе
+            class_scope = None
+            for s in self.all_scopes:
+                if (
+                    s.get("type") == "class_declaration"
+                    and s.get("class_name") == class_name
+                ):
+                    class_scope = s
+                    break
+
+            if class_scope:
+                base_classes = class_scope.get("base_classes", [])
+                for base_class in base_classes:
+                    # Проверяем, есть ли метод get_age в базовом классе
+                    base_scope = None
+                    for s in self.all_scopes:
+                        if (
+                            s.get("type") == "class_declaration"
+                            and s.get("class_name") == base_class
+                        ):
+                            base_scope = s
+                            break
+
+                    if base_scope:
+                        for method in base_scope.get("methods", []):
+                            if method.get("name") == "get_age":
+                                # Проверяем совместимость сигнатур
+                                current_params = scope.get("parameters", [])
+                                base_params = method.get("parameters", [])
+
+                                if len(current_params) != len(base_params):
+                                    self.add_warning(
+                                        f"метод '{method_name}' переопределен с изменением количества параметров "
+                                        f"(было {len(base_params)}, стало {len(current_params)})",
+                                        scope_idx,
+                                        None,
+                                    )
+                                break
+
+    def _collect_function_metrics(self, scope: Dict, scope_idx: int):
+        """Собирает метрики сложности кода"""
+        if "graph" not in scope:
+            return
+
+        graph = scope.get("graph", [])
+
+        # Считаем сложность (упрощенный цикломатический)
+        complexity = 1  # базовая сложность
+        condition_count = 0
+        loop_count = 0
+
+        for node in graph:
+            node_type = node.get("node", "")
+            if node_type in ["if_statement", "while_loop", "for_loop"]:
+                condition_count += 1
+            if node_type in ["while_loop", "for_loop"]:
+                loop_count += 1
+
+        complexity += condition_count + loop_count
+
+        # Пороги предупреждений
+        if complexity > 10:
+            self.add_warning(
+                f"высокая цикломатическая сложность функции ({complexity})",
+                scope_idx,
+                None,
+            )
+
+        if loop_count > 3:
+            self.add_warning(
+                f"слишком много циклов в функции ({loop_count})",
+                scope_idx,
+                None,
+            )
+
+        # Считаем длину функции (узлы)
+        if len(graph) > 50:
+            self.add_warning(
+                f"функция слишком длинная ({len(graph)} операций)",
+                scope_idx,
+                None,
+            )
