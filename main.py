@@ -12,6 +12,8 @@ def main(base_path: str, p_path: str, json_path: str, c_path: str):
         code = file.read()
 
     # PARSER
+    print("\n=========== PARSER ===========\n")
+
     parser = Parser(base_path=base_path)
     result = parser.parse_code(code)
 
@@ -20,6 +22,7 @@ def main(base_path: str, p_path: str, json_path: str, c_path: str):
         f.write(json_output)
 
     # DEBUGGER
+    print("\n=========== DEBUGGER ===========\n")
 
     with open(json_path, "r") as file:
         data = json.load(file)
@@ -44,6 +47,8 @@ def main(base_path: str, p_path: str, json_path: str, c_path: str):
 
     if not result["errors"]:
         print("\nOK")
+
+    print("\n=========== CCodeGenerator ===========\n")
 
     generator = CCodeGenerator()
     c_code = generator.generate_from_json(data)
