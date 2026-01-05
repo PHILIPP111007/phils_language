@@ -74,7 +74,6 @@ def main() -> int:
     return 0
 ```
 
-
 C code -> function should starts with @:
 
 ```python
@@ -115,6 +114,16 @@ def main() -> int:
     var t1: tuple[int] = (1, 2, 3)
     var l: list[tuple[int]] = []
     l.append(t1)
+    return 0
+```
+
+Methods:
+
+```python
+def main() -> int:
+    var a: str = "pdked"
+    a.upper()
+    var b: list[str] = a.split(" ")
     return 0
 ```
 

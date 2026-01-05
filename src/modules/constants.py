@@ -1,0 +1,48 @@
+KEYS = [
+    "const",
+    "var",
+    "def",
+    "del",
+    "del_pointer",
+    "return",
+    "while",
+    "for",
+    "if",
+    "break",
+    "continue",
+    "class",
+]  # Добавили break и continue
+
+DATA_TYPES = [
+    "bool",
+    "int",
+    "float",
+    "str",
+    "None",
+    "list",
+    "dict",
+    "set",
+    "tuple",
+    "list[int]",
+    "list[float]",
+    "list[str]",
+    "list[bool]",
+    "list[tuple]",
+    "tuple[int]",
+    "tuple[float]",
+    "tuple[str]",
+    "tuple[bool]",
+    "dict[str]",
+    "dict[int]",
+    "dict[float]",
+    "set[int]",
+    "set[str]",
+    "set[float]",
+    "*int",
+    "*float",
+    "*str",
+    "*bool",
+    "*tuple",  # указатели
+]
+
+METHOD_DECORATORS = ["@staticmethod", "@classmethod"]

@@ -41,6 +41,8 @@ class CCodeGenerator:
             "set": "void*",
             "function": "void*",
             "tuple": "void*",
+            "bytes": "unsigned char*",
+            "bytearray": "unsigned char*",
         }
 
         # Поддержка обобщенных типов
@@ -559,70 +561,123 @@ class CCodeGenerator:
         """Генерирует объявление переменной с поддержкой всех типов"""
         var_name = node.get("var_name", "")
         var_type = node.get("var_type", "")
-        operations = node.get("operations", [])
         expression_ast = node.get("expression_ast", {})
-        tuple_info = node.get("tuple_info", {})
 
-        # Пропускаем удаленные переменные
-        var_info = self.get_variable_info(var_name)
-        if var_info and var_info.get("is_deleted"):
-            delete_type = var_info.get("delete_type", "full")
-            self.add_line(f"// Переменная '{var_name}' была удалена ({delete_type})")
-            return
+        print(f"DEBUG generate_declaration: {var_name}: {var_type}")
+        print(f"DEBUG expression_ast type: {expression_ast.get('type')}")
 
-        # 1. Проверяем, является ли это восстановлением удаленной переменной
-        was_deleted = False
-        for op in operations:
-            if op.get("type") == "RESTORE_VAR" and op.get("was_deleted", False):
-                was_deleted = True
-                break
-
-        if was_deleted:
-            self.add_line(f"// Восстановление удаленной переменной '{var_name}'")
-
-        # 2. Определяем тип и генерируем соответствующее объявление
-
-        # Сначала объявляем переменную в scope
+        # Объявляем переменную в scope
         self.declare_variable(var_name, var_type)
 
         # Получаем C тип
         c_type = self.map_type_to_c(var_type)
 
-        # 2.1 Указатели
-        if var_type.startswith("*"):
-            self.generate_pointer_declaration(
-                var_name, var_type, expression_ast, operations
+        # Для списков с литералом - создаем напрямую
+        if expression_ast.get("type") == "list_literal":
+            items = expression_ast.get("items", [])
+
+            # Создаем список
+            self.add_line(
+                f"{c_type} {var_name} = create_{self.generate_list_struct_name(var_type)}({max(len(items), 4)});"
             )
 
-        # 2.2 Кортежи
-        elif var_type.startswith("tuple["):
-            self.generate_tuple_declaration(
-                var_name, var_type, expression_ast, operations, tuple_info
-            )
+            # Добавляем элементы
+            for item_ast in items:
+                item_expr = self.generate_expression(item_ast)
+                self.add_line(
+                    f"append_{self.generate_list_struct_name(var_type)}({var_name}, {item_expr});"
+                )
 
-        # 2.3 Списки
-        elif var_type.startswith("list["):
-            self.generate_list_declaration(
-                var_name, var_type, expression_ast, operations
-            )
+            return
 
-        # 2.4 Словари
-        elif var_type.startswith("dict["):
-            self.generate_dict_declaration(
-                var_name, var_type, expression_ast, operations
-            )
+        # Для других случаев
+        if expression_ast:
+            # Генерируем выражение
+            expr = self.generate_expression(expression_ast)
 
-        # 2.5 Множества
-        elif var_type.startswith("set["):
-            self.generate_set_declaration(
-                var_name, var_type, expression_ast, operations
-            )
-
-        # 2.6 Простые типы (int, float, str, bool, None)
+            # Для списков и строк нужно специальное присваивание
+            if var_type.startswith("list[") or var_type == "str":
+                # Для списков и строк выражение уже создало переменную
+                # Просто присваиваем
+                self.add_line(f"{c_type} {var_name} = {expr};")
+            else:
+                # Для простых типов
+                self.add_line(f"{c_type} {var_name} = {expr};")
         else:
-            self.generate_simple_declaration_with_init(
-                var_name, c_type, var_type, expression_ast, operations
+            # Объявление без инициализации
+            if c_type.endswith("*"):
+                self.add_line(f"{c_type} {var_name} = NULL;")
+            else:
+                self.add_line(f"{c_type} {var_name};")
+
+    def _generate_expression_for_declaration(
+        self, ast: Dict, target_var: str, c_type: str
+    ) -> bool:
+        """Специальная обработка выражений в декларациях"""
+        node_type = ast.get("type", "")
+
+        if node_type == "method_call":
+            # Это вызов метода в выражении (например, b = a.upper())
+            object_name = ast.get("object", "")
+            method_name = ast.get("method", "")
+            args = ast.get("arguments", [])
+
+            print(
+                f"DEBUG _generate_expression_for_declaration: {object_name}.{method_name}() -> {target_var}"
             )
+
+            # Генерируем аргументы
+            arg_strings = []
+            for arg in args:
+                arg_strings.append(self.generate_expression(arg))
+
+            args_str = ", ".join(arg_strings) if arg_strings else ""
+
+            # Проверяем тип объекта
+            var_info = self.get_variable_info(object_name)
+            if var_info:
+                obj_type = var_info.get("py_type", "")
+
+                if obj_type == "str":
+                    if method_name == "upper":
+                        self.add_line(
+                            f"{c_type} {target_var} = string_upper({object_name});"
+                        )
+                        return True
+                    elif method_name == "format":
+                        self.add_line(
+                            f"{c_type} {target_var} = string_format({object_name}, {args_str});"
+                        )
+                        return True
+                    elif method_name == "lower":
+                        self.add_line(
+                            f"{c_type} {target_var} = string_lower({object_name});"
+                        )
+                        return True
+
+            # Если не обработали выше, генерируем общее выражение
+            expr = self.generate_expression(ast)
+            self.add_line(f"{c_type} {target_var} = {expr};")
+            return True
+
+        return False
+
+    def _generate_assignment(
+        self, var_name: str, c_type: str, expr: str, var_type: str
+    ):
+        """Генерирует присваивание с правильной обработкой типов"""
+        if c_type == "char*" and isinstance(expr, str) and expr.startswith('"'):
+            # Для строковых литералов выделяем динамическую память
+            self.add_line(f"{c_type} {var_name} = malloc(strlen({expr}) + 1);")
+            self.add_line(f"if (!{var_name}) {{")
+            self.indent_level += 1
+            self.add_line(f'fprintf(stderr, "Memory allocation failed\\n");')
+            self.add_line(f"exit(1);")
+            self.indent_level -= 1
+            self.add_line(f"}}")
+            self.add_line(f"strcpy({var_name}, {expr});")
+        else:
+            self.add_line(f"{c_type} {var_name} = {expr};")
 
     def generate_simple_declaration_with_init(
         self,
@@ -655,23 +710,23 @@ class CCodeGenerator:
 
             # Обычная инициализация
             if not special_case_handled:
-                # Для строковых переменных может быть результат input()
-                if (
-                    c_type == "char*"
-                    and isinstance(expr, str)
-                    and expr.startswith("temp_")
-                ):
-                    # Это результат input() - уже инициализирован
-                    self.add_line(f"{c_type} {var_name} = {expr};")
+                if c_type == "char*" and isinstance(expr, str) and expr.startswith('"'):
+                    # Для строковых литералов выделяем динамическую память
+                    self.add_line(f"{c_type} {var_name} = malloc(strlen({expr}) + 1);")
+                    self.add_line(f"if (!{var_name}) {{")
+                    self.indent_level += 1
+                    self.add_line(f'fprintf(stderr, "Memory allocation failed\\n");')
+                    self.add_line(f"exit(1);")
+                    self.indent_level -= 1
+                    self.add_line(f"}}")
+                    self.add_line(f"strcpy({var_name}, {expr});")
                 else:
                     self.add_line(f"{c_type} {var_name} = {expr};")
         else:
             # Объявление без инициализации
-            # Для указателей инициализируем NULL
             if c_type.endswith("*") or var_type == "str":
                 self.add_line(f"{c_type} {var_name} = NULL;")
             else:
-                # Для простых типов просто объявляем
                 self.add_line(f"{c_type} {var_name};")
 
             # Если есть операции инициализации
@@ -2256,35 +2311,12 @@ class CCodeGenerator:
         self.generated_helpers.append(len_func)
         self.generated_helpers.append(free_func)
 
-    def generate_helpers(self):
-        """Генерирует вспомогательные функции и структуры"""
-        if self.generated_helpers:
-            self.add_line("// Вспомогательные структуры и функции")
-            for helper in self.generated_helpers:
-                self.output.append(helper)
-            self.add_empty_line()
-
     def generate_helpers_section(self):
-        """Генерирует секцию с вспомогательными функциями и структурами"""
-        if not self.generated_helpers:
-            return
-
-        # Добавляем заголовок
-        self.add_line("// =========================================")
-        self.add_line("// Вспомогательные структуры и функции")
-        self.add_line("// =========================================")
-        self.add_empty_line()
-
-        # Просто добавляем все сгенерированные helpers в output
-        for helper in self.generated_helpers:
-            lines = helper.split("\n")
-            for line in lines:
-                if line.strip():
-                    self.output.append(line)
-            self.output.append("")  # Пустая строка между определениями
-
-    def generate_helpers_section_sorted(self):
         """Генерирует секцию с вспомогательными функциями и структурами в правильном порядке"""
+
+        self.generate_sort_helpers()
+        self.generate_string_helpers()
+
         if not self.generated_helpers:
             return
 
@@ -2322,6 +2354,9 @@ class CCodeGenerator:
         self.add_line("// =========================================")
         self.add_empty_line()
 
+        self.generate_sort_helpers()  # TODO
+        self.generate_string_helpers()
+
         # Добавляем структуры
         for struct in structures:
             lines = struct.split("\n")
@@ -2348,12 +2383,6 @@ class CCodeGenerator:
         # Анализируем классы и их поля
         self.analyze_classes(json_data)
 
-        # Выводим найденные поля
-        for class_name, fields in self.class_fields.items():
-            print(f"DEBUG: Class {class_name} fields: {fields}")
-
-        print("=== END DEBUG ===")
-
         # Собираем импорты и объявления
         self.collect_imports_and_declarations(json_data)
 
@@ -2372,7 +2401,7 @@ class CCodeGenerator:
                         self.generate_class_declaration_with_fields(node)
 
         # 4. Генерируем вспомогательные структуры и функции
-        self.generate_helpers_section_sorted()
+        self.generate_helpers_section()
 
         # 5. Генерируем конструкторы классов
         self.generate_class_constructors(json_data)
@@ -3347,41 +3376,447 @@ class CCodeGenerator:
         args_str = ", ".join(arg_strings)
         return f"create_{class_name}({args_str})"
 
-    def generate_method_call(self, ast: Dict) -> str:
+    def generate_method_call(self, node: Dict):
         """Генерирует вызов метода объекта"""
-        obj_name = ast.get("object", "")
-        method_name = ast.get("method", "")
-        args = ast.get("arguments", [])
+        object_name = node.get("object", "")
+        method_name = node.get("method", "")
+        args = node.get("arguments", [])
+        is_standalone = node.get("is_standalone", False)  # Новое поле из парсера
 
         # Проверяем тип объекта
-        var_info = self.get_variable_info(obj_name)
-        if var_info:
-            obj_type = var_info.get("py_type", "")
+        var_info = self.get_variable_info(object_name)
+        if not var_info:
+            self.add_line(f"// ERROR: Объект '{object_name}' не найден")
+            return
 
-            # Генерируем аргументы
-            arg_strings = []
-            for arg in args:
-                if isinstance(arg, dict):
-                    arg_strings.append(self.generate_expression(arg))
-                else:
-                    arg_strings.append(str(arg))
+        obj_type = var_info.get("py_type", "")
 
-            args_str = ", ".join(arg_strings) if arg_strings else ""
-
-            # Если это класс, генерируем вызов метода класса
-            if self._is_class_type(obj_type):
-                if args_str:
-                    return f"{obj_type}_{method_name}({obj_name}, {args_str})"
-                else:
-                    return f"{obj_type}_{method_name}({obj_name})"
+        # Генерируем аргументы
+        arg_strings = []
+        for arg in args:
+            if isinstance(arg, dict):
+                arg_strings.append(self.generate_expression(arg))
             else:
-                # Для не-классов (редкий случай)
-                if args_str:
-                    return f"{obj_name}.{method_name}({args_str})"
-                return f"{obj_name}.{method_name}()"
+                arg_strings.append(str(arg))
 
-        # Если информация о переменной не найдена
-        return f"{obj_name}.{method_name}()"
+        args_str = ", ".join(arg_strings) if arg_strings else ""
+
+        # Обработка методов для списков
+        # Обработка методов для строк
+        if obj_type == "str":
+            if method_name == "upper":
+                if is_standalone:
+                    # Для a.upper() как standalone - результат должен быть присвоен обратно в a
+                    self.add_line("// upper")
+                    temp_var = self.generate_temporary_var("str")
+                    self.add_line(f"char* {temp_var} = string_upper({object_name});")
+                    # Освобождаем старую строку
+                    self.add_line(f"if ({object_name}) {{")
+                    self.indent_level += 1
+                    self.add_line(f"free({object_name});")
+                    self.indent_level -= 1
+                    self.add_line(f"}}")
+                    # Присваиваем новую строку
+                    self.add_line(f"{object_name} = {temp_var};")
+                else:
+                    # Для upper() внутри выражения
+                    return f"string_upper({object_name})"
+
+            elif method_name == "lower":
+                if is_standalone:
+                    self.add_line("// lower")
+                    # Для a.lower() как standalone
+                    temp_var = self.generate_temporary_var("str")
+                    self.add_line(f"char* {temp_var} = string_lower({object_name});")
+                    # Освобождаем старую строку
+                    self.add_line(f"if ({object_name}) {{")
+                    self.indent_level += 1
+                    self.add_line(f"free({object_name});")
+                    self.indent_level -= 1
+                    self.add_line(f"}}")
+                    # Присваиваем новую строку
+                    self.add_line(f"{object_name} = {temp_var};")
+                else:
+                    # Для lower() внутри выражения
+                    return f"string_lower({object_name})"
+
+            elif method_name == "capitalize":
+                if is_standalone:
+                    self.add_line("// capitalize")
+
+                    # Для a.capitalize() как standalone
+                    temp_var = self.generate_temporary_var("str")
+                    self.add_line(
+                        f"char* {temp_var} = string_capitalize({object_name});"
+                    )
+                    # Освобождаем старую строку
+                    self.add_line(f"if ({object_name}) {{")
+                    self.indent_level += 1
+                    self.add_line(f"free({object_name});")
+                    self.indent_level -= 1
+                    self.add_line(f"}}")
+                    # Присваиваем новую строку
+                    self.add_line(f"{object_name} = {temp_var};")
+                else:
+                    # Для capitalize() внутри выражения
+                    return f"string_capitalize({object_name})"
+
+            elif method_name == "title":
+                if is_standalone:
+                    self.add_line("// title")
+
+                    # Для a.title() как standalone
+                    temp_var = self.generate_temporary_var("str")
+                    self.add_line(f"char* {temp_var} = string_title({object_name});")
+                    # Освобождаем старую строку
+                    self.add_line(f"if ({object_name}) {{")
+                    self.indent_level += 1
+                    self.add_line(f"free({object_name});")
+                    self.indent_level -= 1
+                    self.add_line(f"}}")
+                    # Присваиваем новую строку
+                    self.add_line(f"{object_name} = {temp_var};")
+                else:
+                    # Для title() внутри выражения
+                    return f"string_title({object_name})"
+
+            elif method_name == "strip":
+                if is_standalone:
+                    self.add_line("// strip")
+
+                    # Для a.strip() как standalone
+                    temp_var = self.generate_temporary_var("str")
+                    self.add_line(f"char* {temp_var} = string_strip({object_name});")
+                    # Освобождаем старую строку
+                    self.add_line(f"if ({object_name}) {{")
+                    self.indent_level += 1
+                    self.add_line(f"free({object_name});")
+                    self.indent_level -= 1
+                    self.add_line(f"}}")
+                    # Присваиваем новую строку
+                    self.add_line(f"{object_name} = {temp_var};")
+                else:
+                    # Для strip() внутри выражения
+                    return f"string_strip({object_name})"
+
+            elif method_name == "lstrip":
+                if is_standalone:
+                    self.add_line("// lstrip")
+
+                    # Для a.lstrip() как standalone
+                    temp_var = self.generate_temporary_var("str")
+                    self.add_line(f"char* {temp_var} = string_lstrip({object_name});")
+                    # Освобождаем старую строку
+                    self.add_line(f"if ({object_name}) {{")
+                    self.indent_level += 1
+                    self.add_line(f"free({object_name});")
+                    self.indent_level -= 1
+                    self.add_line(f"}}")
+                    # Присваиваем новую строку
+                    self.add_line(f"{object_name} = {temp_var};")
+                else:
+                    # Для lstrip() внутри выражения
+                    return f"string_lstrip({object_name})"
+
+            elif method_name == "rstrip":
+                if is_standalone:
+                    self.add_line("// rstrip")
+
+                    # Для a.rstrip() как standalone
+                    temp_var = self.generate_temporary_var("str")
+                    self.add_line(f"char* {temp_var} = string_rstrip({object_name});")
+                    # Освобождаем старую строку
+                    self.add_line(f"if ({object_name}) {{")
+                    self.indent_level += 1
+                    self.add_line(f"free({object_name});")
+                    self.indent_level -= 1
+                    self.add_line(f"}}")
+                    # Присваиваем новую строку
+                    self.add_line(f"{object_name} = {temp_var};")
+                else:
+                    # Для rstrip() внутри выражения
+                    return f"string_rstrip({object_name})"
+
+            elif method_name == "format":
+                if is_standalone:
+                    self.add_line("// format")
+
+                    # Для a.format("world") как standalone - результат должен быть присвоен обратно в a
+                    temp_var = self.generate_temporary_var("str")
+                    self.add_line(
+                        f"char* {temp_var} = string_format({object_name}, {args_str});"
+                    )
+                    # Освобождаем старую строку
+                    self.add_line(f"if ({object_name}) {{")
+                    self.indent_level += 1
+                    self.add_line(f"free({object_name});")
+                    self.indent_level -= 1
+                    self.add_line(f"}}")
+                    # Присваиваем новую строку
+                    self.add_line(f"{object_name} = {temp_var};")
+                else:
+                    # Для format() внутри выражения
+                    return f"string_format({object_name}, {args_str})"
+
+            elif method_name == "split":
+                # Определяем разделитель
+                if len(arg_strings) > 0:
+                    delimiter = arg_strings[0]
+                else:
+                    delimiter = '" "'  # По умолчанию пробел
+
+                if is_standalone:
+                    # Для a.split() как standalone - результат игнорируется
+                    temp_var = self.generate_temporary_var("str_list")
+                    self.add_line(
+                        f"string_list* {temp_var} = string_split({object_name}, {delimiter});"
+                    )
+                    self.add_line(f"// Результат split() игнорируется")
+                else:
+                    # Для split() внутри выражения - возвращаем результат
+                    return f"string_split({object_name}, {delimiter})"
+
+        elif obj_type.startswith("list["):
+            if method_name == "append":
+                if args_str:
+                    struct_name = self.generate_list_struct_name(obj_type)
+                    self.add_line(f"append_{struct_name}({object_name}, {args_str});")
+
+            elif method_name == "extend":
+                if args_str:
+                    # args[0] должен быть другим списком
+                    struct_name = self.generate_list_struct_name(obj_type)
+                    other_list = arg_strings[0]
+                    self.add_line(f"// extend: добавление элементов из другого списка")
+                    self.add_line(f"for (int i = 0; i < {other_list}->size; i++) {{")
+                    self.indent_level += 1
+                    self.add_line(
+                        f"append_{struct_name}({object_name}, {other_list}->data[i]);"
+                    )
+                    self.indent_level -= 1
+                    self.add_line("}")
+
+            elif method_name == "insert":
+                if len(arg_strings) >= 2:
+                    index_var = arg_strings[0]
+                    value_var = arg_strings[1]
+                    struct_name = self.generate_list_struct_name(obj_type)
+                    self.add_line(
+                        f"if ({index_var} >= 0 && {index_var} <= {object_name}->size) {{"
+                    )
+                    self.indent_level += 1
+                    self.add_line(
+                        f"if ({object_name}->size >= {object_name}->capacity) {{"
+                    )
+                    self.indent_level += 1
+                    self.add_line(
+                        f"{object_name}->capacity = {object_name}->capacity == 0 ? 4 : {object_name}->capacity * 2;"
+                    )
+                    self.add_line(
+                        f"{object_name}->data = realloc({object_name}->data, {object_name}->capacity * sizeof(int));"
+                    )
+                    self.indent_level -= 1
+                    self.add_line("}")
+                    self.add_line(
+                        f"for (int i = {object_name}->size; i > {index_var}; i--) {{"
+                    )
+                    self.indent_level += 1
+                    self.add_line(
+                        f"{object_name}->data[i] = {object_name}->data[i - 1];"
+                    )
+                    self.indent_level -= 1
+                    self.add_line("}")
+                    self.add_line(f"{object_name}->data[{index_var}] = {value_var};")
+                    self.add_line(f"{object_name}->size++;")
+                    self.indent_level -= 1
+                    self.add_line("}")
+
+            elif method_name == "remove":
+                if args_str:
+                    value_var = arg_strings[0]
+                    self.add_line(f"// remove первый элемент со значением {value_var}")
+                    self.add_line(f"int found_index = -1;")
+                    self.add_line(f"for (int i = 0; i < {object_name}->size; i++) {{")
+                    self.indent_level += 1
+                    self.add_line(f"if ({object_name}->data[i] == {value_var}) {{")
+                    self.indent_level += 1
+                    self.add_line(f"found_index = i;")
+                    self.add_line(f"break;")
+                    self.indent_level -= 1
+                    self.add_line("}")
+                    self.indent_level -= 1
+                    self.add_line("}")
+                    self.add_line(f"if (found_index != -1) {{")
+                    self.indent_level += 1
+                    self.add_line(
+                        f"for (int i = found_index; i < {object_name}->size - 1; i++) {{"
+                    )
+                    self.indent_level += 1
+                    self.add_line(
+                        f"{object_name}->data[i] = {object_name}->data[i + 1];"
+                    )
+                    self.indent_level -= 1
+                    self.add_line("}")
+                    self.add_line(f"{object_name}->size--;")
+                    self.indent_level -= 1
+                    self.add_line("}")
+
+            elif method_name == "pop":
+                if not args_str:
+                    # pop() без аргументов - удалить последний
+                    self.add_line(f"if ({object_name}->size > 0) {{")
+                    self.indent_level += 1
+                    temp_var = self.generate_temporary_var("int")
+                    self.add_line(
+                        f"int {temp_var} = {object_name}->data[{object_name}->size - 1];"
+                    )
+                    self.add_line(f"{object_name}->size--;")
+                    # TODO: Возвращаемое значение
+                    self.indent_level -= 1
+                    self.add_line("}")
+                else:
+                    # pop(index) - удалить по индексу
+                    index_var = arg_strings[0]
+                    self.add_line(
+                        f"if ({object_name}->size > 0 && {index_var} >= 0 && {index_var} < {object_name}->size) {{"
+                    )
+                    self.indent_level += 1
+                    temp_var = self.generate_temporary_var("int")
+                    self.add_line(f"int {temp_var} = {object_name}->data[{index_var}];")
+                    self.add_line(
+                        f"for (int i = {index_var}; i < {object_name}->size - 1; i++) {{"
+                    )
+                    self.indent_level += 1
+                    self.add_line(
+                        f"{object_name}->data[i] = {object_name}->data[i + 1];"
+                    )
+                    self.indent_level -= 1
+                    self.add_line("}")
+                    self.add_line(f"{object_name}->size--;")
+                    # TODO: Возвращаемое значение
+                    self.indent_level -= 1
+                    self.add_line("} else {")
+                    self.indent_level += 1
+                    self.add_line(
+                        f'fprintf(stderr, "IndexError: pop index out of range\\n");'
+                    )
+                    self.indent_level -= 1
+                    self.add_line("}")
+
+            elif method_name == "clear":
+                self.add_line(f"{object_name}->size = 0;")
+
+            elif method_name == "index":
+                if args_str:
+                    value_var = arg_strings[0]
+                    temp_var = self.generate_temporary_var("int")
+                    self.add_line(f"int {temp_var} = -1;")
+                    self.add_line(f"for (int i = 0; i < {object_name}->size; i++) {{")
+                    self.indent_level += 1
+                    self.add_line(f"if ({object_name}->data[i] == {value_var}) {{")
+                    self.indent_level += 1
+                    self.add_line(f"{temp_var} = i;")
+                    self.add_line(f"break;")
+                    self.indent_level -= 1
+                    self.add_line("}")
+                    self.indent_level -= 1
+                    self.add_line("}")
+                    # TODO: Проверить на -1 и выдать ошибку как в Python
+
+            elif method_name == "count":
+                if args_str:
+                    value_var = arg_strings[0]
+                    temp_var = self.generate_temporary_var("int")
+                    self.add_line(f"int {temp_var} = 0;")
+                    self.add_line(f"for (int i = 0; i < {object_name}->size; i++) {{")
+                    self.indent_level += 1
+                    self.add_line(f"if ({object_name}->data[i] == {value_var}) {{")
+                    self.indent_level += 1
+                    self.add_line(f"{temp_var}++;")
+                    self.indent_level -= 1
+                    self.add_line("}")
+                    self.indent_level -= 1
+                    self.add_line("}")
+
+            elif method_name == "sort":
+                # Используем qsort для эффективности
+                # Определяем тип элементов списка
+                match = re.match(r"list\[([^\]]+)\]", obj_type)
+                element_type = match.group(1) if match else "int"
+
+                # Выбираем соответствующую функцию сравнения
+                if element_type == "int":
+                    compare_func = "compare_int"
+                elif element_type == "float":
+                    compare_func = "compare_float"
+                elif element_type == "double":
+                    compare_func = "compare_double"
+                else:
+                    # По умолчанию для неизвестных типов
+                    compare_func = "compare_int"
+
+                self.add_line(
+                    f"qsort({object_name}->data, {object_name}->size, sizeof(int), {compare_func});"
+                )
+
+            elif method_name == "reverse":
+                self.add_line(f"for (int i = 0; i < {object_name}->size / 2; i++) {{")
+                self.indent_level += 1
+                self.add_line(f"int temp = {object_name}->data[i];")
+                self.add_line(
+                    f"{object_name}->data[i] = {object_name}->data[{object_name}->size - i - 1];"
+                )
+                self.add_line(
+                    f"{object_name}->data[{object_name}->size - i - 1] = temp;"
+                )
+                self.indent_level -= 1
+                self.add_line("}")
+
+            else:
+                self.add_line(f"// Метод списка '{method_name}' не реализован")
+
+        # Обработка методов для кортежей
+        elif obj_type.startswith("tuple["):
+            if method_name == "count":
+                if args_str:
+                    struct_name = self.generate_tuple_struct_name(obj_type)
+                    self.add_line(f"// count в кортеже")
+                    temp_var = self.generate_temporary_var("int")
+                    self.add_line(f"int {temp_var} = 0;")
+                    self.add_line(f"for (int i = 0; i < {object_name}.size; i++) {{")
+                    self.indent_level += 1
+                    self.add_line(f"if ({object_name}.data[i] == {args_str}) {{")
+                    self.indent_level += 1
+                    self.add_line(f"{temp_var}++;")
+                    self.indent_level -= 1
+                    self.add_line("}")
+                    self.indent_level -= 1
+                    self.add_line("}")
+                    # Возвращаем значение
+                    # Но в вашем коде нет присваивания результата, так что просто вычисляем
+
+            elif method_name == "index":
+                if args_str:
+                    struct_name = self.generate_tuple_struct_name(obj_type)
+                    self.add_line(f"// index в кортеже")
+                    temp_var = self.generate_temporary_var("int")
+                    self.add_line(f"int {temp_var} = -1;")
+                    self.add_line(f"for (int i = 0; i < {object_name}.size; i++) {{")
+                    self.indent_level += 1
+                    self.add_line(
+                        f"if ({object_name}.data[i] == {args_str} && {temp_var} == -1) {{"
+                    )
+                    self.indent_level += 1
+                    self.add_line(f"{temp_var} = i;")
+                    self.indent_level -= 1
+                    self.add_line("}")
+                    self.indent_level -= 1
+                    self.add_line("}")
+                    # Возвращаем значение
+                    # Но в вашем коде нет присваивания результата
+
+            else:
+                self.add_line(f"// Метод '{method_name}' для кортежа не реализован")
 
     def generate_class_constructors(self, json_data: List[Dict]):
         """Генерирует конструкторы для всех классов"""
@@ -4288,3 +4723,682 @@ class CCodeGenerator:
 
         # Пустой кортеж
         return f"({struct_name}){{NULL, 0}}"
+
+    # Добавьте вспомогательные функции для строк в generate_helpers:
+
+    def generate_string_helpers(self):
+        """Генерирует вспомогательные функции для работы со строками"""
+        helpers = []
+
+        # 1. Функция upper
+        helpers.append("""
+    char* string_upper(const char* str) {
+        if (!str) return NULL;
+        int len = strlen(str);
+        char* result = malloc(len + 1);
+        if (!result) return NULL;
+        for (int i = 0; i < len; i++) {
+            if (str[i] >= 'a' && str[i] <= 'z') {
+                result[i] = str[i] - 32;
+            } else {
+                result[i] = str[i];
+            }
+        }
+        result[len] = '\\0';
+        return result;
+    }
+    """)
+
+        # 2. Функция lower
+        helpers.append("""
+    char* string_lower(const char* str) {
+        if (!str) return NULL;
+        int len = strlen(str);
+        char* result = malloc(len + 1);
+        if (!result) return NULL;
+        for (int i = 0; i < len; i++) {
+            if (str[i] >= 'A' && str[i] <= 'Z') {
+                result[i] = str[i] + 32;
+            } else {
+                result[i] = str[i];
+            }
+        }
+        result[len] = '\\0';
+        return result;
+    }
+    """)
+
+        # 3. Функция capitalize
+        helpers.append("""
+    char* string_capitalize(const char* str) {
+        if (!str || strlen(str) == 0) return NULL;
+        int len = strlen(str);
+        char* result = malloc(len + 1);
+        if (!result) return NULL;
+        
+        // Первый символ в верхний регистр
+        if (str[0] >= 'a' && str[0] <= 'z') {
+            result[0] = str[0] - 32;
+        } else {
+            result[0] = str[0];
+        }
+        
+        // Остальные в нижний регистр
+        for (int i = 1; i < len; i++) {
+            if (str[i] >= 'A' && str[i] <= 'Z') {
+                result[i] = str[i] + 32;
+            } else {
+                result[i] = str[i];
+            }
+        }
+        result[len] = '\\0';
+        return result;
+    }
+    """)
+
+        # 4. Функция title
+        helpers.append("""
+    char* string_title(const char* str) {
+        if (!str) return NULL;
+        int len = strlen(str);
+        char* result = malloc(len + 1);
+        if (!result) return NULL;
+        
+        int new_word = 1;
+        for (int i = 0; i < len; i++) {
+            if (new_word && str[i] >= 'a' && str[i] <= 'z') {
+                result[i] = str[i] - 32;
+                new_word = 0;
+            } else if (!new_word && str[i] >= 'A' && str[i] <= 'Z') {
+                result[i] = str[i] + 32;
+            } else {
+                result[i] = str[i];
+            }
+            
+            // Проверяем, начинается ли новое слово
+            if (str[i] == ' ' || str[i] == '\\t' || str[i] == '\\n') {
+                new_word = 1;
+            }
+        }
+        result[len] = '\\0';
+        return result;
+    }
+    """)
+
+        # 5. Функция strip
+        helpers.append("""
+    char* string_strip(const char* str) {
+        if (!str) return NULL;
+        
+        int start = 0;
+        int end = strlen(str) - 1;
+        
+        // Находим начало без пробельных символов
+        while (start <= end && (str[start] == ' ' || str[start] == '\\t' || str[start] == '\\n')) {
+            start++;
+        }
+        
+        // Находим конец без пробельных символов
+        while (end >= start && (str[end] == ' ' || str[end] == '\\t' || str[end] == '\\n')) {
+            end--;
+        }
+        
+        int len = end - start + 1;
+        char* result = malloc(len + 1);
+        if (!result) return NULL;
+        
+        strncpy(result, str + start, len);
+        result[len] = '\\0';
+        return result;
+    }
+    """)
+
+        # 6. Функция lstrip
+        helpers.append("""
+    char* string_lstrip(const char* str) {
+        if (!str) return NULL;
+        
+        int start = 0;
+        int len = strlen(str);
+        
+        // Находим начало без пробельных символов
+        while (start < len && (str[start] == ' ' || str[start] == '\\t' || str[start] == '\\n')) {
+            start++;
+        }
+        
+        int result_len = len - start;
+        char* result = malloc(result_len + 1);
+        if (!result) return NULL;
+        
+        strcpy(result, str + start);
+        return result;
+    }
+    """)
+
+        # 7. Функция rstrip
+        helpers.append("""
+    char* string_rstrip(const char* str) {
+        if (!str) return NULL;
+        
+        int end = strlen(str) - 1;
+        
+        // Находим конец без пробельных символов
+        while (end >= 0 && (str[end] == ' ' || str[end] == '\\t' || str[end] == '\\n')) {
+            end--;
+        }
+        
+        int result_len = end + 1;
+        char* result = malloc(result_len + 1);
+        if (!result) return NULL;
+        
+        strncpy(result, str, result_len);
+        result[result_len] = '\\0';
+        return result;
+    }
+    """)
+
+        # 8. Функция split
+        helpers.append("""
+    typedef struct {
+        char** items;
+        int size;
+        int capacity;
+    } string_list;
+
+    string_list* string_split(const char* str, const char* delimiter) {
+        if (!str) return NULL;
+        
+        string_list* result = malloc(sizeof(string_list));
+        result->size = 0;
+        result->capacity = 10;
+        result->items = malloc(result->capacity * sizeof(char*));
+        
+        if (!delimiter || delimiter[0] == '\\0') {
+            // Разделение по пробелам (по умолчанию)
+            const char* start = str;
+            const char* end = str;
+            
+            while (*end) {
+                if (*end == ' ' || *end == '\\t' || *end == '\\n') {
+                    if (start != end) {
+                        // Добавляем токен
+                        int token_len = end - start;
+                        char* token = malloc(token_len + 1);
+                        strncpy(token, start, token_len);
+                        token[token_len] = '\\0';
+                        
+                        if (result->size >= result->capacity) {
+                            result->capacity *= 2;
+                            result->items = realloc(result->items, result->capacity * sizeof(char*));
+                        }
+                        result->items[result->size++] = token;
+                    }
+                    start = end + 1;
+                }
+                end++;
+            }
+            
+            // Последний токен
+            if (start != end) {
+                int token_len = end - start;
+                char* token = malloc(token_len + 1);
+                strncpy(token, start, token_len);
+                token[token_len] = '\\0';
+                
+                if (result->size >= result->capacity) {
+                    result->capacity *= 2;
+                    result->items = realloc(result->items, result->capacity * sizeof(char*));
+                }
+                result->items[result->size++] = token;
+            }
+        } else {
+            // Разделение по указанному разделителю
+            int delim_len = strlen(delimiter);
+            const char* start = str;
+            const char* pos = strstr(start, delimiter);
+            
+            while (pos) {
+                int token_len = pos - start;
+                char* token = malloc(token_len + 1);
+                strncpy(token, start, token_len);
+                token[token_len] = '\\0';
+                
+                if (result->size >= result->capacity) {
+                    result->capacity *= 2;
+                    result->items = realloc(result->items, result->capacity * sizeof(char*));
+                }
+                result->items[result->size++] = token;
+                
+                start = pos + delim_len;
+                pos = strstr(start, delimiter);
+            }
+            
+            // Последний токен
+            int token_len = strlen(start);
+            if (token_len > 0) {
+                char* token = malloc(token_len + 1);
+                strcpy(token, start);
+                
+                if (result->size >= result->capacity) {
+                    result->capacity *= 2;
+                    result->items = realloc(result->items, result->capacity * sizeof(char*));
+                }
+                result->items[result->size++] = token;
+            }
+        }
+        
+        return result;
+    }
+
+    void free_string_list(string_list* list) {
+        if (list) {
+            for (int i = 0; i < list->size; i++) {
+                free(list->items[i]);
+            }
+            free(list->items);
+            free(list);
+        }
+    }
+    """)
+
+        # 9. Функция join
+        helpers.append("""
+    char* string_join(const char* separator, string_list* list) {
+        if (!list || list->size == 0) {
+            char* empty = malloc(1);
+            empty[0] = '\\0';
+            return empty;
+        }
+        
+        // Вычисляем общую длину
+        int total_len = 0;
+        for (int i = 0; i < list->size; i++) {
+            total_len += strlen(list->items[i]);
+        }
+        total_len += (list->size - 1) * strlen(separator);
+        
+        char* result = malloc(total_len + 1);
+        if (!result) return NULL;
+        
+        result[0] = '\\0';
+        for (int i = 0; i < list->size; i++) {
+            strcat(result, list->items[i]);
+            if (i < list->size - 1) {
+                strcat(result, separator);
+            }
+        }
+        
+        return result;
+    }
+    """)
+
+        # 10. Функция replace
+        helpers.append("""
+    char* string_replace(const char* str, const char* old, const char* new) {
+        if (!str || !old || !new) return NULL;
+        
+        int str_len = strlen(str);
+        int old_len = strlen(old);
+        int new_len = strlen(new);
+        
+        // Считаем количество вхождений
+        int count = 0;
+        const char* pos = str;
+        while ((pos = strstr(pos, old)) != NULL) {
+            count++;
+            pos += old_len;
+        }
+        
+        // Вычисляем длину результата
+        int result_len = str_len + count * (new_len - old_len);
+        char* result = malloc(result_len + 1);
+        if (!result) return NULL;
+        
+        // Заменяем
+        const char* src = str;
+        char* dest = result;
+        while ((pos = strstr(src, old)) != NULL) {
+            // Копируем часть до старой подстроки
+            int copy_len = pos - src;
+            strncpy(dest, src, copy_len);
+            dest += copy_len;
+            
+            // Копируем новую подстроку
+            strcpy(dest, new);
+            dest += new_len;
+            
+            // Пропускаем старую подстроку
+            src = pos + old_len;
+        }
+        
+        // Копируем остаток
+        strcpy(dest, src);
+        
+        return result;
+    }
+    """)
+
+        # 11. Функция find
+        helpers.append("""
+    int string_find(const char* str, const char* sub) {
+        if (!str || !sub) return -1;
+        char* pos = strstr(str, sub);
+        if (pos) {
+            return pos - str;
+        }
+        return -1;
+    }
+    """)
+
+        # 12. Функция index
+        helpers.append("""
+    int string_index(const char* str, const char* sub) {
+        if (!str || !sub) return -1;
+        char* pos = strstr(str, sub);
+        if (!pos) {
+            fprintf(stderr, "ValueError: substring not found\\n");
+            exit(1);
+        }
+        return pos - str;
+    }
+    """)
+
+        # 13. Функция count
+        helpers.append("""
+    int string_count(const char* str, const char* sub) {
+        if (!str || !sub || sub[0] == '\\0') return 0;
+        
+        int count = 0;
+        int sub_len = strlen(sub);
+        const char* pos = str;
+        
+        while ((pos = strstr(pos, sub)) != NULL) {
+            count++;
+            pos += sub_len;
+        }
+        
+        return count;
+    }
+    """)
+
+        # 14. Функция startswith
+        helpers.append("""
+    bool string_startswith(const char* str, const char* prefix) {
+        if (!str || !prefix) return false;
+        return strncmp(str, prefix, strlen(prefix)) == 0;
+    }
+    """)
+
+        # 15. Функция endswith
+        helpers.append("""
+    bool string_endswith(const char* str, const char* suffix) {
+        if (!str || !suffix) return false;
+        int str_len = strlen(str);
+        int suffix_len = strlen(suffix);
+        
+        if (suffix_len > str_len) return false;
+        return strcmp(str + str_len - suffix_len, suffix) == 0;
+    }
+    """)
+
+        # 16. Функция isdigit
+        helpers.append("""
+    bool string_isdigit(const char* str) {
+        if (!str || str[0] == '\\0') return false;
+        
+        for (int i = 0; str[i]; i++) {
+            if (!(str[i] >= '0' && str[i] <= '9')) {
+                return false;
+            }
+        }
+        return true;
+    }
+    """)
+
+        # 17. Функция isalpha
+        helpers.append("""
+    bool string_isalpha(const char* str) {
+        if (!str || str[0] == '\\0') return false;
+        
+        for (int i = 0; str[i]; i++) {
+            if (!((str[i] >= 'a' && str[i] <= 'z') || (str[i] >= 'A' && str[i] <= 'Z'))) {
+                return false;
+            }
+        }
+        return true;
+    }
+    """)
+
+        # 18. Функция isalnum
+        helpers.append("""
+    bool string_isalnum(const char* str) {
+        if (!str || str[0] == '\\0') return false;
+        
+        for (int i = 0; str[i]; i++) {
+            char c = str[i];
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))) {
+                return false;
+            }
+        }
+        return true;
+    }
+    """)
+
+        # 19. Функция islower
+        helpers.append("""
+    bool string_islower(const char* str) {
+        if (!str || str[0] == '\\0') return false;
+        
+        int has_letter = 0;
+        for (int i = 0; str[i]; i++) {
+            if (str[i] >= 'A' && str[i] <= 'Z') {
+                return false;
+            }
+            if (str[i] >= 'a' && str[i] <= 'z') {
+                has_letter = 1;
+            }
+        }
+        return has_letter;
+    }
+    """)
+
+        # 20. Функция isupper
+        helpers.append("""
+    bool string_isupper(const char* str) {
+        if (!str || str[0] == '\\0') return false;
+        
+        int has_letter = 0;
+        for (int i = 0; str[i]; i++) {
+            if (str[i] >= 'a' && str[i] <= 'z') {
+                return false;
+            }
+            if (str[i] >= 'A' && str[i] <= 'Z') {
+                has_letter = 1;
+            }
+        }
+        return has_letter;
+    }
+    """)
+
+        # 21. Функция zfill
+        helpers.append("""
+    char* string_zfill(const char* str, int width) {
+        if (!str) return NULL;
+        
+        int str_len = strlen(str);
+        int total_len = (width > str_len) ? width : str_len;
+        
+        char* result = malloc(total_len + 1);
+        if (!result) return NULL;
+        
+        if (str_len >= width) {
+            strcpy(result, str);
+        } else {
+            int zeros = width - str_len;
+            for (int i = 0; i < zeros; i++) {
+                result[i] = '0';
+            }
+            strcpy(result + zeros, str);
+        }
+        
+        result[total_len] = '\\0';
+        return result;
+    }
+    """)
+
+        # 22. Функция center
+        helpers.append("""
+    char* string_center(const char* str, int width, char fillchar) {
+        if (!str) return NULL;
+        
+        int str_len = strlen(str);
+        if (str_len >= width) {
+            char* result = malloc(str_len + 1);
+            strcpy(result, str);
+            return result;
+        }
+        
+        char* result = malloc(width + 1);
+        if (!result) return NULL;
+        
+        int left = (width - str_len) / 2;
+        int right = width - str_len - left;
+        
+        for (int i = 0; i < left; i++) {
+            result[i] = fillchar;
+        }
+        strcpy(result + left, str);
+        for (int i = left + str_len; i < width; i++) {
+            result[i] = fillchar;
+        }
+        
+        result[width] = '\\0';
+        return result;
+    }
+    """)
+
+        # 23. Функция ljust
+        helpers.append("""
+    char* string_ljust(const char* str, int width, char fillchar) {
+        if (!str) return NULL;
+        
+        int str_len = strlen(str);
+        if (str_len >= width) {
+            char* result = malloc(str_len + 1);
+            strcpy(result, str);
+            return result;
+        }
+        
+        char* result = malloc(width + 1);
+        if (!result) return NULL;
+        
+        strcpy(result, str);
+        for (int i = str_len; i < width; i++) {
+            result[i] = fillchar;
+        }
+        
+        result[width] = '\\0';
+        return result;
+    }
+    """)
+
+        # 24. Функция rjust
+        helpers.append("""
+    char* string_rjust(const char* str, int width, char fillchar) {
+        if (!str) return NULL;
+        
+        int str_len = strlen(str);
+        if (str_len >= width) {
+            char* result = malloc(str_len + 1);
+            strcpy(result, str);
+            return result;
+        }
+        
+        char* result = malloc(width + 1);
+        if (!result) return NULL;
+        
+        int padding = width - str_len;
+        for (int i = 0; i < padding; i++) {
+            result[i] = fillchar;
+        }
+        strcpy(result + padding, str);
+        
+        result[width] = '\\0';
+        return result;
+    }
+    """)
+
+        # 25. Функция format (простая версия для одного аргумента)
+        helpers.append("""
+    char* string_format(const char* format_str, const char* arg) {
+        if (!format_str) return NULL;
+        
+        // Ищем {} в строке
+        char* pos = strstr(format_str, "{}");
+        if (!pos) {
+            // Если нет {}, просто копируем строку
+            char* result = malloc(strlen(format_str) + 1);
+            strcpy(result, format_str);
+            return result;
+        }
+        
+        // Вычисляем длину результата
+        int format_len = strlen(format_str);
+        int arg_len = arg ? strlen(arg) : 0;
+        int result_len = format_len - 2 + arg_len; // -2 для удаления {}
+        
+        char* result = malloc(result_len + 1);
+        if (!result) return NULL;
+        
+        // Копируем часть до {}
+        int before_len = pos - format_str;
+        strncpy(result, format_str, before_len);
+        
+        // Копируем аргумент
+        if (arg) {
+            strcpy(result + before_len, arg);
+        }
+        
+        // Копируем часть после {}
+        strcpy(result + before_len + arg_len, pos + 2);
+        
+        return result;
+    }
+    """)
+
+        self.generated_helpers.extend(helpers)
+
+    def generate_sort_helpers(self):
+        """Генерирует вспомогательные функции для сортировки"""
+        helpers = []
+
+        # Для целых чисел
+        helpers.append("""
+    int compare_int(const void* a, const void* b) {
+        return (*(int*)a - *(int*)b);
+    }
+    """)
+
+        # Для чисел с плавающей точкой
+        helpers.append("""
+    int compare_float(const void* a, const void* b) {
+        float float_a = *(float*)a;
+        float float_b = *(float*)b;
+        if (float_a < float_b) return -1;
+        if (float_a > float_b) return 1;
+        return 0;
+    }
+    """)
+
+        # Для double
+        helpers.append("""
+    int compare_double(const void* a, const void* b) {
+        double double_a = *(double*)a;
+        double double_b = *(double*)b;
+        if (double_a < double_b) return -1;
+        if (double_a > double_b) return 1;
+        return 0;
+    }
+    """)
+
+        self.generated_helpers.extend(helpers)
