@@ -1428,25 +1428,72 @@ class CCodeGenerator:
                     self.add_line(f"{target} = false;")
 
     def generate_assignment(self, node: Dict):
-        """Генерирует присваивание"""
+        """Генерирует присваивание с поддержкой строковых операций"""
         symbols = node.get("symbols", [])
         if not symbols:
             return
 
         target = symbols[0]
-
-        # Проверяем, не удалена ли переменная
-        var_info = self.get_variable_info(target)
-        if var_info and var_info.get("is_deleted"):
-            delete_type = var_info.get("delete_type", "full")
-            self.add_line(
-                f"// Внимание: присваивание удаленной переменной '{target}' (удаление: {delete_type})"
-            )
-
-        # Генерируем выражение
         expression_ast = node.get("expression_ast")
+
         if expression_ast:
+            # Проверяем, является ли это строковой операцией
+            if expression_ast.get("type") == "binary_operation":
+                operator = expression_ast.get("operator_symbol", "")
+                left_ast = expression_ast.get("left", {})
+                right_ast = expression_ast.get("right", {})
+
+                left_is_string = self._is_string_expression(left_ast)
+                right_is_string = self._is_string_expression(right_ast)
+
+                if operator == "+" and (left_is_string or right_is_string):
+                    # Генерируем конкатенацию строк
+                    left_expr = self.generate_expression(left_ast)
+                    right_expr = self.generate_expression(right_ast)
+
+                    # Освобождаем старую память, если переменная уже была инициализирована
+                    var_info = self.get_variable_info(target)
+                    if var_info and var_info.get("py_type") == "str":
+                        self.add_line(f"if ({target}) {{")
+                        self.indent_level += 1
+                        self.add_line(f"free({target});")
+                        self.indent_level -= 1
+                        self.add_line(f"}}")
+
+                    self.add_line(
+                        f"{target} = malloc(strlen({left_expr}) + strlen({right_expr}) + 1);"
+                    )
+                    self.add_line(f"if (!{target}) {{")
+                    self.indent_level += 1
+                    self.add_line(
+                        f'fprintf(stderr, "Memory allocation failed for string concatenation\\n");'
+                    )
+                    self.add_line(f"exit(1);")
+                    self.indent_level -= 1
+                    self.add_line(f"}}")
+                    self.add_line(f"strcpy({target}, {left_expr});")
+                    self.add_line(f"strcat({target}, {right_expr});")
+                    return
+
+            # Обычное присваивание
             expr = self.generate_expression(expression_ast)
+
+            # Для строковых литералов при присваивании
+            if (
+                expression_ast.get("type") == "literal"
+                and expression_ast.get("data_type") == "str"
+            ):
+                var_info = self.get_variable_info(target)
+                if var_info and var_info.get("py_type") == "str":
+                    self.add_line(f"if ({target}) {{")
+                    self.indent_level += 1
+                    self.add_line(f"free({target});")
+                    self.indent_level -= 1
+                    self.add_line(f"}}")
+                    self.add_line(f"{target} = malloc(strlen({expr}) + 1);")
+                    self.add_line(f"strcpy({target}, {expr});")
+                    return
+
             self.add_line(f"{target} = {expr};")
 
     def generate_function_call(self, node: Dict):
@@ -3408,6 +3455,32 @@ class CCodeGenerator:
             left = self.generate_expression(left_ast)
             right = self.generate_expression(right_ast)
 
+            # Проверяем, являются ли операнды строками
+            left_is_string = self._is_string_expression(left_ast)
+            right_is_string = self._is_string_expression(right_ast)
+
+            # Для сложения строк используем strcat
+            if operator == "+" and (left_is_string or right_is_string):
+                # Создаем временную переменную для результата
+                temp_var = self.generate_temporary_var("str")
+
+                # Генерируем код для конкатенации строк
+                self.add_line(
+                    f"char* {temp_var} = malloc(strlen({left}) + strlen({right}) + 1);"
+                )
+                self.add_line(f"if (!{temp_var}) {{")
+                self.indent_level += 1
+                self.add_line(
+                    f'fprintf(stderr, "Memory allocation failed for string concatenation\\n");'
+                )
+                self.add_line(f"exit(1);")
+                self.indent_level -= 1
+                self.add_line(f"}}")
+                self.add_line(f"strcpy({temp_var}, {left});")
+                self.add_line(f"strcat({temp_var}, {right});")
+
+                return temp_var
+
             if operator == "**":
                 return f"pow({left}, {right})"
 
@@ -3540,6 +3613,34 @@ class CCodeGenerator:
             ast_value = ast_value[1:]
 
         return ast_value
+
+    def _is_string_expression(self, ast: Dict) -> bool:
+        """Определяет, является ли выражение строкой"""
+        if not ast:
+            return False
+
+        node_type = ast.get("type", "")
+
+        if node_type == "literal":
+            return ast.get("data_type", "") == "str"
+
+        elif node_type == "variable":
+            var_name = ast.get("value", "")
+            var_info = self.get_variable_info(var_name)
+            if var_info:
+                return var_info.get("py_type", "") == "str"
+
+        elif node_type == "binary_operation":
+            left_ast = ast.get("left", {})
+            right_ast = ast.get("right", {})
+            operator = ast.get("operator_symbol", "")
+
+            if operator == "+":
+                return self._is_string_expression(
+                    left_ast
+                ) or self._is_string_expression(right_ast)
+
+        return False
 
     def generate_class_declaration(self, node: Dict):
         """Генерирует структуру для класса C динамически"""
