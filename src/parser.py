@@ -299,6 +299,8 @@ class Parser:
     ):
         """Основной метод парсинга строки с поддержкой всех конструкций"""
         line = line.strip()
+        line_content = line.strip()
+
         if not line:
             return current_index + 1
 
@@ -332,6 +334,84 @@ class Parser:
             # result = self.parse_class_attribute_initialization(line, current_scope)
             # if result:
             #     return current_index + 1
+
+        # ========== ОБРАБОТКА ПРИСВАИВАНИЯ СРЕЗАМ ==========
+
+        # Паттерн: my_list[1:3] = [20, 30]
+        slice_assign_pattern = r"^([a-zA-Z_][a-zA-Z0-9_]*)\[(\d+):(\d+)\]\s*=\s*(.+)$"
+        slice_assign_match = re.match(slice_assign_pattern, line_content)
+
+        if slice_assign_match:
+            var_name, start_str, stop_str, value = slice_assign_match.groups()
+            parsed = self.parse_slice_assignment(
+                line_content, scope, var_name, int(start_str), int(stop_str), value
+            )
+            return current_index + 1
+
+        # Паттерн: my_list[:3] = [20, 30]
+        slice_assign_pattern2 = r"^([a-zA-Z_][a-zA-Z0-9_]*)\[:(\d+)\]\s*=\s*(.+)$"
+        slice_assign_match2 = re.match(slice_assign_pattern2, line_content)
+
+        if slice_assign_match2:
+            var_name, stop_str, value = slice_assign_match2.groups()
+            parsed = self.parse_slice_assignment(
+                line_content, scope, var_name, None, int(stop_str), value
+            )
+            return current_index + 1
+
+        # Паттерн: my_list[1:] = [20, 30]
+        slice_assign_pattern3 = r"^([a-zA-Z_][a-zA-Z0-9_]*)\[(\d+):\]\s*=\s*(.+)$"
+        slice_assign_match3 = re.match(slice_assign_pattern3, line_content)
+
+        if slice_assign_match3:
+            var_name, start_str, value = slice_assign_match3.groups()
+            parsed = self.parse_slice_assignment(
+                line_content, scope, var_name, int(start_str), None, value
+            )
+            return current_index + 1
+
+        # ========== ОБРАБОТКА СОСТАВНЫХ ОПЕРАЦИЙ С ИНДЕКСАМИ ==========
+
+        # Паттерн: my_list[0] += 5
+        augmented_index_pattern = (
+            r"^([a-zA-Z_][a-zA-Z0-9_]*)\[(\d+)\]\s*(\+=|-=|\*=|/=|//=|%=)\s*(.+)$"
+        )
+        augmented_index_match = re.match(augmented_index_pattern, line_content)
+
+        if augmented_index_match:
+            var_name, index_str, operator, value = augmented_index_match.groups()
+            parsed = self.parse_augmented_index_assignment(
+                line_content, scope, var_name, int(index_str), operator, value
+            )
+            return current_index + 1
+
+        # ========== ОБРАБОТКА ИНДЕКСАЦИИ ==========
+
+        # Проверяем присваивание по индексу: my_list[0] = value
+        index_assignment_pattern = r"^([a-zA-Z_][a-zA-Z0-9_]*)\[(.+?)\]\s*=\s*(.+)$"
+        index_assignment_match = re.match(index_assignment_pattern, line)
+
+        if index_assignment_match:
+            var_name, index_expr, value = index_assignment_match.groups()
+            parsed = self.parse_index_assignment(
+                line, current_scope, var_name, index_expr, value
+            )
+            return current_index + 1
+
+        # Проверяем составные операции с индексацией: my_list[0] += 1
+
+        # Составные операции с индексами: my_list[0] += 5
+        augmented_index_pattern = (
+            r"^([a-zA-Z_][a-zA-Z0-9_]*)\[(\d+)\]\s*(\+=|-=|\*=|/=|//=|%=)\s*(.+)$"
+        )
+        augmented_index_match = re.match(augmented_index_pattern, line)
+
+        if augmented_index_match:
+            var_name, index, operator, value = augmented_index_match.groups()
+            parsed = self.parse_augmented_index_assignment(
+                line, scope, var_name, index, operator, value
+            )
+            return current_index + 1
 
         # ========== ОБРАБОТКА ДЕКОРАТОРОВ И СПЕЦИАЛЬНЫХ СИМВОЛОВ ==========
 
@@ -622,6 +702,53 @@ class Parser:
 
         return current_index + 1
 
+    def parse_slice_assignment(
+        self, line: str, scope: dict, var_name: str, start: int, stop: int, value: str
+    ) -> bool:
+        """Парсит присваивание срезу: my_list[1:3] = [20, 30]"""
+        # Парсим значение
+        value_ast = self.parse_expression_to_ast(value)
+
+        # Проверяем существование переменной
+        symbol = scope["symbol_table"].get_symbol(var_name)
+        if not symbol:
+            print(f"Error: Переменная '{var_name}' не определена")
+            return False
+
+        operations = [
+            {
+                "type": "SLICE_ASSIGN",
+                "variable": var_name,
+                "slice_start": start,
+                "slice_stop": stop,
+                "value": value_ast,
+            }
+        ]
+
+        # Собираем зависимости
+        dependencies = [var_name]
+        deps = self.extract_dependencies_from_ast(value_ast)
+        dependencies.extend(deps)
+
+        scope["graph"].append(
+            {
+                "node": "slice_assignment",
+                "content": line,
+                "variable": var_name,
+                "start": {"type": "literal", "value": start, "data_type": "int"}
+                if start is not None
+                else None,
+                "stop": {"type": "literal", "value": stop, "data_type": "int"}
+                if stop is not None
+                else None,
+                "value": value_ast,
+                "operations": operations,
+                "dependencies": list(set(dependencies)),
+            }
+        )
+
+        return True
+
     def parse_object_creation_assignment(
         self, line: str, scope: dict, var_name: str, class_name: str, args_str: str
     ) -> bool:
@@ -710,6 +837,138 @@ class Parser:
                 "arguments": args,
                 "operations": operations,
                 "dependencies": dependencies,
+            }
+        )
+
+        return True
+
+    def parse_index_assignment(
+        self, line: str, scope: dict, var_name: str, index_expr: str, value: str
+    ) -> bool:
+        """Парсит присваивание по индексу: my_list[0] = value"""
+        # Парсим индекс
+        index_ast = self.parse_expression_to_ast(index_expr)
+
+        # Парсим значение
+        value_ast = self.parse_expression_to_ast(value)
+
+        # Проверяем существование переменной
+        symbol = scope["symbol_table"].get_symbol(var_name)
+        if not symbol:
+            print(f"Error: Переменная '{var_name}' не определена")
+            return False
+
+        # Определяем тип операции
+        operations = []
+
+        # Проверяем, является ли это срезом
+        if ":" in index_expr:
+            # Срез: list[1:3] = [10, 20]
+            slice_parts = index_expr.split(":")
+            operations.append(
+                {
+                    "type": "SLICE_ASSIGN",
+                    "variable": var_name,
+                    "slice_start": slice_parts[0].strip()
+                    if slice_parts[0].strip()
+                    else None,
+                    "slice_stop": slice_parts[1].strip()
+                    if len(slice_parts) > 1 and slice_parts[1].strip()
+                    else None,
+                    "slice_step": slice_parts[2].strip()
+                    if len(slice_parts) > 2 and slice_parts[2].strip()
+                    else None,
+                    "value": value_ast,
+                }
+            )
+        else:
+            # Обычная индексация: list[0] = value
+            operations.append(
+                {
+                    "type": "INDEX_ASSIGN",
+                    "variable": var_name,
+                    "index": index_ast,
+                    "value": value_ast,
+                }
+            )
+
+        # Собираем зависимости
+        dependencies = [var_name]
+        dependencies.extend(self.extract_dependencies_from_ast(index_ast))
+        dependencies.extend(self.extract_dependencies_from_ast(value_ast))
+
+        # Создаем узел
+        scope["graph"].append(
+            {
+                "node": "index_assignment",
+                "content": line,
+                "variable": var_name,
+                "index": index_ast,
+                "value": value_ast,
+                "operations": operations,
+                "dependencies": list(set(dependencies)),
+            }
+        )
+
+        return True
+
+    def parse_augmented_index_assignment(
+        self,
+        line: str,
+        scope: dict,
+        var_name: str,
+        index: int,
+        operator: str,
+        value: str,
+    ) -> bool:
+        """Парсит составную операцию с индексом: my_list[0] += 5"""
+        # Парсим значение
+        value_ast = self.parse_expression_to_ast(value)
+
+        # Проверяем существование переменной
+        symbol = scope["symbol_table"].get_symbol(var_name)
+        if not symbol:
+            print(f"Error: Переменная '{var_name}' не определена")
+            return False
+
+        # Определяем тип операции
+        operator_map = {
+            "+=": "ADD",
+            "-=": "SUBTRACT",
+            "*=": "MULTIPLY",
+            "/=": "DIVIDE",
+            "//=": "INTEGER_DIVIDE",
+            "%=": "MODULO",
+        }
+
+        op_type = operator_map.get(operator, "UNKNOWN_AUGMENTED")
+
+        operations = [
+            {
+                "type": "AUGMENTED_INDEX_ASSIGN",
+                "variable": var_name,
+                "index": {"type": "literal", "value": index, "data_type": "int"},
+                "operator": op_type,
+                "operator_symbol": operator,
+                "value": value_ast,
+            }
+        ]
+
+        # Собираем зависимости
+        dependencies = [var_name]
+        deps = self.extract_dependencies_from_ast(value_ast)
+        dependencies.extend(deps)
+
+        scope["graph"].append(
+            {
+                "node": "augmented_index_assignment",
+                "content": line,
+                "variable": var_name,
+                "index": {"type": "literal", "value": index, "data_type": "int"},
+                "operator": operator,
+                "value": value_ast,
+                "operations": operations,
+                "dependencies": list(set(dependencies)),
             }
         )
 
@@ -5130,7 +5389,13 @@ class Parser:
 
             node_type = node.get("type")
 
-            if node_type == "variable":
+            if node_type == "index_access":
+                var_name = node.get("variable")
+                if var_name and var_name not in dependencies:
+                    dependencies.append(var_name)
+                traverse(node.get("index"))
+
+            elif node_type == "variable":
                 var_name = node.get("name") or node.get("value")
                 if var_name and var_name not in dependencies:
                     # Проверяем, что это не ключевое слово или тип данных

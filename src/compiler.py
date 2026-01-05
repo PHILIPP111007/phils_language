@@ -76,6 +76,9 @@ class CCodeGenerator:
 
     def reset(self):
         """Сброс состояния генератора"""
+        print(
+            f"DEBUG reset: Очищаем generated_helpers (было {len(self.generated_helpers)})"
+        )
         self.output = []
         self.indent_level = 0
         self.temp_var_counter = 0
@@ -85,6 +88,7 @@ class CCodeGenerator:
         self.generated_helpers.clear()
         self.generic_type_map.clear()
         self.class_fields.clear()  # Очищаем поля классов
+        print(f"DEBUG reset: generated_helpers очищен")
 
     def indent(self) -> str:
         """Возвращает отступ для текущего уровня"""
@@ -288,12 +292,12 @@ class CCodeGenerator:
             self.add_empty_line()
 
     def generate_function_scope(self, scope: Dict):
-        """Генерирует код для scope функции"""
+        """Генерирует код для функции"""
         func_name = scope.get("function_name", "")
         return_type = scope.get("return_type", "int")
         parameters = scope.get("parameters", [])
 
-        # Создаем новый scope для функции
+        # Входим в новый scope
         self.enter_scope()
 
         # Объявляем параметры
@@ -305,22 +309,38 @@ class CCodeGenerator:
             param_decls.append(f"{c_param_type} {param_name}")
             self.declare_variable(param_name, param_type)
 
-        # Генерируем сигнатуру функции
+        # Сигнатура функции
         c_return_type = self.map_type_to_c(return_type)
         params_str = ", ".join(param_decls) if param_decls else "void"
 
         self.add_line(f"{c_return_type} {func_name}({params_str}) {{")
         self.indent_level += 1
 
-        # Генерируем тело функции
+        # Обрабатываем узлы графа
+        # ИСПРАВЛЕНИЕ: Отслеживаем уже обработанные объявления
+        processed_declarations = set()
+
         for node in scope.get("graph", []):
-            self.generate_graph_node(node)
+            node_type = node.get("node")
+
+            if node_type == "declaration":
+                var_name = node.get("var_name", "")
+                # Проверяем, не обрабатывали ли мы уже это объявление
+                if var_name not in processed_declarations:
+                    self.generate_graph_node(node)
+                    processed_declarations.add(var_name)
+                else:
+                    # Пропускаем дубликат
+                    print(f"DEBUG: Пропускаем дублирующее объявление {var_name}")
+                    continue
+            else:
+                self.generate_graph_node(node)
 
         self.indent_level -= 1
         self.add_line("}")
         self.add_empty_line()
 
-        # Выходим из scope функции
+        # Выходим из scope
         self.exit_scope()
 
     def generate_graph_node(self, node: Dict):
@@ -363,6 +383,14 @@ class CCodeGenerator:
             self.generate_attribute_assignment(node)
         elif node_type == "method_call":
             self.generate_method_call(node)
+        elif node_type == "index_assignment":  # НОВОЕ: присваивание по индексу
+            self.generate_index_assignment(node)
+        elif node_type == "slice_assignment":  # НОВОЕ: присваивание среза
+            self.generate_slice_assignment(node)
+        elif (
+            node_type == "augmented_index_assignment"
+        ):  # НОВОЕ: составное присваивание по индексу
+            self.generate_augmented_index_assignment(node)
         elif node_type == "c_import":
             # Импорты уже обработаны на уровне модуля
             pass
@@ -607,13 +635,12 @@ class CCodeGenerator:
         self.add_line("// continue statement")
 
     def generate_declaration(self, node: Dict):
-        """Генерирует объявление переменной с поддержкой всех типов"""
+        """Генерирует объявление переменной"""
         var_name = node.get("var_name", "")
         var_type = node.get("var_type", "")
         expression_ast = node.get("expression_ast", {})
 
-        print(f"DEBUG generate_declaration: {var_name}: {var_type}")
-        print(f"DEBUG expression_ast type: {expression_ast.get('type')}")
+        print(f"DEBUG: Генерация объявления для {var_name}: {var_type}")
 
         # Объявляем переменную в scope
         self.declare_variable(var_name, var_type)
@@ -621,47 +648,59 @@ class CCodeGenerator:
         # Получаем C тип
         c_type = self.map_type_to_c(var_type)
 
-        if var_type == "None":
-            if expression_ast:
-                expr = self.generate_expression(expression_ast)
-                self.add_line(f"{c_type} {var_name} = {expr};")
-            else:
-                self.add_line(f"{c_type} {var_name} = NULL;")
-            return
-
-        # Для списков с литералом - создаем напрямую
-        if expression_ast.get("type") == "list_literal":
+        # Обработка list[int] с литералом
+        if expression_ast.get("type") == "list_literal" and var_type.startswith(
+            "list["
+        ):
             items = expression_ast.get("items", [])
 
-            # Создаем список
+            # Генерируем код для создания списка
+            struct_name = self.generate_list_struct_name(var_type)
             self.add_line(
-                f"{c_type} {var_name} = create_{self.generate_list_struct_name(var_type)}({max(len(items), 4)});"
+                f"{c_type} {var_name} = create_{struct_name}({max(len(items), 4)});"
             )
 
             # Добавляем элементы
             for item_ast in items:
                 item_expr = self.generate_expression(item_ast)
-                self.add_line(
-                    f"append_{self.generate_list_struct_name(var_type)}({var_name}, {item_expr});"
-                )
+                self.add_line(f"append_{struct_name}({var_name}, {item_expr});")
 
             return
 
-        # Для других случаев
-        if expression_ast:
-            # Генерируем выражение
-            expr = self.generate_expression(expression_ast)
+        # Обработка tuple[int] с литералом
+        elif expression_ast.get("type") == "tuple_literal" and var_type.startswith(
+            "tuple["
+        ):
+            items = expression_ast.get("items", [])
 
-            expr = expr.replace("None", "NULL")
+            if items:
+                # Создаем временный массив
+                temp_array = f"temp_{var_name}"
+                self.add_line(f"int {temp_array}[{len(items)}] = {{")
+                self.indent_level += 1
+                for i, item_ast in enumerate(items):
+                    item_expr = self.generate_expression(item_ast)
+                    self.add_line(f"{item_expr}{',' if i < len(items) - 1 else ''}")
+                self.indent_level -= 1
+                self.add_line("};")
 
-            # Для списков и строк нужно специальное присваивание
-            if var_type.startswith("list[") or var_type == "str":
-                # Для списков и строк выражение уже создало переменную
-                # Просто присваиваем
-                self.add_line(f"{c_type} {var_name} = {expr};")
+                # Создаем кортеж
+                struct_name = self.generate_tuple_struct_name(var_type)
+                self.add_line(
+                    f"{c_type} {var_name} = create_{struct_name}({temp_array}, {len(items)});"
+                )
             else:
-                # Для простых типов
-                self.add_line(f"{c_type} {var_name} = {expr};")
+                # Пустой кортеж
+                self.add_line(f"{c_type} {var_name};")
+                self.add_line(f"{var_name}.data = NULL;")
+                self.add_line(f"{var_name}.size = 0;")
+
+            return
+
+        # Обычная инициализация
+        if expression_ast:
+            expr = self.generate_expression(expression_ast)
+            self.add_line(f"{c_type} {var_name} = {expr};")
         else:
             # Объявление без инициализации
             if c_type.endswith("*"):
@@ -1939,55 +1978,64 @@ class CCodeGenerator:
             get_func += f"    return t->data[index];\n"
             get_func += f"}}\n\n"
 
+            # Функция slice для кортежа - ДОБАВЛЕНО
+            slice_func = f"""{struct_name} slice_{struct_name}({struct_name}* t, int start, int stop, int step) {{
+        if (!t) return ({struct_name}){{NULL, 0}};
+        
+        // Нормализация индексов
+        if (start < 0) start = t->size + start;
+        if (stop < 0) stop = t->size + stop;
+        if (start < 0) start = 0;
+        if (stop > t->size) stop = t->size;
+        
+        // Вычисляем размер результата
+        int new_size;
+        if (step > 0) {{
+            if (start >= stop) new_size = 0;
+            else new_size = (stop - start + step - 1) / step;
+        }} else if (step < 0) {{
+            if (start <= stop) new_size = 0;
+            else new_size = (start - stop - step - 1) / (-step);
+        }} else {{
+            fprintf(stderr, "ValueError: slice step cannot be zero\\n");
+            exit(1);
+        }}
+        
+        // Создаем временный массив
+        {c_element_type}* temp_data = malloc(new_size * sizeof({c_element_type}));
+        if (!temp_data) {{
+            fprintf(stderr, "Memory allocation failed for tuple slice\\n");
+            exit(1);
+        }}
+        
+        // Копируем элементы с учетом шага
+        int pos = 0;
+        if (step > 0) {{
+            for (int i = start; i < stop && pos < new_size; i += step) {{
+                if (i >= 0 && i < t->size) {{
+                    temp_data[pos++] = t->data[i];
+                }}
+            }}
+        }} else {{
+            for (int i = start; i > stop && pos < new_size; i += step) {{
+                if (i >= 0 && i < t->size) {{
+                    temp_data[pos++] = t->data[i];
+                }}
+            }}
+        }}
+        
+        // Создаем кортеж
+        {struct_name} result;
+        result.size = new_size;
+        result.data = temp_data;
+        
+        return result;
+    }}\n\n"""
+
             # Добавляем все функции
             self.generated_helpers.extend(
-                [struct_code, create_func, len_func, free_func, get_func]
+                [struct_code, create_func, len_func, free_func, get_func, slice_func]
             )
-        else:
-            # tuple[T1, T2, ...] - фиксированный кортеж
-            element_types = [t.strip() for t in inner.split(",")]
-            c_element_types = [self.map_type_to_c(t) for t in element_types]
-
-            # Создаем структуру с полями для каждого элемента
-            struct_code = f"typedef struct {{\n"
-            for i, (elem_type, c_elem_type) in enumerate(
-                zip(element_types, c_element_types)
-            ):
-                field_name = f"elem_{i}"
-                struct_code += f"    {c_elem_type} {field_name};\n"
-            struct_code += f"}} {struct_name};\n\n"
-
-            self.generated_helpers.append(struct_code)
-
-            # Функция создания для фиксированного кортежа
-            param_list = ", ".join(
-                [f"{c_elem_type} a{i}" for i, c_elem_type in enumerate(c_element_types)]
-            )
-            create_func = f"{struct_name} create_{struct_name}({param_list}) {{\n"
-            create_func += f"    {struct_name} t;\n"
-            for i, (elem_type, c_elem_type) in enumerate(
-                zip(element_types, c_element_types)
-            ):
-                field_name = f"elem_{i}"
-                create_func += f"    t.{field_name} = a{i};\n"
-            create_func += f"    return t;\n"
-            create_func += f"}}\n\n"
-
-            # Функция len() для фиксированного кортежа
-            len_func = f"int builtin_len_{struct_name}({struct_name}* t) {{\n"
-            len_func += f"    return {len(element_types)};\n"
-            len_func += f"}}\n\n"
-
-            # Функция доступа к элементам
-            for i, (elem_type, c_elem_type) in enumerate(
-                zip(element_types, c_element_types)
-            ):
-                get_func = f"{c_elem_type} get_{struct_name}_{i}({struct_name}* t) {{\n"
-                get_func += f"    return t->elem_{i};\n"
-                get_func += f"}}\n\n"
-                self.generated_helpers.append(get_func)
-
-            self.generated_helpers.extend([create_func, len_func])
 
     def generate_list_struct(self, py_type: str):
         """Генерирует структуру C для списка любой вложенности"""
@@ -2010,14 +2058,14 @@ class CCodeGenerator:
         print(f"  element_py_type: {type_info.get('element_py_type')}")
         print(f"  is_c_type: {type_info.get('is_c_type')}")
 
+        # Определяем element_type
+        element_type = type_info.get("element_type", "void*")
+        element_py_type = type_info.get("element_py_type")
+        is_c_type = type_info.get("is_c_type", False)
+
         # Генерируем структуру только если еще не генерировали
         if struct_name not in self.generated_structs:
             self.generated_structs.add(struct_name)
-
-            # Определяем element_type
-            element_type = type_info.get("element_type", "void*")
-            element_py_type = type_info.get("element_py_type")
-            is_c_type = type_info.get("is_c_type", False)
 
             print(f"  Генерация структуры {struct_name} с element_type={element_type}")
 
@@ -2029,13 +2077,27 @@ class CCodeGenerator:
             struct_code += f"}} {struct_name};\n\n"
 
             self.generated_helpers.append(struct_code)
+        else:
+            print(f"DEBUG: Структура {struct_name} уже сгенерирована")
 
-            # Генерируем функции для этой структуры
+        # ВАЖНО: Всегда генерируем функции, если они еще не были сгенерированы
+        # Проверяем, есть ли slice функция для этой структуры
+        has_slice_function = False
+        for i, helper in enumerate(self.generated_helpers):
+            if f"slice_{struct_name}" in helper:
+                has_slice_function = True
+                print(f"DEBUG: Найдена slice_{struct_name} в helper {i}")
+                break
+
+        if not has_slice_function:
+            print(
+                f"DEBUG: Функция slice_{struct_name} отсутствует, генерируем все функции..."
+            )
             self._generate_list_functions(
                 struct_name, element_type, element_py_type, is_c_type
             )
         else:
-            print(f"DEBUG: Структура {struct_name} уже сгенерирована")
+            print(f"DEBUG: Функция slice_{struct_name} уже существует")
 
     def _generate_leaf_list_struct(self, leaf_type: str, struct_name: str):
         """Генерирует структуру для листового списка (например, list_int)"""
@@ -2069,9 +2131,16 @@ class CCodeGenerator:
     ):
         """Генерирует функции для работы со списком"""
 
+        print("WDOKWDKWKDOKWDWKDWODKWDOWDOW\n\n\n\n\n\n\n\n\n\n\n")
+
         print(
             f"DEBUG _generate_list_functions: struct_name={struct_name}, element_type={element_type}, is_c_type={is_c_type}"
         )
+
+        print(
+            f"DEBUG _generate_list_functions: struct_name={struct_name}, element_type={element_type}, is_c_type={is_c_type}"
+        )
+        print(f"DEBUG: Будет добавлено 7 функций для {struct_name}")
 
         # Определяем, нужна ли специальная обработка для типа
         if is_c_type:
@@ -2079,7 +2148,7 @@ class CCodeGenerator:
             self._generate_generic_c_list_functions(
                 struct_name, element_type, element_py_type
             )
-            return
+            # return
 
         # Оригинальный код для обычных типов...
         # Функция создания
@@ -2161,12 +2230,73 @@ class CCodeGenerator:
         get_func += f"    return list->data[index];\n"
         get_func += f"}}\n\n"
 
-        # Добавляем все функции
-        self.generated_helpers.append(create_func)
-        self.generated_helpers.append(append_func)
-        self.generated_helpers.append(len_func)
-        self.generated_helpers.append(free_func)
-        self.generated_helpers.append(get_func)
+        # Функция установки элемента
+        set_func = f"void set_{struct_name}({struct_name}* list, int index, {element_type} value) {{\n"
+        set_func += f"    if (!list || index < 0 || index >= list->size) {{\n"
+        set_func += f'        fprintf(stderr, "Index out of bounds in list\\n");\n'
+        set_func += f"        exit(1);\n"
+        set_func += f"    }}\n"
+        set_func += f"    list->data[index] = value;\n"
+        set_func += f"}}\n\n"
+
+        # Функция slice для списка - ИСПРАВЛЕННАЯ ВЕРСИЯ
+        slice_func = f"""{struct_name}* slice_{struct_name}({struct_name}* list, int start, int stop, int step) {{
+            if (!list) return NULL;
+            
+            // Нормализация индексов
+            if (start < 0) start = list->size + start;
+            if (stop < 0) stop = list->size + stop;
+            if (start < 0) start = 0;
+            if (stop > list->size) stop = list->size;
+            
+            // Вычисляем размер результата
+            int new_size;
+            if (step > 0) {{
+                if (start >= stop) new_size = 0;
+                else new_size = (stop - start + step - 1) / step;
+            }} else if (step < 0) {{
+                if (start <= stop) new_size = 0;
+                else new_size = (start - stop - step - 1) / (-step);
+            }} else {{
+                fprintf(stderr, "ValueError: slice step cannot be zero\\n");
+                exit(1);
+            }}
+            
+            // Создаем новый список
+            {struct_name}* result = create_{struct_name}(new_size);
+            
+            // Копируем элементы с учетом шага
+            if (step > 0) {{
+                for (int i = start; i < stop && result->size < new_size; i += step) {{
+                    if (i >= 0 && i < list->size) {{
+                        append_{struct_name}(result, list->data[i]);
+                    }}
+                }}
+            }} else {{
+                for (int i = start; i > stop && result->size < new_size; i += step) {{
+                    if (i >= 0 && i < list->size) {{
+                        append_{struct_name}(result, list->data[i]);
+                    }}
+                }}
+            }}
+            
+            return result;
+        }}\n\n"""
+
+        # Добавляем все функции ОДИН РАЗ!
+        self.generated_helpers.extend(
+            [
+                create_func,
+                append_func,
+                len_func,
+                free_func,
+                get_func,
+                set_func,
+                slice_func,
+            ]
+        )
+
+        print(f"DEBUG: Всего helpers после добавления: {len(self.generated_helpers)}")
 
     def _generate_generic_c_list_functions(
         self, struct_name: str, element_type: str, element_py_type: str
@@ -2489,6 +2619,224 @@ class CCodeGenerator:
         self.generated_helpers.append(create_func)
         self.generated_helpers.append(append_func)
         self.generated_helpers.append(len_func)
+        self.generated_helpers.append(free_func)
+
+        # Добавляем функцию получения по индексу
+        get_func = f"""
+            {element_type} get_{struct_name}({struct_name}* list, int index) {{
+                if (!list || index < 0 || index >= list->size) {{
+                    fprintf(stderr, "IndexError: list index out of range\\n");
+                    exit(1);
+                }}
+                return list->data[index];
+            }}
+        """
+        self.generated_helpers.append(get_func)
+
+        # Добавляем функцию установки по индексу
+        set_func = f"""
+            void set_{struct_name}({struct_name}* list, int index, {element_type} value) {{
+                if (!list || index < 0 || index >= list->size) {{
+                    fprintf(stderr, "IndexError: list index out of range\\n");
+                    exit(1);
+                }}
+                list->data[index] = value;
+            }}
+        """
+        self.generated_helpers.append(set_func)
+
+        # Функция получения элемента
+        get_func = f"""
+    {element_type} get_{struct_name}({struct_name}* list, int index) {{
+        if (!list || index < 0 || index >= list->size) {{
+            fprintf(stderr, "IndexError: list index out of range\\n");
+            exit(1);
+        }}
+        return list->data[index];
+    }}
+"""
+        self.generated_helpers.append(get_func)
+
+        # Функция установки элемента
+        set_func = f"""
+    void set_{struct_name}({struct_name}* list, int index, {element_type} value) {{
+        if (!list || index < 0 || index >= list->size) {{
+            fprintf(stderr, "IndexError: list index out of range\\n");
+            exit(1);
+        }}
+        list->data[index] = value;
+    }}
+"""
+        self.generated_helpers.append(set_func)
+
+        # Функция среза
+        slice_func = f"""
+    {struct_name}* slice_{struct_name}({struct_name}* list, int start, int stop, int step) {{
+        if (!list) return NULL;
+        
+        // Нормализация индексов
+        if (start < 0) start = list->size + start;
+        if (stop < 0) stop = list->size + stop;
+        if (start < 0) start = 0;
+        if (stop > list->size) stop = list->size;
+        
+        // Вычисляем размер результата
+        int new_size;
+        if (step > 0) {{
+            if (start >= stop) new_size = 0;
+            else new_size = (stop - start + step - 1) / step;
+        }} else if (step < 0) {{
+            if (start <= stop) new_size = 0;
+            else new_size = (start - stop - step - 1) / (-step);
+        }} else {{
+            fprintf(stderr, "ValueError: slice step cannot be zero\\n");
+            exit(1);
+        }}
+        
+        {struct_name}* result = create_{struct_name}(new_size);
+        
+        if (step > 0) {{
+            for (int i = start; i < stop; i += step) {{
+                if (i >= 0 && i < list->size) {{
+                    append_{struct_name}(result, list->data[i]);
+                }}
+            }}
+        }} else {{
+            for (int i = start; i > stop; i += step) {{
+                if (i >= 0 && i < list->size) {{
+                    append_{struct_name}(result, list->data[i]);
+                }}
+            }}
+        }}
+        
+        return result;
+    }}
+"""
+        self.generated_helpers.append(slice_func)
+
+        # ДОБАВЬТЕ эту функцию:
+        slice_func = f"""
+    {struct_name}* slice_{struct_name}({struct_name}* list, int start, int stop, int step) {{
+        if (!list) return NULL;
+        
+        // Нормализация индексов
+        if (start < 0) start = list->size + start;
+        if (stop < 0) stop = list->size + stop;
+        if (start < 0) start = 0;
+        if (stop > list->size) stop = list->size;
+        
+        // Вычисляем размер результата
+        int new_size;
+        if (step > 0) {{
+            if (start >= stop) new_size = 0;
+            else new_size = (stop - start + step - 1) / step;
+        }} else if (step < 0) {{
+            if (start <= stop) new_size = 0;
+            else new_size = (start - stop - step - 1) / (-step);
+        }} else {{
+            fprintf(stderr, "ValueError: slice step cannot be zero\\n");
+            exit(1);
+        }}
+        
+        {struct_name}* result = create_{struct_name}(new_size);
+        
+        if (step > 0) {{
+            for (int i = start; i < stop; i += step) {{
+                if (i >= 0 && i < list->size) {{
+                    append_{struct_name}(result, list->data[i]);
+                }}
+            }}
+        }} else {{
+            for (int i = start; i > stop; i += step) {{
+                if (i >= 0 && i < list->size) {{
+                    append_{struct_name}(result, list->data[i]);
+                }}
+            }}
+        }}
+        
+        return result;
+    }}
+"""
+        self.generated_helpers.append(slice_func)
+
+    def generate_tuple_functions(self, py_type: str):
+        """Генерирует функции для кортежа с правильным использованием указателей"""
+        struct_name = self.generate_tuple_struct_name(py_type)
+        element_type = "int"
+
+        # Функция slice для tuple
+        slice_func = f"""
+    {struct_name}* slice_{struct_name}({struct_name}* tuple, int start, int stop, int step) {{
+        if (!tuple) return NULL;
+        
+        // Нормализация индексов
+        if (start < 0) start = tuple->size + start;
+        if (stop < 0) stop = tuple->size + stop;
+        if (start < 0) start = 0;
+        if (stop > tuple->size) stop = tuple->size;
+        
+        // Вычисляем размер результата
+        int new_size;
+        if (step > 0) {{
+            if (start >= stop) new_size = 0;
+            else new_size = (stop - start + step - 1) / step;
+        }} else if (step < 0) {{
+            if (start <= stop) new_size = 0;
+            else new_size = (start - stop - step - 1) / (-step);
+        }} else {{
+            fprintf(stderr, "ValueError: slice step cannot be zero\\n");
+            exit(1);
+        }}
+        
+        // Создаем временный массив
+        {element_type}* temp_data = malloc(new_size * sizeof({element_type}));
+        if (!temp_data) {{
+            fprintf(stderr, "Memory allocation failed for slice\\n");
+            exit(1);
+        }}
+        
+        // Копируем элементы
+        int pos = 0;
+        if (step > 0) {{
+            for (int i = start; i < stop && pos < new_size; i += step) {{
+                if (i >= 0 && i < tuple->size) {{
+                    temp_data[pos++] = tuple->data[i];
+                }}
+            }}
+        }} else {{
+            for (int i = start; i > stop && pos < new_size; i += step) {{
+                if (i >= 0 && i < tuple->size) {{
+                    temp_data[pos++] = tuple->data[i];
+                }}
+            }}
+        }}
+        
+        // Создаем кортеж
+        {struct_name}* result = malloc(sizeof({struct_name}));
+        if (!result) {{
+            fprintf(stderr, "Memory allocation failed for tuple slice\\n");
+            free(temp_data);
+            exit(1);
+        }}
+        result->size = new_size;
+        result->data = temp_data;
+        
+        return result;
+    }}
+"""
+        self.generated_helpers.append(slice_func)
+
+        # Функция освобождения tuple
+        free_func = f"""
+    void free_{struct_name}({struct_name}* tuple) {{
+        if (tuple) {{
+            if (tuple->data) {{
+                free(tuple->data);
+            }}
+            free(tuple);
+        }}
+    }}
+"""
         self.generated_helpers.append(free_func)
 
     def generate_helpers_section(self):
@@ -2943,6 +3291,62 @@ class CCodeGenerator:
             return "0"
 
         node_type = ast.get("type", "")
+
+        if node_type == "index_access":
+            variable = ast.get("variable", "")
+            index_ast = ast.get("index", {})
+
+            index_expr = self.generate_expression(index_ast)
+            var_info = self.get_variable_info(variable)
+
+            if var_info:
+                py_type = var_info.get("py_type", "")
+
+                if py_type.startswith("list["):
+                    struct_name = self.generate_list_struct_name(py_type)
+                    return f"get_{struct_name}({variable}, {index_expr})"
+                elif py_type.startswith("tuple["):
+                    struct_name = self.generate_tuple_struct_name(py_type)
+                    # Tuple передается по указателю в функции get
+                    return f"get_{struct_name}(&{variable}, {index_expr})"
+
+            return f"{variable}[{index_expr}]"
+
+        elif node_type == "slice_access":
+            variable = ast.get("variable", "")
+            start_ast = ast.get("start", {})
+            stop_ast = ast.get("stop", {})
+            step_ast = ast.get("step", {})
+
+            # Генерируем выражения для границ
+            start_expr = self.generate_expression(start_ast) if start_ast else "0"
+            stop_expr = self.generate_expression(stop_ast) if stop_ast else ""
+            step_expr = self.generate_expression(step_ast) if step_ast else "1"
+
+            var_info = self.get_variable_info(variable)
+            if var_info:
+                py_type = var_info.get("py_type", "")
+
+                if py_type.startswith("list["):
+                    # Для списка stop по умолчанию: list->size
+                    if not stop_ast:
+                        stop_expr = f"{variable}->size"
+
+                    struct_name = self.generate_list_struct_name(py_type)
+                    # Создаем срез списка напрямую без временной переменной
+                    return f"slice_{struct_name}({variable}, {start_expr}, {stop_expr}, {step_expr})"
+
+                elif py_type.startswith("tuple["):
+                    # Для кортежа stop по умолчанию: tuple.size
+                    if not stop_ast:
+                        stop_expr = f"{variable}.size"
+
+                    struct_name = self.generate_tuple_struct_name(py_type)
+                    # Создаем срез кортежа
+                    return f"slice_{struct_name}(&{variable}, {start_expr}, {stop_expr}, {step_expr})"
+
+            # Если не list и не tuple, генерируем обычный slice
+            return f"/* slice of {variable}[{start_expr}:{stop_expr}] */"
 
         if node_type == "tuple_literal":
             # Для tuple литералов используем метод generate_tuple_creation
@@ -5870,3 +6274,110 @@ class CCodeGenerator:
         self.indent_level -= 1
         self.add_line("}")
         self.add_empty_line()
+
+    def generate_index_assignment(self, node: Dict):
+        """Генерирует присваивание по индексу: list[index] = value"""
+        variable = node.get("variable", "")
+        index_ast = node.get("index", {})
+        value_ast = node.get("value", {})
+
+        index_expr = self.generate_expression(index_ast)
+        value_expr = self.generate_expression(value_ast)
+
+        var_info = self.get_variable_info(variable)
+
+        if var_info:
+            py_type = var_info.get("py_type", "")
+
+            if py_type.startswith("list["):
+                struct_name = self.generate_list_struct_name(py_type)
+                self.add_line(
+                    f"set_{struct_name}({variable}, {index_expr}, {value_expr});"
+                )
+            elif py_type.startswith("tuple["):
+                # Кортежи неизменяемы, но все равно генерируем код
+                struct_name = self.generate_tuple_struct_name(py_type)
+                self.add_line(
+                    f"{variable}.data[{index_expr}] = {value_expr}; // Note: tuples are immutable in Python"
+                )
+            else:
+                self.add_line(f"{variable}[{index_expr}] = {value_expr};")
+
+    def generate_slice_assignment(self, node: Dict):
+        """Генерирует присваивание среза: list[start:stop] = values"""
+        variable = node.get("variable", "")
+        start_ast = node.get("start", {})
+        stop_ast = node.get("stop", {})
+        step_ast = node.get("step", {})
+        value_ast = node.get("value", {})
+
+        start_expr = self.generate_expression(start_ast) if start_ast else "0"
+        stop_expr = (
+            self.generate_expression(stop_ast) if stop_ast else f"{variable}->size"
+        )
+
+        var_info = self.get_variable_info(variable)
+
+        if var_info and var_info.get("py_type", "").startswith("list["):
+            if value_ast.get("type") == "list_literal":
+                items = value_ast.get("items", [])
+                if items:
+                    # Присваивание списка значений срезу
+                    for i, item in enumerate(items):
+                        item_expr = self.generate_expression(item)
+                        idx = f"{start_expr} + {i}"
+                        self.add_line(
+                            f"if ({idx} < {stop_expr} && {idx} < {variable}->size) {{"
+                        )
+                        self.indent_level += 1
+                        self.add_line(
+                            f"set_{self.generate_list_struct_name(var_info['py_type'])}({variable}, {idx}, {item_expr});"
+                        )
+                        self.indent_level -= 1
+                        self.add_line("}")
+            else:
+                # Присваивание одного значения всем элементам среза
+                value_expr = self.generate_expression(value_ast)
+                temp_var = self.generate_temporary_var("int")
+                self.add_line(
+                    f"for (int {temp_var} = {start_expr}; {temp_var} < {stop_expr}; {temp_var}++) {{"
+                )
+                self.indent_level += 1
+                self.add_line(f"if ({temp_var} < {variable}->size) {{")
+                self.indent_level += 1
+                self.add_line(
+                    f"set_{self.generate_list_struct_name(var_info['py_type'])}({variable}, {temp_var}, {value_expr});"
+                )
+                self.indent_level -= 1
+                self.add_line("}")
+                self.indent_level -= 1
+                self.add_line("}")
+
+    def generate_augmented_index_assignment(self, node: Dict):
+        """Генерирует составное присваивание по индексу: list[index] += value"""
+        variable = node.get("variable", "")
+        index_ast = node.get("index", {})
+        operator = node.get("operator", "")
+        value_ast = node.get("value", {})
+
+        index_expr = self.generate_expression(index_ast)
+        value_expr = self.generate_expression(value_ast)
+
+        var_info = self.get_variable_info(variable)
+
+        if var_info and var_info.get("py_type", "").startswith("list["):
+            struct_name = self.generate_list_struct_name(var_info["py_type"])
+            # Получаем текущее значение
+            temp_var = self.generate_temporary_var("int")
+            self.add_line(
+                f"int {temp_var} = get_{struct_name}({variable}, {index_expr});"
+            )
+            # Применяем оператор
+            op_symbol = operator.replace("=", "")
+            c_op = self.operator_map.get(op_symbol, op_symbol)
+            if c_op == "pow":
+                self.add_line(f"{temp_var} = pow({temp_var}, {value_expr});")
+            else:
+                self.add_line(f"{temp_var} {operator} {value_expr};")
+            # Устанавливаем новое значение
+            self.add_line(f"set_{struct_name}({variable}, {index_expr}, {temp_var});")

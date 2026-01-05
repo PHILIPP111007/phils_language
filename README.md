@@ -113,6 +113,32 @@ def main() -> int:
     var l: list[tuple[int]] = []
     l.append(t1)
     return 0
+
+
+
+def main() -> int:
+    var my_list: list[int] = [1, 2, 3, 4, 5]
+    var my_tuple: tuple[int] = (1, 2, 3, 4, 5)
+
+    var xxxx: list[int] = my_list[2:]
+
+    # 1. Обращение по индексу (чтение)
+    var x: int = my_list[0]
+    var x1: int = my_tuple[1]
+
+    # 2. Присваивание по индексу
+    my_list[0] = 10
+    my_list[1:3] = [20, 30]
+
+    # 3. Составные операции с индексами
+    my_list[0] += 5
+    my_list[1] *= 2
+
+    # 4. Срезы
+    var sub_list: list[int] = my_list[1:4]
+    var sub_tuple: tuple[int] = my_tuple[2:]
+
+    return 0
 ```
 
 Methods:
