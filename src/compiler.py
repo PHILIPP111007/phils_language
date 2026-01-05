@@ -123,7 +123,9 @@ class CCodeGenerator:
                 return f"{py_type}**"  # Указатель на указатель
             return f"{py_type}*"  # Обычный указатель на структуру
 
-        if py_type.startswith("*"):
+        if py_type == "None":
+            return "void*"  # None -> void*
+        elif py_type.startswith("*"):
             base_type = py_type[1:]
             c_base_type = self.map_type_to_c(base_type)
             return f"{c_base_type}*"
@@ -575,6 +577,14 @@ class CCodeGenerator:
         # Получаем C тип
         c_type = self.map_type_to_c(var_type)
 
+        if var_type == "None":
+            if expression_ast:
+                expr = self.generate_expression(expression_ast)
+                self.add_line(f"{c_type} {var_name} = {expr};")
+            else:
+                self.add_line(f"{c_type} {var_name} = NULL;")
+            return
+
         # Для списков с литералом - создаем напрямую
         if expression_ast.get("type") == "list_literal":
             items = expression_ast.get("items", [])
@@ -597,6 +607,8 @@ class CCodeGenerator:
         if expression_ast:
             # Генерируем выражение
             expr = self.generate_expression(expression_ast)
+
+            expr = expr.replace("None", "NULL")
 
             # Для списков и строк нужно специальное присваивание
             if var_type.startswith("list[") or var_type == "str":
@@ -1375,7 +1387,10 @@ class CCodeGenerator:
             if isinstance(arg, dict):
                 arg_strings.append(self.generate_expression(arg))
             else:
-                arg_strings.append(str(arg))
+                if str(arg) == "None":
+                    arg_strings.append("NULL")
+                else:
+                    arg_strings.append(str(arg))
 
         args_str = ", ".join(arg_strings)
         self.add_line(f"{func_name}({args_str});")
