@@ -3403,7 +3403,16 @@ class CCodeGenerator:
         if self._is_class_type(obj_type):
             # Это класс - используем формат ClassName_methodName
             # Первым аргументом идет указатель на объект (self)
-            return f"{obj_type}_{method_name}({object_name}, {args_str})"
+            full_args = f"{object_name}"
+            if args_str:
+                full_args = f"{object_name}, {args_str}"
+
+            # Если это standalone вызов (statement)
+            if is_standalone:
+                self.add_line(f"{obj_type}_{method_name}({full_args});")
+            else:
+                # Если это выражение (возвращаем результат)
+                return f"{obj_type}_{method_name}({full_args})"
         # Обработка методов для списков
         # Обработка методов для строк
         elif obj_type == "str":
