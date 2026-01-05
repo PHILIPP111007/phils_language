@@ -23,6 +23,7 @@ class JSONValidator:
         # Для отслеживания состояния переменных
         self.variable_history = {}  # {(scope_level, var_name): [{"action": "declare"/"assign"/"delete", "node_id": str}]}
         self.variable_states = {}  # {(scope_level, var_name): "active"/"deleted"}
+        self.classes = {}  # {class_name: class_info}
 
     def validate(self, json_data: List[Dict]) -> list[Dict]:
         """Основной метод валидации"""
@@ -64,12 +65,35 @@ class JSONValidator:
                     self.scope_symbols[level] = {}
 
                 for symbol_name, symbol_info in scope["symbol_table"].items():
+                    key = symbol_info.get("key")
+
                     # Сохраняем функции отдельно
-                    if symbol_info.get("key") == "function":
+                    if key == "function":
                         self.functions[symbol_name] = symbol_info
+                    # Сохраняем классы отдельно
+                    elif key == "class":
+                        self.classes[symbol_name] = symbol_info
+                        # Также добавляем в обычные символы
+                        self.scope_symbols[level][symbol_name] = symbol_info
                     else:
                         # Сохраняем обычные переменные
                         self.scope_symbols[level][symbol_name] = symbol_info
+
+            # Также собираем классы из class_declaration узлов
+            if scope.get("type") == "class_declaration":
+                class_name = scope.get("class_name")
+                if class_name:
+                    self.classes[class_name] = {
+                        "name": class_name,
+                        "key": "class",
+                        "type": "class",
+                        "value": None,
+                        "id": class_name,
+                        "is_deleted": False,
+                    }
+                    if level not in self.scope_symbols:
+                        self.scope_symbols[level] = {}
+                    self.scope_symbols[level][class_name] = self.classes[class_name]
 
     def build_source_map(self, json_data: List[Dict]):
         """Строит карту соответствия узлов исходным строкам"""
@@ -415,6 +439,9 @@ class JSONValidator:
                                 node_idx,
                             )
 
+                # 4.8 ПРОВЕРКА НЕОПРЕДЕЛЕННЫХ МЕТОДОВ (важно для ООП)
+                self.check_undefined_methods(scope, scope_idx)
+
             # 5. ПОСТ-ПРОВЕРКИ ПОСЛЕ АНАЛИЗА ГРАФА
 
             # 5.1 Проверка неиспользуемых переменных
@@ -492,17 +519,23 @@ class JSONValidator:
             )
 
         var_type = symbol_info.get("type", "")
-        if var_type not in DATA_TYPES and not var_type.startswith("*"):
-            self.add_warning(
-                f"символ '{symbol_name}' имеет неизвестный тип '{var_type}'",
-                scope_idx,
-                None,
-            )
+        key = symbol_info.get("key", "")
 
-        if symbol_info.get("key") == "const":
-            if "value" not in symbol_info:
-                self.add_error(
-                    f"константа '{symbol_name}' не имеет значения", scope_idx, None
+        # Для классов и функций типы могут быть любыми
+        if key in ["class", "function"]:
+            return
+
+        # Пропускаем проверку для параметра 'self'
+        if symbol_name == "self":
+            return
+
+        if var_type not in DATA_TYPES and not var_type.startswith("*"):
+            # Проверяем, не является ли это пользовательским классом
+            if var_type not in self.classes:
+                self.add_warning(
+                    f"символ '{symbol_name}' имеет неизвестный тип '{var_type}'",
+                    scope_idx,
+                    None,
                 )
 
     def validate_graph(self, scope: Dict, scope_idx: int):
@@ -1156,6 +1189,19 @@ class JSONValidator:
         """Валидирует выражение (правая часть присваивания или инициализации)"""
         expression = expression.strip()
 
+        constructor_pattern = r"([A-Z][a-zA-Z0-9_]*)\s*\(([^)]*)\)"
+        match = re.match(constructor_pattern, expression)
+        if match:
+            class_name = match.group(1)
+            # Проверяем, что класс существует
+            if class_name not in self.classes:
+                self.add_error(
+                    f"класс '{class_name}' не объявлен",
+                    scope_idx,
+                    node_idx,
+                )
+            return
+
         # Сначала проверяем, не является ли это литералом
         if (expression.startswith('"') and expression.endswith('"')) or (
             expression.startswith("'") and expression.endswith("'")
@@ -1558,7 +1604,27 @@ class JSONValidator:
 
         # Если аргумент - строка
         if isinstance(arg, str):
-            if arg.isalpha() and arg not in ["True", "False", "None"]:
+            # Пропускаем NULL, True, False, None
+            if arg in ["NULL", "True", "False", "None"]:
+                return
+
+            # Пропускаем литералы
+            if (arg.startswith('"') and arg.endswith('"')) or (
+                arg.startswith("'") and arg.endswith("'")
+            ):
+                return
+
+            # Пропускаем числа
+            if arg.isdigit() or (arg.startswith("-") and arg[1:].isdigit()):
+                return
+
+            # Пропускаем вызовы конструкторов
+            if "(" in arg:
+                # Это вызов функции или конструктора
+                return
+
+            # Проверяем обычные переменные
+            if arg.isalpha():
                 if not self.find_symbol_in_scope(arg, level):
                     self.add_error(f"аргумент '{arg}' не объявлен", scope_idx, node_idx)
                 elif self.is_variable_deleted(arg, level):
@@ -1567,6 +1633,14 @@ class JSONValidator:
         # Если аргумент - AST (словарь)
         elif isinstance(arg, dict):
             arg_type = arg.get("type")
+
+            # Пропускаем конструкторы классов
+            if arg_type == "constructor_call":
+                return
+
+            # Пропускаем литералы
+            if arg_type == "literal":
+                return
 
             # Извлекаем зависимости из AST
             dependencies = self._extract_dependencies_from_ast(arg)
@@ -2714,7 +2788,7 @@ class JSONValidator:
                     if (
                         isinstance(dep, str)
                         and dep.isalpha()
-                        and dep not in ["True", "False", "None"]
+                        and dep not in ["True", "False", "None", "NULL"]
                     ):
                         used_vars.add(dep)
 
@@ -2725,6 +2799,7 @@ class JSONValidator:
                         "True",
                         "False",
                         "None",
+                        "NULL",
                     ]:
                         used_vars.add(symbol)
 
@@ -2734,7 +2809,7 @@ class JSONValidator:
                     if (
                         isinstance(arg, str)
                         and arg.isalpha()
-                        and arg not in ["True", "False", "None"]
+                        and arg not in ["True", "False", "None", "NULL"]
                     ):
                         used_vars.add(arg)
 
@@ -2758,6 +2833,10 @@ class JSONValidator:
 
         # Находим неиспользуемые переменные
         for var in local_vars:
+            # Пропускаем параметр 'self' в методах
+            if var == "self" and scope.get("type") in ["constructor", "class_method"]:
+                continue
+
             if var not in used_vars:
                 self.add_warning(
                     f"переменная '{var}' объявлена, но нигде не используется",
@@ -3100,6 +3179,18 @@ class JSONValidator:
 
     def find_symbol_in_scope(self, symbol_name: str, current_level: int) -> bool:
         """Ищет символ в текущем или родительских scope'ах"""
+        # Проверяем встроенные функции
+        if symbol_name in self.builtin_functions:
+            return True
+
+        # Проверяем пользовательские функции
+        if symbol_name in self.functions:
+            return True
+
+        # Проверяем классы
+        if symbol_name in self.classes:
+            return True
+
         # Проверяем текущий scope
         if (
             current_level in self.scope_symbols
@@ -3131,6 +3222,10 @@ class JSONValidator:
         # Проверяем встроенные функции
         if symbol_name in self.builtin_functions:
             return {"name": symbol_name, "type": "function", "key": "builtin_function"}
+
+        # Проверяем классы
+        if symbol_name in self.classes:
+            return self.classes[symbol_name]
 
         # Сначала проверяем текущий scope
         if (
@@ -3962,3 +4057,345 @@ class JSONValidator:
                 scope_idx,
                 None,
             )
+
+    def check_undefined_methods(self, scope: Dict, scope_idx: int):
+        """Проверяет, что все используемые методы определены в классе или его родителях"""
+        scope_type = scope.get("type")
+
+        if scope_type not in ["function", "constructor", "class_method", "module"]:
+            return
+
+        # Собираем все вызовы методов в текущем scope
+        method_calls = []
+
+        graph = scope.get("graph", [])
+        for node_idx, node in enumerate(graph):
+            node_type = node.get("node")
+
+            if node_type == "method_call":
+                obj_name = node.get("object", "")
+                method_name = node.get("method", "")
+
+                if obj_name and method_name:
+                    # Добавляем в список для проверки
+                    method_calls.append(
+                        {
+                            "obj": obj_name,
+                            "method": method_name,
+                            "node_idx": node_idx,
+                            "content": node.get("content", ""),
+                        }
+                    )
+
+            # Также проверяем вызовы методов в AST
+            if "expression_ast" in node:
+                self._extract_method_calls_from_ast(
+                    node["expression_ast"],
+                    method_calls,
+                    node_idx,
+                    node.get("content", ""),
+                )
+
+        # Уникальные проверки (чтобы избежать дублирования)
+        checked_calls = set()
+
+        # Проверяем каждый вызов метода
+        for call in method_calls:
+            obj_name = call["obj"]
+            method_name = call["method"]
+            node_idx = call["node_idx"]
+            content = call["content"]
+
+            # Пропускаем, если уже проверяли эту комбинацию
+            call_key = f"{obj_name}.{method_name}.{node_idx}"
+            if call_key in checked_calls:
+                continue
+            checked_calls.add(call_key)
+
+            # Получаем информацию об объекте
+            obj_info = self.get_symbol_info(obj_name, scope.get("level", 0))
+            if not obj_info:
+                # Объект не найден - другая проверка это поймает
+                continue
+
+            obj_type = obj_info.get("type", "")
+
+            # Пропускаем, если тип неизвестен
+            if not obj_type or obj_type == "unknown":
+                continue
+
+            # Проверяем, является ли тип классом
+            class_found = False
+
+            # Ищем класс во всех scope'ах
+            for s in self.all_scopes:
+                if (
+                    s.get("type") == "class_declaration"
+                    and s.get("class_name") == obj_type
+                ):
+                    class_found = True
+                    # Добавляем в classes для будущих проверок
+                    if obj_type not in self.classes:
+                        self._add_class_to_registry(s)
+
+                    # Проверяем метод
+                    if not self._method_exists_in_class_hierarchy(
+                        obj_type, method_name
+                    ):
+                        self.add_error(
+                            f"метод '{method_name}' не определен для объекта типа '{obj_type}'",
+                            scope_idx,
+                            node_idx,
+                        )
+                    break
+
+            if not class_found:
+                # Проверяем встроенные типы
+                if obj_type in ["str", "list", "dict", "set", "tuple"]:
+                    if not self._is_builtin_method_for_type(obj_type, method_name):
+                        self.add_error(
+                            f"метод '{method_name}' не существует для типа '{obj_type}'",
+                            scope_idx,
+                            node_idx,
+                        )
+                elif obj_type in self.builtin_functions:
+                    # Это встроенная функция, а не объект
+                    continue
+                else:
+                    # Неизвестный тип - возможно, это ошибка в другом месте
+                    pass
+
+    def _method_exists_in_class_hierarchy(
+        self, class_name: str, method_name: str
+    ) -> bool:
+        """Проверяет, существует ли метод в классе или его иерархии наследования"""
+        # Сначала ищем среди встроенных методов стандартных типов
+        if class_name in ["str", "list", "dict", "set", "tuple"]:
+            return self._is_builtin_method_for_type(class_name, method_name)
+
+        visited = set()
+
+        def search_in_class(cls_name):
+            if cls_name in visited:
+                return False
+            visited.add(cls_name)
+
+            # Находим класс
+            class_scope = None
+            for s in self.all_scopes:
+                if (
+                    s.get("type") == "class_declaration"
+                    and s.get("class_name") == cls_name
+                ):
+                    class_scope = s
+                    break
+
+            if not class_scope:
+                # Проверяем, не является ли это встроенным типом
+                if cls_name in [
+                    "str",
+                    "int",
+                    "bool",
+                    "float",
+                    "list",
+                    "dict",
+                    "set",
+                    "tuple",
+                ]:
+                    return self._is_builtin_method_for_type(cls_name, method_name)
+                return False
+
+            # Проверяем методы текущего класса
+            for method in class_scope.get("methods", []):
+                if method.get("name") == method_name:
+                    return True
+
+            # Проверяем статические методы
+            for method in class_scope.get("static_methods", []):
+                if method.get("name") == method_name:
+                    return True
+
+            # Проверяем методы класса (classmethod)
+            for method in class_scope.get("class_methods", []):
+                if method.get("name") == method_name:
+                    return True
+
+            # Рекурсивно проверяем базовые классы
+            for base_class in class_scope.get("base_classes", []):
+                if search_in_class(base_class):
+                    return True
+
+            return False
+
+        return search_in_class(class_name)
+
+    def _extract_method_calls_from_ast(
+        self, ast: Dict, method_calls: list, node_idx: int, content: str = ""
+    ):
+        """Извлекает вызовы методов из AST"""
+        if not isinstance(ast, dict):
+            return
+
+        node_type = ast.get("type")
+
+        if node_type == "method_call":
+            obj_name = ast.get("object", "")
+            method_name = ast.get("method", "")
+
+            if obj_name and method_name:
+                method_calls.append(
+                    {
+                        "obj": obj_name,
+                        "method": method_name,
+                        "node_idx": node_idx,
+                        "content": content,
+                    }
+                )
+
+            # Рекурсивно проверяем аргументы
+            for arg in ast.get("arguments", []):
+                self._extract_method_calls_from_ast(
+                    arg, method_calls, node_idx, content
+                )
+
+        elif node_type == "function_call":
+            # Рекурсивно проверяем аргументы функций
+            for arg in ast.get("arguments", []):
+                self._extract_method_calls_from_ast(
+                    arg, method_calls, node_idx, content
+                )
+
+        elif node_type == "binary_operation":
+            self._extract_method_calls_from_ast(
+                ast.get("left"), method_calls, node_idx, content
+            )
+            self._extract_method_calls_from_ast(
+                ast.get("right"), method_calls, node_idx, content
+            )
+
+        elif node_type == "unary_operation":
+            self._extract_method_calls_from_ast(
+                ast.get("operand"), method_calls, node_idx, content
+            )
+
+        elif node_type == "ternary_operator":
+            self._extract_method_calls_from_ast(
+                ast.get("condition"), method_calls, node_idx, content
+            )
+            self._extract_method_calls_from_ast(
+                ast.get("true_expr"), method_calls, node_idx, content
+            )
+            self._extract_method_calls_from_ast(
+                ast.get("false_expr"), method_calls, node_idx, content
+            )
+
+        elif node_type == "list_literal":
+            for item in ast.get("items", []):
+                self._extract_method_calls_from_ast(
+                    item, method_calls, node_idx, content
+                )
+
+        elif node_type == "tuple_literal":
+            for item in ast.get("items", []):
+                self._extract_method_calls_from_ast(
+                    item, method_calls, node_idx, content
+                )
+
+    def _is_builtin_method_for_type(self, type_name: str, method_name: str) -> bool:
+        """Проверяет, является ли метод встроенным для данного типа"""
+        builtin_methods = {
+            "str": [
+                "upper",
+                "lower",
+                "split",
+                "strip",
+                "replace",
+                "find",
+                "startswith",
+                "endswith",
+                "isdigit",
+                "isalpha",
+                "format",
+                "join",
+                "capitalize",
+            ],
+            "list": [
+                "append",
+                "extend",
+                "insert",
+                "remove",
+                "pop",
+                "clear",
+                "index",
+                "count",
+                "sort",
+                "reverse",
+                "copy",
+            ],
+            "dict": [
+                "get",
+                "keys",
+                "values",
+                "items",
+                "update",
+                "pop",
+                "clear",
+                "copy",
+            ],
+            "set": [
+                "add",
+                "remove",
+                "discard",
+                "pop",
+                "clear",
+                "union",
+                "intersection",
+                "difference",
+                "copy",
+            ],
+            "tuple": ["count", "index"],
+        }
+
+        if type_name in builtin_methods:
+            return method_name in builtin_methods[type_name]
+
+        return False
+
+    def _add_class_to_registry(self, class_scope: Dict):
+        """Добавляет класс в реестр классов"""
+        class_name = class_scope.get("class_name")
+        if not class_name or class_name in self.classes:
+            return
+
+        # Собираем информацию о методах класса
+        methods_info = []
+        for method in class_scope.get("methods", []):
+            methods_info.append(
+                {
+                    "name": method.get("name"),
+                    "is_static": method.get("is_static", False),
+                    "is_classmethod": method.get("is_classmethod", False),
+                    "parameters": method.get("parameters", []),
+                    "return_type": method.get("return_type", ""),
+                }
+            )
+
+        self.classes[class_name] = {
+            "name": class_name,
+            "key": "class",
+            "type": "class",
+            "value": None,
+            "id": class_name,
+            "is_deleted": False,
+            "methods": methods_info,
+            "attributes": class_scope.get("attributes", []),
+            "static_methods": class_scope.get("static_methods", []),
+            "class_methods": class_scope.get("class_methods", []),
+            "base_classes": class_scope.get("base_classes", []),
+        }
+
+        # Также добавляем в scope_symbols
+        level = class_scope.get("level", 0)
+        if level not in self.scope_symbols:
+            self.scope_symbols[level] = {}
+        self.scope_symbols[level][class_name] = self.classes[class_name]
