@@ -67,6 +67,10 @@ class CCodeGenerator:
             "not": "!",
         }
 
+        self.class_hierarchy = {}  # {class_name: [parent_classes]}
+        self.inherited_methods = {}  # {class_name: {method_name: origin_class}}
+        self.all_class_methods = {}  # {class_name: {method_name: method_info}}
+
     def reset(self):
         """Сброс состояния генератора"""
         self.output = []
@@ -2376,39 +2380,41 @@ class CCodeGenerator:
         """Генерирует C код из JSON AST"""
         self.reset()
 
-        # Сначала собираем все типы, которые нужны
+        # 1. Собираем все типы
         self.collect_types_from_ast(json_data)
 
-        # Анализируем классы и их поля
+        # 2. Анализируем наследование классов
+        self.analyze_class_inheritance(json_data)
+
+        # 3. Анализируем классы и их поля
         self.analyze_classes(json_data)
 
-        # Собираем импорты и объявления
+        # 4. Собираем импорты и объявления
         self.collect_imports_and_declarations(json_data)
 
-        # 1. Генерируем заголовок с импортами
+        # 5. Генерируем заголовок с импортами
         self.generate_c_imports()
 
-        # 2. Генерируем forward declarations
-        self.generate_forward_declarations()
-
-        # 3. Генерируем структуры классов (теперь с полями)
+        # 6. Генерируем структуры классов (ПЕРЕД forward declarations!)
         for scope in json_data:
             if scope.get("type") == "module":
                 for node in scope.get("graph", []):
                     if node.get("node") == "class_declaration":
-                        # Используем новый метод с полями
                         self.generate_class_declaration_with_fields(node)
 
-        # 4. Генерируем вспомогательные структуры и функции
+        # 7. Генерируем forward declarations
+        self.generate_forward_declarations()
+
+        # 8. Генерируем вспомогательные структуры и функции
         self.generate_helpers_section()
 
-        # 5. Генерируем конструкторы классов
+        # 9. Генерируем конструкторы классов
         self.generate_class_constructors(json_data)
 
-        # 6. Генерируем методы классов
-        self.generate_class_methods(json_data)
+        # 10. Генерируем все методы классов
+        self.generate_all_methods(json_data)
 
-        # 7. Генерируем код для каждой функции
+        # 11. Генерируем код для каждой функции
         for scope in json_data:
             if scope.get("type") == "function" and not scope.get("is_stub", False):
                 self.generate_function_scope(scope)
@@ -3159,11 +3165,11 @@ class CCodeGenerator:
 
         # Определяем параметры
         params = []
-        param_names = []  # Сохраняем имена параметров для подстановки
+        param_names = []
         if init_method:
             init_params = init_method.get("parameters", [])
             # Пропускаем self параметр
-            for param in init_params[1:]:  # Первый параметр - self
+            for param in init_params[1:]:
                 param_name = param.get("name", "")
                 param_type = param.get("type", "int")
                 c_param_type = self.map_type_to_c(param_type)
@@ -3188,23 +3194,28 @@ class CCodeGenerator:
         self.add_line(f"}}")
         self.add_empty_line()
 
-        # Инициализируем таблицу виртуальных методов
-        self.add_line(f"// Инициализация таблицы виртуальных методов")
-        self.add_line(f"obj->vtable = malloc(sizeof(void*) * 16);")
-        self.add_empty_line()
-
-        # Инициализируем поля на основе анализа метода __init__
-        # TODO
+        # Генерируем логику инициализации
         if init_scope:
-            # ПЕРЕДАЕМ param_names в _generate_init_logic
             self._generate_init_logic(class_name, init_scope, param_names)
         else:
-            # Если нет scope, но есть метод, все равно пытаемся инициализировать
-            # базовые поля если они известны из class_fields
-            if class_name in self.class_fields:
-                for field_name in self.class_fields[class_name]:
-                    # Инициализируем значениями по умолчанию
-                    self.add_line(f"obj->{field_name} = 0;")
+            # Базовая инициализация для классов без __init__
+            base_classes = self.class_hierarchy.get(class_name, [])
+            if not base_classes:
+                # Корневой класс
+                self.add_line(f"obj->vtable = malloc(sizeof(void*) * 16);")
+            else:
+                # Производный класс
+                self.add_line(f"obj->base.vtable = malloc(sizeof(void*) * 16);")
+
+            self.add_line(
+                f"if (!obj->{'vtable' if not base_classes else 'base.vtable'}) {{"
+            )
+            self.indent_level += 1
+            self.add_line(f'fprintf(stderr, "Memory allocation failed for vtable\\n");')
+            self.add_line(f"free(obj);")
+            self.add_line(f"exit(1);")
+            self.indent_level -= 1
+            self.add_line(f"}}")
 
         self.add_line(f"return obj;")
         self.indent_level -= 1
@@ -3897,10 +3908,27 @@ class CCodeGenerator:
                 self.generate_class_method_implementation(class_name, scope)
 
     def generate_class_method_implementation(self, class_name: str, scope: Dict):
-        """Генерирует реализацию метода класса"""
+        """Генерирует реализацию метода класса с учетом наследования"""
         method_name = scope.get("method_name", "")
         return_type = scope.get("return_type", "void")
         parameters = scope.get("parameters", [])
+
+        # Получаем информацию о методе из иерархии
+        method_info = self.all_class_methods.get(class_name, {}).get(method_name)
+
+        if not method_info:
+            print(f"WARNING: Метод {method_name} не найден для класса {class_name}")
+            return
+
+        # Определяем, является ли метод унаследованным
+        is_inherited = method_info.get("origin") != class_name
+
+        # Для унаследованных методов не генерируем реализацию повторно
+        if is_inherited:
+            self.add_line(
+                f"// Метод {method_name} унаследован от {method_info['origin']}"
+            )
+            return
 
         # Входим в scope метода
         self.enter_scope()
@@ -4091,30 +4119,37 @@ class CCodeGenerator:
     def generate_class_declaration_with_fields(self, node: Dict):
         """Генерирует структуру для класса C с полями"""
         class_name = node.get("class_name", "")
+        base_classes = node.get("base_classes", [])
 
         # Регистрируем класс
         self.class_types.add(class_name)
         self.type_map[class_name] = f"{class_name}*"
 
+        # Генерируем forward declaration
+        self.add_line(f"typedef struct {class_name} {class_name};")
+
         # Генерируем структуру
-        self.add_line(f"typedef struct {class_name} {{")
+        self.add_line(f"struct {class_name} {{")
         self.indent_level += 1
 
-        # Добавляем таблицу виртуальных методов
-        self.add_line(f"void** vtable;")
+        # Добавляем наследование через композицию
+        if base_classes and len(base_classes) > 0:
+            parent_class = base_classes[0]
+            self.add_line(f"// Наследование от {parent_class}")
+            self.add_line(f"{parent_class} base;")
+        else:
+            # Для корневого класса Object добавляем vtable
+            self.add_line(f"void** vtable;")
 
-        # Добавляем поля класса, если они есть
+        # Добавляем поля класса
         if class_name in self.class_fields and self.class_fields[class_name]:
             self.add_line(f"// Поля класса {class_name}")
             for field_name, field_type in self.class_fields[class_name].items():
                 c_type = self.map_type_to_c(field_type)
                 self.add_line(f"{c_type} {field_name};")
-        else:
-            # Если поля не найдены, все равно генерируем минимальную структуру
-            self.add_line(f"// Нет явных полей для {class_name}")
 
         self.indent_level -= 1
-        self.add_line(f"}} {class_name};")
+        self.add_line(f"}};")
         self.add_empty_line()
 
     def _try_generate_init_logic(
@@ -4414,55 +4449,36 @@ class CCodeGenerator:
     ):
         """Генерирует логику инициализации полей из метода __init__"""
         if not init_scope:
-            print(f"DEBUG _generate_init_logic: No init_scope for {class_name}")
             return
 
         graph = init_scope.get("graph", [])
-
-        print(
-            f"DEBUG _generate_init_logic: Processing {len(graph)} nodes for {class_name}"
-        )
-        print(f"DEBUG _generate_init_logic: param_names = {param_names}")
-
-        for i, node in enumerate(graph):
-            print(f"DEBUG _generate_init_logic: Node {i}: {node}")
-
-        if not graph:
-            # Если нет графа, просто инициализируем поля значениями по умолчанию
-            if class_name in self.class_fields:
-                for field_name in self.class_fields[class_name]:
-                    self.add_line(f"obj->{field_name} = 0;")
-            return
+        base_classes = self.class_hierarchy.get(class_name, [])
 
         self.add_line(f"// Инициализация полей класса {class_name}")
 
-        for i, node in enumerate(graph):
+        # Инициализируем vtable
+        if not base_classes:
+            # Для корневого класса (например, Object) - прямое поле vtable
+            self.add_line(f"obj->vtable = malloc(sizeof(void*) * 16);")
+            self.add_line(f"if (!obj->vtable) {{")
+        else:
+            # Для производных классов - vtable в базовом классе
+            self.add_line(f"obj->base.vtable = malloc(sizeof(void*) * 16);")
+            self.add_line(f"if (!obj->base.vtable) {{")
+
+        self.indent_level += 1
+        self.add_line(f'fprintf(stderr, "Memory allocation failed for vtable\\n");')
+        self.add_line(f"free(obj);")
+        self.add_line(f"exit(1);")
+        self.indent_level -= 1
+        self.add_line(f"}}")
+
+        # Инициализация полей из метода __init__
+        for node in graph:
             node_type = node.get("node", "")
-            print(f"DEBUG _generate_init_logic: Node {i}: type={node_type}")
 
             if node_type == "attribute_assignment":
-                # Присваивание атрибуту: self.weights = in_dim + out_dim
-                print(f"DEBUG _generate_init_logic: Found attribute_assignment: {node}")
                 self._process_attribute_assignment_in_init(node, param_names)
-
-            elif node_type == "expression":
-                # Выражение, которое может содержать операции присваивания
-                print(f"DEBUG _generate_init_logic: Found expression: {node}")
-                operations = node.get("operations", [])
-                for op in operations:
-                    if op.get("type") == "ATTRIBUTE_ASSIGN":
-                        object_name = op.get("object", "")
-                        attribute = op.get("attribute", "")
-                        value = op.get("value", {})
-
-                        if object_name == "self":
-                            value_expr = self._generate_expression_from_ast_for_init(
-                                value, param_names
-                            )
-                            if value_expr:
-                                self.add_line(f"obj->{attribute} = {value_expr};")
-                            else:
-                                self.add_line(f"obj->{attribute} = 0; // default value")
 
     def generate_input(self, node: Dict):
         """Генерирует код для функции input()"""
@@ -5443,3 +5459,208 @@ class CCodeGenerator:
             )
 
             return f"{target} = {method_call};"
+
+    def analyze_class_inheritance(self, json_data: List[Dict]):
+        """Анализирует иерархию наследования классов"""
+        # Сначала собираем информацию о всех классах
+        class_info = {}
+
+        for scope in json_data:
+            if scope.get("type") == "module":
+                for node in scope.get("graph", []):
+                    if node.get("node") == "class_declaration":
+                        class_name = node.get("class_name", "")
+                        base_classes = node.get("base_classes", [])
+                        methods = node.get("methods", [])
+
+                        class_info[class_name] = {
+                            "base_classes": base_classes,
+                            "methods": {method["name"]: method for method in methods},
+                        }
+
+        # Строим иерархию наследования
+        for class_name, info in class_info.items():
+            self.class_hierarchy[class_name] = info["base_classes"]
+            self.all_class_methods[class_name] = {}
+
+            # Начинаем с методов текущего класса
+            for method_name, method_info in info["methods"].items():
+                self.all_class_methods[class_name][method_name] = {
+                    **method_info,
+                    "origin": class_name,
+                }
+
+            # Добавляем методы из родительских классов (рекурсивно)
+            self._inherit_methods_recursive(class_name, class_info)
+
+    def _inherit_methods_recursive(
+        self, class_name: str, class_info: Dict, visited=None
+    ):
+        """Рекурсивно добавляет методы из родительских классов"""
+        if visited is None:
+            visited = set()
+
+        if class_name in visited:
+            return
+        visited.add(class_name)
+
+        if class_name not in class_info:
+            return
+
+        base_classes = class_info[class_name]["base_classes"]
+
+        for base_class in base_classes:
+            if base_class in class_info:
+                # Добавляем методы родительского класса, если их еще нет
+                for method_name, method_info in class_info[base_class][
+                    "methods"
+                ].items():
+                    if method_name not in self.all_class_methods[class_name]:
+                        self.all_class_methods[class_name][method_name] = {
+                            **method_info,
+                            "origin": base_class,
+                        }
+
+                # Рекурсивно обрабатываем родительские классы родителя
+                self._inherit_methods_recursive(base_class, class_info, visited)
+
+    def generate_all_methods(self, json_data: List[Dict]):
+        """Генерирует все методы всех классов"""
+        # Сначала собираем все методы классов
+        class_method_scopes = {}
+
+        for scope in json_data:
+            if scope.get("type") == "class_method":
+                class_name = scope.get("class_name", "")
+                method_name = scope.get("method_name", "")
+
+                if class_name not in class_method_scopes:
+                    class_method_scopes[class_name] = {}
+
+                class_method_scopes[class_name][method_name] = scope
+
+        # Генерируем методы для каждого класса
+        for class_name, method_scopes in class_method_scopes.items():
+            all_methods = self.all_class_methods.get(class_name, {})
+
+            for method_name in all_methods.keys():
+                if method_name in method_scopes:
+                    # Метод определен в этом классе
+                    scope = method_scopes[method_name]
+                    self.generate_class_method_implementation(class_name, scope)
+                else:
+                    # Метод унаследован - не генерируем
+                    method_info = all_methods[method_name]
+                    if method_info.get("origin") != class_name:
+                        self.add_line(
+                            f"// Метод {class_name}_{method_name} унаследован от {method_info['origin']}"
+                        )
+                        # Генерируем заглушку или вызываем родительский метод
+                        self._generate_inherited_method_stub(class_name, method_info)
+
+    def generate_method_call_expression(self, ast: Dict) -> str:
+        """Генерирует выражение вызова метода с учетом наследования"""
+        object_name = ast.get("object", "")
+        method_name = ast.get("method", "")
+        args = ast.get("arguments", [])
+
+        # Проверяем тип объекта
+        var_info = self.get_variable_info(object_name)
+        if not var_info:
+            return f"// ERROR: Объект '{object_name}' не найден"
+
+        obj_type = var_info.get("py_type", "")
+
+        # Определяем, какой класс на самом деле содержит метод
+        actual_class = self._find_method_class(obj_type, method_name)
+
+        if not actual_class:
+            return f"// ERROR: Метод '{method_name}' не найден для типа '{obj_type}'"
+
+        # Генерируем аргументы
+        arg_strings = []
+        for arg in args:
+            if isinstance(arg, dict):
+                arg_strings.append(self.generate_expression(arg))
+            else:
+                arg_strings.append(str(arg))
+
+        args_str = ", ".join(arg_strings) if arg_strings else ""
+
+        # Если это self (внутри метода класса), вызываем напрямую
+        if object_name == "self":
+            return f"{obj_type}_{method_name}({object_name}, {args_str})"
+        else:
+            # Внешний вызов - используем указатель на объект
+            full_args = f"{object_name}"
+            if args_str:
+                full_args = f"{object_name}, {args_str}"
+
+            return f"{actual_class}_{method_name}({full_args})"
+
+    def _find_method_class(self, class_name: str, method_name: str) -> str:
+        """Находит класс, в котором определен метод (с учетом наследования)"""
+        if class_name in self.all_class_methods:
+            methods = self.all_class_methods[class_name]
+            if method_name in methods:
+                method_info = methods[method_name]
+                return method_info.get("origin", class_name)
+
+        # Проверяем родительские классы
+        if class_name in self.class_hierarchy:
+            for parent_class in self.class_hierarchy[class_name]:
+                result = self._find_method_class(parent_class, method_name)
+                if result:
+                    return result
+
+        return None
+
+    def _generate_inherited_method_stub(self, class_name: str, method_info: Dict):
+        """Генерирует заглушку для унаследованного метода"""
+        method_name = method_info["name"]
+        return_type = method_info.get("return_type", "void")
+        parameters = method_info.get("parameters", [])
+
+        origin_class = method_info.get("origin")
+
+        if not origin_class:
+            return
+
+        # Генерируем сигнатуру
+        param_decls = []
+        for param in parameters:
+            param_name = param.get("name", "")
+            param_type = param.get("type", "int")
+
+            if param_name == "self":
+                c_param_type = f"{class_name}*"
+            else:
+                c_param_type = self.map_type_to_c(param_type)
+
+            param_decls.append(f"{c_param_type} {param_name}")
+
+        c_return_type = self.map_type_to_c(return_type)
+        params_str = ", ".join(param_decls) if param_decls else "void"
+
+        self.add_line(f"{c_return_type} {class_name}_{method_name}({params_str}) {{")
+        self.indent_level += 1
+
+        # Вызываем родительский метод с приведением типа
+        if return_type != "void":
+            if origin_class == class_name:
+                # Метод определен в этом классе (не должен вызываться здесь)
+                self.add_line(f"return 0;")
+            else:
+                # Приводим self к типу родительского класса
+                self.add_line(f"// Вызов унаследованного метода из {origin_class}")
+                self.add_line(f"{origin_class}* base_obj = ({origin_class}*)self;")
+                self.add_line(f"return {origin_class}_{method_name}(base_obj);")
+        else:
+            if origin_class != class_name:
+                self.add_line(f"// Вызов унаследованного метода из {origin_class}")
+                self.add_line(f"{origin_class}* base_obj = ({origin_class}*)self;")
+                self.add_line(f"{origin_class}_{method_name}(base_obj);")
+
+        self.indent_level -= 1
+        self.add_line("}")
+        self.add_empty_line()

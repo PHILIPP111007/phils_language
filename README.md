@@ -149,3 +149,31 @@ def main() -> int:
 
     return 0
 ```
+
+```python
+class A:
+    def get_age_2(self) -> int:
+        return 1
+
+class B:
+    def get_age(self) -> int:
+        return 1
+    
+    def get_age_1(self) -> int:
+        return 10
+
+class User(A, B):
+    def __init__(self, age: int, a: int) -> None:
+        self.age = age
+    
+    def get_age(self) -> int:
+        return self.age
+
+def main() -> int:
+    var u: User = User(10, 1)
+    var age: int = u.get_age_2()
+
+    print(age)
+
+    return 0
+```
