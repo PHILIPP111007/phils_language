@@ -177,3 +177,34 @@ def main() -> int:
 
     return 0
 ```
+
+Pthread:
+
+```python
+cimport <stdio.h>
+cimport <stdlib.h>
+cimport <string.h>
+cimport <stdbool.h>
+cimport <pthread.h>
+
+class Object:
+    def __init__(self, a: int):
+        self.a = a
+    
+    def get_a(self) -> int:
+        return self.a
+
+def backward_worker(arg: None) -> None:
+    var a: Object = arg
+    var b: int = a.get_a()
+    print(b)
+    return None
+
+def main() -> int:
+    var thread: pthread_t = None
+    var backward_thread_data: Object = Object(100)
+
+    @pthread_create(&thread, NULL, backward_worker, backward_thread_data)
+    @pthread_join(thread, NULL)
+    return 0
+```

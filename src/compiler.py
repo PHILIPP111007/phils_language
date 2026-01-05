@@ -1,5 +1,6 @@
 import re
 from typing import Dict, List, Optional
+from src.modules.constants import KNOWN_C_TYPES
 
 
 class CCodeGenerator:
@@ -43,6 +44,8 @@ class CCodeGenerator:
             "bytes": "unsigned char*",
             "bytearray": "unsigned char*",
         }
+
+        self.known_c_types = KNOWN_C_TYPES
 
         # Поддержка обобщенных типов
         self.generic_type_map = {}  # Кэш для сгенерированных типов
@@ -115,7 +118,12 @@ class CCodeGenerator:
         return {}
 
     def map_type_to_c(self, py_type: str, is_pointer: bool = False) -> str:
-        """Преобразует тип Python в тип C"""
+        """Преобразует тип Python в тип C с поддержкой автоматического распознавания C типов"""
+
+        # Проверяем, не является ли это уже C типом
+        if self._is_c_type(py_type):
+            # Если это известный C тип, возвращаем как есть
+            return py_type
 
         if self._is_class_type(py_type):
             # Классы в C - это указатели на структуры
@@ -136,18 +144,6 @@ class CCodeGenerator:
             self.generate_tuple_struct(py_type)
             struct_name = self.generate_tuple_struct_name(py_type)
 
-            # Убедимся, что имя структуры корректное
-            if struct_name == "tuple_unknown":
-                # Попробуем определить тип по содержимому
-                match = re.match(r"tuple\[([^\]]+)\]", py_type)
-                if match:
-                    inner = match.group(1)
-                    if "," not in inner:
-                        struct_name = f"tuple_{inner}"
-                    else:
-                        clean_inner = self.clean_type_name_for_c(inner)
-                        struct_name = f"tuple_{clean_inner}"
-
             if is_pointer:
                 return f"{struct_name}*"
             return struct_name
@@ -167,6 +163,54 @@ class CCodeGenerator:
             if is_pointer:
                 return f"{c_type}*"
             return c_type
+
+    def _is_c_type(self, type_name: str) -> bool:
+        """Определяет, является ли тип известным C типом"""
+        if not isinstance(type_name, str):
+            return False
+
+        # Проверяем по базовым C типам
+        base_types = {
+            "int",
+            "float",
+            "double",
+            "char",
+            "bool",
+            "void",
+            "short",
+            "long",
+            "long long",
+            "unsigned",
+            "signed",
+        }
+
+        # Проверяем, является ли это известным C типом
+        if type_name in self.known_c_types:
+            return True
+
+        # Проверяем по шаблонам C типов
+        c_type_patterns = [
+            r"^[a-zA-Z_][a-zA-Z0-9_]*_t$",  # _t типы (pthread_t, size_t и т.д.)
+            r"^FILE$",
+            r"^clock_t$",
+            r"^time_t$",
+        ]
+
+        for pattern in c_type_patterns:
+            if re.match(pattern, type_name):
+                # Добавляем в известные типы
+                self.known_c_types.add(type_name)
+                return True
+
+        # Проверяем, содержит ли тип указатель
+        if "*" in type_name:
+            # Разделяем на базовый тип и указатели
+            base = type_name.replace("*", "").strip()
+            if self._is_c_type(base):
+                self.known_c_types.add(type_name)
+                return True
+
+        return False
 
     def declare_variable(self, name: str, var_type: str, is_pointer: bool = False):
         """Объявляет переменную в текущем scope"""
@@ -1946,7 +1990,7 @@ class CCodeGenerator:
             self.generated_helpers.extend([create_func, len_func])
 
     def generate_list_struct(self, py_type: str):
-        """Генерирует структуру C для списка любой вложенности с рекурсивной генерацией всех уровней"""
+        """Генерирует структуру C для списка любой вложенности"""
 
         # Получаем полную информацию о типе
         type_info = self.extract_nested_type_info(py_type)
@@ -1957,41 +2001,29 @@ class CCodeGenerator:
 
         struct_name = type_info.get("struct_name")
         if not struct_name:
+            print(f"ERROR: Нет struct_name для типа {py_type}")
             return
 
         print(f"DEBUG generate_list_struct: {py_type}")
         print(f"  struct_name: {struct_name}")
-        print(f"  is_leaf: {type_info.get('is_leaf')}")
-
-        # Рекурсивно генерируем структуры для всех внутренних типов
-        inner_info = type_info.get("inner_info")
-        if inner_info and not inner_info.get("is_leaf", True):
-            # Если внутренний тип - тоже список, генерируем его структуру
-            inner_py_type = inner_info.get("py_type", "")
-            if inner_py_type:
-                self.generate_list_struct(inner_py_type)
-        elif inner_info and inner_info.get("is_leaf", True):
-            # Если внутренний тип - листовой, генерируем структуру для него
-            leaf_py_type = inner_info.get("py_type", "int")
-            if leaf_py_type.startswith("list["):
-                # Это не должно случиться если is_leaf=True
-                pass
-            else:
-                # Для листового типа тоже генерируем структуру (list_int, list_float и т.д.)
-                leaf_struct_name = f"list_{self.clean_type_name_for_c(leaf_py_type)}"
-                if leaf_struct_name != struct_name:
-                    # Генерируем структуру для листового списка
-                    self._generate_leaf_list_struct(leaf_py_type, leaf_struct_name)
+        print(f"  element_type: {type_info.get('element_type')}")
+        print(f"  element_py_type: {type_info.get('element_py_type')}")
+        print(f"  is_c_type: {type_info.get('is_c_type')}")
 
         # Генерируем структуру только если еще не генерировали
         if struct_name not in self.generated_structs:
             self.generated_structs.add(struct_name)
 
-            # Генерируем структуру
+            # Определяем element_type
             element_type = type_info.get("element_type", "void*")
+            element_py_type = type_info.get("element_py_type")
+            is_c_type = type_info.get("is_c_type", False)
 
+            print(f"  Генерация структуры {struct_name} с element_type={element_type}")
+
+            # ВАЖНО: Создаем правильную структуру
             struct_code = f"typedef struct {{\n"
-            struct_code += f"    {element_type}* data;\n"
+            struct_code += f"    {element_type}* data;  // Указатель на массив элементов типа {element_type}\n"
             struct_code += f"    int size;\n"
             struct_code += f"    int capacity;\n"
             struct_code += f"}} {struct_name};\n\n"
@@ -2000,10 +2032,10 @@ class CCodeGenerator:
 
             # Генерируем функции для этой структуры
             self._generate_list_functions(
-                struct_name,
-                element_type,
-                inner_info.get("py_type") if inner_info else None,
+                struct_name, element_type, element_py_type, is_c_type
             )
+        else:
+            print(f"DEBUG: Структура {struct_name} уже сгенерирована")
 
     def _generate_leaf_list_struct(self, leaf_type: str, struct_name: str):
         """Генерирует структуру для листового списка (например, list_int)"""
@@ -2029,14 +2061,27 @@ class CCodeGenerator:
         self._generate_list_functions(struct_name, element_type, leaf_type)
 
     def _generate_list_functions(
-        self, struct_name: str, element_type: str, element_py_type: str = None
+        self,
+        struct_name: str,
+        element_type: str,
+        element_py_type: str = None,
+        is_c_type: bool = False,
     ):
         """Генерирует функции для работы со списком"""
 
         print(
-            f"DEBUG _generate_list_functions: struct_name={struct_name}, element_type={element_type}"
+            f"DEBUG _generate_list_functions: struct_name={struct_name}, element_type={element_type}, is_c_type={is_c_type}"
         )
 
+        # Определяем, нужна ли специальная обработка для типа
+        if is_c_type:
+            # Для C типов генерируем универсальные функции
+            self._generate_generic_c_list_functions(
+                struct_name, element_type, element_py_type
+            )
+            return
+
+        # Оригинальный код для обычных типов...
         # Функция создания
         create_func = f"{struct_name}* create_{struct_name}(int initial_capacity) {{\n"
         create_func += f"    {struct_name}* list = malloc(sizeof({struct_name}));\n"
@@ -2105,11 +2150,128 @@ class CCodeGenerator:
         free_func += f"    }}\n"
         free_func += f"}}\n\n"
 
+        # Функция доступа к элементу (добавляем для всех типов)
+        get_func = (
+            f"{element_type} get_{struct_name}({struct_name}* list, int index) {{\n"
+        )
+        get_func += f"    if (!list || index < 0 || index >= list->size) {{\n"
+        get_func += f'        fprintf(stderr, "Index out of bounds in list\\n");\n'
+        get_func += f"        exit(1);\n"
+        get_func += f"    }}\n"
+        get_func += f"    return list->data[index];\n"
+        get_func += f"}}\n\n"
+
         # Добавляем все функции
         self.generated_helpers.append(create_func)
         self.generated_helpers.append(append_func)
         self.generated_helpers.append(len_func)
         self.generated_helpers.append(free_func)
+        self.generated_helpers.append(get_func)
+
+    def _generate_generic_c_list_functions(
+        self, struct_name: str, element_type: str, element_py_type: str
+    ):
+        """Генерирует универсальные функции для списков C типов"""
+
+        # Функция создания
+        create_func = f"{struct_name}* create_{struct_name}(int initial_capacity) {{\n"
+        create_func += f"    {struct_name}* list = malloc(sizeof({struct_name}));\n"
+        create_func += f"    if (!list) {{\n"
+        create_func += f'        fprintf(stderr, "Memory allocation failed for {struct_name}\\n");\n'
+        create_func += f"        exit(1);\n"
+        create_func += f"    }}\n"
+
+        # ВАЖНО: Используем element_type для размера
+        create_func += (
+            f"    list->data = malloc(initial_capacity * sizeof({element_type}));\n"
+        )
+        create_func += f"    if (!list->data) {{\n"
+        create_func += f'        fprintf(stderr, "Memory allocation failed for {struct_name} data\\n");\n'
+        create_func += f"        free(list);\n"
+        create_func += f"        exit(1);\n"
+        create_func += f"    }}\n"
+        create_func += f"    list->size = 0;\n"
+        create_func += f"    list->capacity = initial_capacity;\n"
+        create_func += f"    return list;\n"
+        create_func += f"}}\n\n"
+
+        # Функция добавления
+        append_func = (
+            f"void append_{struct_name}({struct_name}* list, {element_type} value) {{\n"
+        )
+        append_func += f"    if (list->size >= list->capacity) {{\n"
+        append_func += (
+            f"        list->capacity = list->capacity == 0 ? 4 : list->capacity * 2;\n"
+        )
+        append_func += f"        list->data = realloc(list->data, list->capacity * sizeof({element_type}));\n"
+        append_func += f"        if (!list->data) {{\n"
+        append_func += f'            fprintf(stderr, "Memory reallocation failed for {struct_name}\\n");\n'
+        append_func += f"            exit(1);\n"
+        append_func += f"        }}\n"
+        append_func += f"    }}\n"
+        append_func += f"    list->data[list->size] = value;\n"
+        append_func += f"    list->size++;\n"
+        append_func += f"}}\n\n"
+
+        # Функция len()
+        len_func = f"int builtin_len_{struct_name}({struct_name}* list) {{\n"
+        len_func += f"    if (!list) return 0;\n"
+        len_func += f"    return list->size;\n"
+        len_func += f"}}\n\n"
+
+        # Функция очистки
+        free_func = f"void free_{struct_name}({struct_name}* list) {{\n"
+        free_func += f"    if (list) {{\n"
+
+        # Для C типов проверяем, нужно ли освобождать элементы
+        if (
+            element_type.endswith("*")
+            and "char*" not in element_type
+            and "void*" not in element_type
+        ):
+            # Если это указатель на структуру (но не char* или void*)
+            # Определяем, есть ли у типа функция освобождения
+            base_type = element_type[:-1]  # Убираем *
+            if (
+                base_type in self.class_types
+                or f"free_{base_type}" in self.generated_helpers
+            ):
+                free_func += f"        for (int i = 0; i < list->size; i++) {{\n"
+                free_func += f"            if (list->data[i]) {{\n"
+                free_func += f"                free_{base_type}(list->data[i]);\n"
+                free_func += f"            }}\n"
+                free_func += f"        }}\n"
+            elif "[" in base_type:  # Если это массив
+                free_func += f"        for (int i = 0; i < list->size; i++) {{\n"
+                free_func += f"            if (list->data[i]) {{\n"
+                free_func += f"                free(list->data[i]);\n"
+                free_func += f"            }}\n"
+                free_func += f"        }}\n"
+
+        free_func += f"        free(list->data);\n"
+        free_func += f"        free(list);\n"
+        free_func += f"    }}\n"
+        free_func += f"}}\n\n"
+
+        # Функция доступа к элементу
+        get_func = (
+            f"{element_type} get_{struct_name}({struct_name}* list, int index) {{\n"
+        )
+        get_func += f"    if (!list || index < 0 || index >= list->size) {{\n"
+        get_func += (
+            f'        fprintf(stderr, "Index out of bounds in {struct_name}\\n");\n'
+        )
+        get_func += f"        exit(1);\n"
+        get_func += f"    }}\n"
+        get_func += f"    return list->data[index];\n"
+        get_func += f"}}\n\n"
+
+        # Добавляем все функции
+        self.generated_helpers.append(create_func)
+        self.generated_helpers.append(append_func)
+        self.generated_helpers.append(len_func)
+        self.generated_helpers.append(free_func)
+        self.generated_helpers.append(get_func)
 
     def _generate_nested_list_functions(
         self, struct_name: str, element_type: str, inner_info: Dict
@@ -2474,7 +2636,12 @@ class CCodeGenerator:
     def generate_list_struct_name(self, py_type: str) -> str:
         """Генерирует имя структуры для списка любой вложенности"""
         if not py_type.startswith("list["):
-            return f"list_{self.clean_type_name_for_c(py_type)}"
+            # Если это уже базовый тип (например, pthread_t)
+            clean_name = self.clean_type_name_for_c(py_type)
+            # pthread_t -> pthread_t, Object* -> ObjectPtr
+            if clean_name.endswith("*"):
+                clean_name = clean_name[:-1] + "Ptr"
+            return f"list_{clean_name}"
 
         # Используем уже существующий метод _generate_struct_name_recursive
         return self._generate_struct_name_recursive(py_type)
@@ -2601,16 +2768,23 @@ class CCodeGenerator:
 
         # Базовый случай: не список
         if not py_type.startswith("list["):
-            # Для листового типа создаем информацию о list_тип
+            # Для простых типов
+            is_c_type = self._is_c_type(py_type)
+            c_type = py_type if is_c_type else self.map_type_to_c(py_type)
             struct_name = f"list_{self.clean_type_name_for_c(py_type)}"
-            element_type = self.map_type_to_c(py_type)  # "int" для py_type="int"
+
+            print(
+                f"DEBUG: Базовый тип - is_c_type={is_c_type}, c_type={c_type}, struct_name={struct_name}"
+            )
 
             return {
                 "py_type": py_type,
                 "c_type": f"{struct_name}*",
                 "struct_name": struct_name,
-                "element_type": element_type,
+                "element_type": c_type,
+                "element_py_type": py_type,
                 "is_leaf": True,
+                "is_c_type": is_c_type,
                 "inner_info": None,
             }
 
@@ -2618,10 +2792,14 @@ class CCodeGenerator:
             # Извлекаем внутренний тип
             inner_type = self._parse_list_type(py_type)
             if not inner_type:
+                print(f"DEBUG: Не удалось извлечь внутренний тип из {py_type}")
                 return self._create_default_type_info()
+
+            print(f"DEBUG: Внутренний тип: {inner_type}")
 
             # Генерируем имя структуры
             struct_name = self._generate_struct_name_recursive(py_type)
+            print(f"DEBUG: Сгенерированное имя структуры: {struct_name}")
 
             # Рекурсивно анализируем внутренний тип
             inner_info = self.extract_nested_type_info(inner_type)
@@ -2631,10 +2809,11 @@ class CCodeGenerator:
 
             # Определяем element_type
             if is_leaf:
-                # Если это list[int], то element_type = int
-                element_type = self.map_type_to_c(
-                    inner_type
-                )  # "int" для inner_type="int"
+                # Если это list[T], то element_type = T
+                if self._is_c_type(inner_type):
+                    element_type = inner_type
+                else:
+                    element_type = self.map_type_to_c(inner_type)
             else:
                 # Если это list[list[...]], то element_type = inner_struct*
                 if inner_info.get("struct_name"):
@@ -2647,9 +2826,15 @@ class CCodeGenerator:
                 "c_type": f"{struct_name}*",
                 "struct_name": struct_name,
                 "element_type": element_type,
+                "element_py_type": inner_type,
                 "is_leaf": is_leaf,
+                "is_c_type": inner_info.get("is_c_type", False) if is_leaf else False,
                 "inner_info": inner_info,
             }
+
+            print(
+                f"DEBUG результат: struct_name={struct_name}, element_type={element_type}, is_c_type={result['is_c_type']}"
+            )
 
             return result
 
@@ -2660,9 +2845,15 @@ class CCodeGenerator:
     def _generate_struct_name_recursive(self, py_type: str) -> str:
         """Рекурсивно генерирует имя структуры для вложенного списка"""
         if not py_type.startswith("list["):
-            # Листовой тип
-            clean_name = self.clean_type_name_for_c(py_type)
-            return f"list_{clean_name}"
+            # Если это не список, проверяем, является ли это C типом
+            if self._is_c_type(py_type):
+                # Для C типов возвращаем list_имя_типа
+                clean_name = self.clean_type_name_for_c(py_type)
+                return f"list_{clean_name}"
+            else:
+                # Для других типов (int, float и т.д.)
+                clean_name = self.clean_type_name_for_c(py_type)
+                return f"list_{clean_name}"
 
         # Извлекаем внутренний тип
         inner_type = self._parse_list_type(py_type)

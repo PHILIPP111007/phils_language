@@ -46,3 +46,23 @@ DATA_TYPES = [
 ]
 
 METHOD_DECORATORS = ["@staticmethod", "@classmethod"]
+
+
+KNOWN_C_TYPES = set(
+    [
+        "int",
+        "float",
+        "double",
+        "char",
+        "bool",
+        "void",
+        "size_t",
+        "ssize_t",
+        "FILE",
+        "pthread_t",
+        "pthread_mutex_t",
+        "pthread_cond_t",
+        "time_t",
+        "clock_t",
+    ]
+)
