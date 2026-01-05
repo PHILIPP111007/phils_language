@@ -1,33 +1,7 @@
-from typing import Dict, List, Optional
 import re
+from typing import Dict, List, Optional
 
-
-DATA_TYPES = [
-    "function",
-    "bool",
-    "int",
-    "float",
-    "str",
-    "None",
-    "list",
-    "dict",
-    "set",
-    "tuple",
-    "list[int]",
-    "list[float]",
-    "list[str]",
-    "list[bool]",
-    "dict[str]",
-    "dict[int]",
-    "dict[float]",
-    "set[int]",
-    "set[str]",
-    "set[float]",
-    "*int",
-    "*float",
-    "*str",
-    "*bool",  # указатели
-]
+from src.modules.constants import DATA_TYPES
 
 
 class JSONValidator:
