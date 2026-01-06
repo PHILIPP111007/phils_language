@@ -157,6 +157,11 @@ def main() -> int:
     var d1: int = int(d)
 
     return 0
+
+def main() -> int:
+    var a: str = "Hello "
+    a = a.format("world")
+    return 0
 ```
 
 ### OOP

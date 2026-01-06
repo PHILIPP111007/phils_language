@@ -3478,45 +3478,6 @@ class CCodeGenerator:
 
             return var_name
 
-        # elif node_type == "binary_operation":
-        #     left_ast = ast.get("left", {})
-        #     right_ast = ast.get("right", {})
-        #     operator = ast.get("operator_symbol", "")
-
-        #     left = self.generate_expression(left_ast)
-        #     right = self.generate_expression(right_ast)
-
-        #     # Проверяем, являются ли операнды строками
-        #     left_is_string = self._is_string_expression(left_ast)
-        #     right_is_string = self._is_string_expression(right_ast)
-
-        #     # Для сложения строк используем strcat
-        #     if operator == "+" and (left_is_string or right_is_string):
-        #         # Создаем временную переменную для результата
-        #         temp_var = self.generate_temporary_var("str")
-
-        #         # Генерируем код для конкатенации строк
-        #         self.add_line(
-        #             f"char* {temp_var} = malloc(strlen({left}) + strlen({right}) + 1);"
-        #         )
-        #         self.add_line(f"if (!{temp_var}) {{")
-        #         self.indent_level += 1
-        #         self.add_line(
-        #             f'fprintf(stderr, "Memory allocation failed for string concatenation\\n");'
-        #         )
-        #         self.add_line(f"exit(1);")
-        #         self.indent_level -= 1
-        #         self.add_line(f"}}")
-        #         self.add_line(f"strcpy({temp_var}, {left});")
-        #         self.add_line(f"strcat({temp_var}, {right});")
-
-        #         return temp_var
-
-        #     if operator == "**":
-        #         return f"pow({left}, {right})"
-
-        #     c_operator = self.operator_map.get(operator, operator)
-        #     return f"({left} {c_operator} {right})"
         elif node_type == "binary_operation":
             left_ast = ast.get("left", {})
             right_ast = ast.get("right", {})
@@ -3525,29 +3486,20 @@ class CCodeGenerator:
             left = self.generate_expression(left_ast)
             right = self.generate_expression(right_ast)
 
-            # Если это формула индекса i * self.cols + j
-            if (
-                operator == "+"
-                and left_ast.get("type") == "binary_operation"
-                and left_ast.get("operator_symbol") == "*"
-                and right_ast.get("type") == "variable"
-            ):
-                # Проверяем, что это действительно i * cols + j
-                left_left = left_ast.get("left", {})
-                left_right = left_ast.get("right", {})
+            # Проверяем, являются ли операнды строками
+            left_is_string = self._is_string_expression(left_ast)
+            right_is_string = self._is_string_expression(right_ast)
 
-                if (
-                    left_left.get("type") == "variable"
-                    and left_right.get("type") == "attribute_access"
-                    and left_right.get("object") == "self"
-                    and left_right.get("attribute") == "cols"
-                ):
-                    # Генерируем правильную формулу: i * self->cols + j
-                    i_var = left_left.get("value", "i")
-                    j_var = right_ast.get("value", "j")
-                    return f"{i_var} * self->cols + {j_var}"
+            # Для сложения строк используем временную переменную
+            if operator == "+" and (left_is_string or right_is_string):
+                # Создаем временную переменную для результата
+                temp_var = self.generate_temporary_var("str")
 
-            # Обычная обработка
+                # Генерируем код для конкатенации строк
+                self._generate_string_concatenation(temp_var, left, right, "char*")
+
+                return temp_var
+
             if operator == "**":
                 return f"pow({left}, {right})"
 
@@ -5774,6 +5726,92 @@ class CCodeGenerator:
         """Генерирует вспомогательные функции для работы со строками"""
         helpers = []
 
+        # 1. Сначала определим структуру list_str
+        helpers.append("""
+        // Структура для списка строк (list[str])
+        typedef struct {
+            char** data;     // Массив указателей на строки
+            int size;        // Текущее количество элементов
+            int capacity;    // Вместимость массива
+        } list_str;
+        """)
+
+        # 2. Функции для работы с list_str
+        helpers.append("""
+        // Создание списка строк
+        list_str* create_list_str(int initial_capacity) {
+            list_str* list = (list_str*)malloc(sizeof(list_str));
+            if (!list) {
+                fprintf(stderr, "Memory allocation failed for list_str\\n");
+                exit(1);
+            }
+            list->data = (char**)malloc(initial_capacity * sizeof(char*));
+            if (!list->data) {
+                fprintf(stderr, "Memory allocation failed for list_str data\\n");
+                free(list);
+                exit(1);
+            }
+            list->size = 0;
+            list->capacity = initial_capacity;
+            return list;
+        }
+        """)
+
+        helpers.append("""
+        // Добавление строки в список (создается копия строки)
+        void append_list_str(list_str* list, const char* value) {
+            if (!list || !value) return;
+            
+            if (list->size >= list->capacity) {
+                list->capacity = list->capacity == 0 ? 4 : list->capacity * 2;
+                list->data = (char**)realloc(list->data, list->capacity * sizeof(char*));
+                if (!list->data) {
+                    fprintf(stderr, "Memory reallocation failed for list_str\\n");
+                    exit(1);
+                }
+            }
+            
+            // Создаем копию строки
+            char* copy = (char*)malloc(strlen(value) + 1);
+            if (!copy) {
+                fprintf(stderr, "Memory allocation failed for string copy\\n");
+                exit(1);
+            }
+            strcpy(copy, value);
+            list->data[list->size] = copy;
+            list->size++;
+        }
+        """)
+
+        helpers.append("""
+        // Освобождение памяти списка строк
+        void free_list_str(list_str* list) {
+            if (list) {
+                // Освобождаем все строки
+                for (int i = 0; i < list->size; i++) {
+                    if (list->data[i]) {
+                        free(list->data[i]);
+                    }
+                }
+                // Освобождаем массив указателей
+                free(list->data);
+                // Освобождаем саму структуру
+                free(list);
+            }
+        }
+        """)
+
+        helpers.append("""
+        // Получение элемента списка строк по индексу
+        char* get_list_str(list_str* list, int index) {
+            if (!list || index < 0 || index >= list->size) {
+                fprintf(stderr, "Index out of bounds in list_str\\n");
+                exit(1);
+            }
+            return list->data[index];
+        }
+        """)
+
         helpers.append("""
         // Функция преобразования int в строку
         char* int_to_string(int value) {
@@ -5791,6 +5829,28 @@ class CCodeGenerator:
         // Универсальная функция преобразования в строку
         char* builtin_str(int value) {
             return int_to_string(value);
+        }
+        """)
+
+        helpers.append("""
+        // Установка элемента списка строк по индексу
+        void set_list_str(list_str* list, int index, const char* value) {
+            if (!list || !value || index < 0 || index >= list->size) {
+                fprintf(stderr, "Index out of bounds in list_str\\n");
+                exit(1);
+            }
+            // Освобождаем старую строку
+            if (list->data[index]) {
+                free(list->data[index]);
+            }
+            // Создаем копию новой строки
+            char* copy = (char*)malloc(strlen(value) + 1);
+            if (!copy) {
+                fprintf(stderr, "Memory allocation failed for string copy\\n");
+                exit(1);
+            }
+            strcpy(copy, value);
+            list->data[index] = copy;
         }
         """)
 
@@ -5960,110 +6020,6 @@ class CCodeGenerator:
         return result;
     }
     """)
-
-        #     # 8. Функция split
-        #     helpers.append("""
-        # typedef struct {
-        #     char** items;
-        #     int size;
-        #     int capacity;
-        # } string_list;
-
-        # string_list* string_split(const char* str, const char* delimiter) {
-        #     if (!str) return NULL;
-
-        #     string_list* result = malloc(sizeof(string_list));
-        #     result->size = 0;
-        #     result->capacity = 10;
-        #     result->items = malloc(result->capacity * sizeof(char*));
-
-        #     if (!delimiter || delimiter[0] == '\\0') {
-        #         // Разделение по пробелам (по умолчанию)
-        #         const char* start = str;
-        #         const char* end = str;
-
-        #         while (*end) {
-        #             if (*end == ' ' || *end == '\\t' || *end == '\\n') {
-        #                 if (start != end) {
-        #                     // Добавляем токен
-        #                     int token_len = end - start;
-        #                     char* token = malloc(token_len + 1);
-        #                     strncpy(token, start, token_len);
-        #                     token[token_len] = '\\0';
-
-        #                     if (result->size >= result->capacity) {
-        #                         result->capacity *= 2;
-        #                         result->items = realloc(result->items, result->capacity * sizeof(char*));
-        #                     }
-        #                     result->items[result->size++] = token;
-        #                 }
-        #                 start = end + 1;
-        #             }
-        #             end++;
-        #         }
-
-        #         // Последний токен
-        #         if (start != end) {
-        #             int token_len = end - start;
-        #             char* token = malloc(token_len + 1);
-        #             strncpy(token, start, token_len);
-        #             token[token_len] = '\\0';
-
-        #             if (result->size >= result->capacity) {
-        #                 result->capacity *= 2;
-        #                 result->items = realloc(result->items, result->capacity * sizeof(char*));
-        #             }
-        #             result->items[result->size++] = token;
-        #         }
-        #     } else {
-        #         // Разделение по указанному разделителю
-        #         int delim_len = strlen(delimiter);
-        #         const char* start = str;
-        #         const char* pos = strstr(start, delimiter);
-
-        #         while (pos) {
-        #             int token_len = pos - start;
-        #             char* token = malloc(token_len + 1);
-        #             strncpy(token, start, token_len);
-        #             token[token_len] = '\\0';
-
-        #             if (result->size >= result->capacity) {
-        #                 result->capacity *= 2;
-        #                 result->items = realloc(result->items, result->capacity * sizeof(char*));
-        #             }
-        #             result->items[result->size++] = token;
-
-        #             start = pos + delim_len;
-        #             pos = strstr(start, delimiter);
-        #         }
-
-        #         // Последний токен
-        #         int token_len = strlen(start);
-        #         if (token_len > 0) {
-        #             char* token = malloc(token_len + 1);
-        #             strcpy(token, start);
-
-        #             if (result->size >= result->capacity) {
-        #                 result->capacity *= 2;
-        #                 result->items = realloc(result->items, result->capacity * sizeof(char*));
-        #             }
-        #             result->items[result->size++] = token;
-        #         }
-        #     }
-
-        #     return result;
-        # }
-
-        # void free_string_list(string_list* list) {
-        #     if (list) {
-        #         for (int i = 0; i < list->size; i++) {
-        #             free(list->items[i]);
-        #         }
-        #         free(list->items);
-        #         free(list);
-        #     }
-        # }
-        # """)
 
         # 8. Функция split - возвращает list_str
         helpers.append("""
@@ -7584,3 +7540,52 @@ class CCodeGenerator:
         else:
             # Пустой кортеж
             self.add_line(f"{var_name} = create_{struct_name}(NULL, 0);")
+
+    def _generate_string_concatenation(
+        self, target_var: str, left_expr: str, right_expr: str, c_type: str
+    ):
+        """Генерирует правильную конкатенацию строк"""
+        # Определяем, являются ли выражения строковыми литералами
+        left_is_literal = left_expr.startswith('"') and left_expr.endswith('"')
+        right_is_literal = right_expr.startswith('"') and right_expr.endswith('"')
+
+        if left_is_literal and right_is_literal:
+            # Оба литерала - можно вычислить на этапе компиляции
+            left_str = left_expr[1:-1]  # Убираем кавычки
+            right_str = right_expr[1:-1]
+            result_str = f'"{left_str}{right_str}"'
+
+            self.add_line(f"{c_type} {target_var} = malloc(strlen({result_str}) + 1);")
+            self.add_line(f"if (!{target_var}) {{")
+            self.indent_level += 1
+            self.add_line(f'fprintf(stderr, "Memory allocation failed\\n");')
+            self.add_line(f"exit(1);")
+            self.indent_level -= 1
+            self.add_line(f"}}")
+            self.add_line(f"strcpy({target_var}, {result_str});")
+
+        else:
+            # Одно или оба выражения - переменные или сложные выражения
+            # Создаем временные переменные для длин
+            temp_len1 = self.generate_temporary_var("int")
+            temp_len2 = self.generate_temporary_var("int")
+
+            self.add_line(f"int {temp_len1} = strlen({left_expr});")
+            self.add_line(f"int {temp_len2} = strlen({right_expr});")
+
+            # Выделяем память
+            self.add_line(
+                f"{c_type} {target_var} = malloc({temp_len1} + {temp_len2} + 1);"
+            )
+            self.add_line(f"if (!{target_var}) {{")
+            self.indent_level += 1
+            self.add_line(
+                f'fprintf(stderr, "Memory allocation failed for string concatenation\\n");'
+            )
+            self.add_line(f"exit(1);")
+            self.indent_level -= 1
+            self.add_line(f"}}")
+
+            # Копируем строки
+            self.add_line(f"strcpy({target_var}, {left_expr});")
+            self.add_line(f"strcat({target_var}, {right_expr});")
