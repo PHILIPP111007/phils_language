@@ -279,6 +279,13 @@ class Parser:
                 else:
                     i += 1
 
+            # ПОСЛЕ завершения парсинга всех строк:
+            # 1. Удаляем дубликаты методов
+            self.remove_duplicate_methods()
+
+            # 2. Собираем унаследованные методы
+            self.collect_inherited_methods_for_all_classes()
+
             # Преобразуем SymbolTable в словарь для JSON
             for scope in self.scopes:
                 if hasattr(scope["symbol_table"], "symbols"):
@@ -4279,9 +4286,12 @@ class Parser:
         if base_classes_str:
             base_classes = [bc.strip() for bc in base_classes_str.split(",")]
 
-        # Добавляем класс в таблицу символов
+        print(f"DEBUG: Класс '{class_name}' наследует от: {base_classes}")
+
+        # Добавляем класс в таблицу символов с информацией о наследовании
         symbol_id = scope["symbol_table"].add_class(
-            name=class_name, base_classes=base_classes
+            name=class_name,
+            base_classes=base_classes,  # ← Сохраняем родительские классы
         )
 
         # Находим тело класса
@@ -4294,12 +4304,13 @@ class Parser:
             "content": line,
             "class_name": class_name,
             "symbol_id": symbol_id,
-            "base_classes": base_classes,
+            "base_classes": base_classes,  # ← Важно сохранить
             "body_level": scope["level"] + 1,
-            "methods": [],  # ← Убедитесь, что это список
-            "attributes": [],  # ← Убедитесь, что это список
-            "static_methods": [],  # ← Убедитесь, что это список
-            "class_methods": [],  # ← Убедитесь, что это список
+            "methods": [],
+            "attributes": [],
+            "static_methods": [],
+            "class_methods": [],
+            "inherited_methods": {},  # ← Новое поле для унаследованных методов
         }
 
         scope["graph"].append(class_node)
@@ -4401,6 +4412,13 @@ class Parser:
         return_type = return_type if return_type else "None"
 
         # Парсим параметры
+        parameters = self.parse_parameters(params_str)
+
+        # ДОБАВЛЯЕМ ПРОВЕРКУ НА ДУБЛИКАТЫ
+        existing_methods = class_node.get("methods", [])
+        method_exists = False
+
+        # Парсим параметры
         parameters = []
         if params_str.strip():
             # Разделяем параметры по запятым с учетом вложенных конструкций
@@ -4481,6 +4499,20 @@ class Parser:
         existing_methods = class_node.get("methods", [])
         method_exists = False
 
+        for existing_method in existing_methods:
+            if existing_method["name"] == method_name:
+                # Сравниваем параметры
+                if len(existing_method["parameters"]) == len(parameters):
+                    same_params = True
+                    for p1, p2 in zip(existing_method["parameters"], parameters):
+                        if p1["name"] != p2["name"] or p1["type"] != p2["type"]:
+                            same_params = False
+                            break
+
+                    if same_params and existing_method["return_type"] == return_type:
+                        method_exists = True
+                        break
+
         if method_name == "__init__":
             # Для __init__ проверяем по имени
             for method in existing_methods:
@@ -4490,13 +4522,21 @@ class Parser:
         else:
             # Для других методов проверяем полностью
             for method in existing_methods:
-                if (
-                    method["name"] == method_name
-                    and method["parameters"] == parameters
-                    and method["return_type"] == return_type
-                ):
-                    method_exists = True
-                    break
+                for method in existing_methods:
+                    if method["name"] == method_name:
+                        # Для методов с одинаковыми именами проверяем параметры
+                        if self.methods_equal(
+                            method,
+                            {
+                                "name": method_name,
+                                "parameters": parameters,
+                                "return_type": return_type,
+                                "is_static": is_static,
+                                "is_classmethod": is_classmethod,
+                            },
+                        ):
+                            method_exists = True
+                            break
 
         if method_exists:
             print(f"DEBUG: Метод '{method_name}' уже существует, пропускаем")
@@ -4958,32 +4998,42 @@ class Parser:
     def parse_object_method_call_node(
         self, line: str, scope: dict, obj_name: str, method_name: str, args_str: str
     ) -> bool:
-        # Проверяем, является ли это частью присваивания
-        # Это сложно, так как нужно знать контекст
-
-        # Вместо этого предлагаю:
-        # 1. Для простых вызовов методов без присваивания генерировать код с присваиванием обратно в объект
-        # 2. Для вызовов внутри выражений - generate_expression сам разберется
-
+        """Парсит вызов метода объекта с учетом наследования"""
+        # Парсим аргументы
         args = []
         if args_str.strip():
             args = self.parse_function_arguments_to_ast(args_str)
 
-        operations = [
-            {
-                "type": "METHOD_CALL",
-                "object": obj_name,
-                "method": method_name,
-                "arguments": args,
-                # Добавляем флаг: is_standalone=True для отдельного вызова
-                "is_standalone": True,
-            }
-        ]
+        # Находим объект и его тип
+        obj_symbol, found_scope = self.find_symbol_recursive(scope, obj_name)
+        if not obj_symbol:
+            print(f"Error: Object '{obj_name}' not found")
+            return False
+        if obj_symbol:
+            obj_type = obj_symbol.get("type", "")
 
-        dependencies = [obj_name]
-        for arg in args:
-            deps = self.extract_dependencies_from_ast(arg)
-            dependencies.extend(deps)
+            # Проверяем, есть ли такой метод в классе или его родителях
+            for global_scope in self.scopes:
+                if global_scope.get("level") == 0:
+                    class_symbol = global_scope["symbol_table"].get_symbol(obj_type)
+                    if class_symbol:
+                        # Проверяем собственные методы
+                        method_found_in_class = False
+                        for method in class_symbol.get("methods", []):
+                            if method["name"] == method_name:
+                                method_found_in_class = True
+                                break
+
+                        # Если не нашли в классе, проверяем унаследованные
+                        if (
+                            not method_found_in_class
+                            and "inherited_methods" in class_symbol
+                        ):
+                            if method_name in class_symbol["inherited_methods"]:
+                                is_inherited = True
+                                inherited_from = class_symbol["inherited_methods"][
+                                    method_name
+                                ]["inherited_from"]
 
         scope["graph"].append(
             {
@@ -4992,9 +5042,62 @@ class Parser:
                 "object": obj_name,
                 "method": method_name,
                 "arguments": args,
+                "is_inherited": is_inherited,  # ← НОВОЕ ПОЛЕ
+                "inherited_from": inherited_from,  # ← НОВОЕ ПОЛЕ
+            }
+        )
+
+        obj_type = obj_symbol.get("type", "")
+
+        # Определяем информацию о методе
+        method_info = self.resolve_method_info(obj_type, method_name)
+
+        if not method_info["found"]:
+            print(
+                f"Error: Method '{method_name}' not found in class '{obj_type}' or its parents"
+            )
+            return False
+
+        operations = [
+            {
+                "type": "METHOD_CALL",
+                "object": obj_name,
+                "method": method_name,
+                "arguments": args,
+                "is_inherited": method_info["is_inherited"],
+                "inherited_from": method_info.get("inherited_from"),
+                "is_standalone": False,
+            }
+        ]
+
+        # Собираем зависимости
+        dependencies = [obj_name]
+        for arg in args:
+            deps = self.extract_dependencies_from_ast(arg)
+            dependencies.extend(deps)
+
+        # Создаем AST для вызова метода
+        method_ast = {
+            "type": "method_call",
+            "object": obj_name,
+            "method": method_name,
+            "arguments": args,
+            "is_standalone": False,
+            "is_inherited": method_info["is_inherited"],
+            "inherited_from": method_info.get("inherited_from"),
+        }
+
+        scope["graph"].append(
+            {
+                "node": "method_call",
+                "content": line,
+                "object": obj_name,
+                "method": method_name,
+                "method_info": method_info,  # Сохраняем полную информацию
+                "arguments": args,
                 "operations": operations,
-                "dependencies": dependencies,
-                "is_standalone": True,  # Флаг для компилятора
+                "dependencies": list(set(dependencies)),
+                "expression_ast": method_ast,
             }
         )
 
@@ -6073,3 +6176,228 @@ class Parser:
 
         else:
             return "any"
+
+    def methods_equal(self, method1: dict, method2: dict) -> bool:
+        """Сравнивает два метода"""
+        if method1["name"] != method2["name"]:
+            return False
+
+        if method1.get("is_static", False) != method2.get("is_static", False):
+            return False
+
+        if method1.get("is_classmethod", False) != method2.get("is_classmethod", False):
+            return False
+
+        # Сравниваем параметры
+        params1 = method1.get("parameters", [])
+        params2 = method2.get("parameters", [])
+
+        if len(params1) != len(params2):
+            return False
+
+        for p1, p2 in zip(params1, params2):
+            if p1["name"] != p2["name"] or p1["type"] != p2["type"]:
+                return False
+
+        return True
+
+    def collect_inherited_methods_for_class(
+        self, class_name: str, class_symbol: dict
+    ) -> dict:
+        """Собирает унаследованные методы для класса"""
+        inherited_methods = {}
+
+        base_classes = class_symbol.get("base_classes", [])
+        for base_class in base_classes:
+            # Ищем родительский класс
+            for scope in self.scopes:
+                if scope["level"] == 0:  # Глобальная область
+                    parent_symbol = scope["symbol_table"].get_symbol(base_class)
+                    if parent_symbol:
+                        # Собираем методы родительского класса
+                        for method in parent_symbol.get("methods", []):
+                            method_name = method["name"]
+                            if method_name not in inherited_methods:
+                                inherited_methods[method_name] = {
+                                    **method,
+                                    "inherited_from": base_class,
+                                }
+
+                        # Также собираем унаследованные методы родителя
+                        if "inherited_methods" in parent_symbol:
+                            for method_name, method_info in parent_symbol[
+                                "inherited_methods"
+                            ].items():
+                                if method_name not in inherited_methods:
+                                    inherited_methods[method_name] = method_info
+
+        return inherited_methods
+
+    def parse_parameters(self, params_str: str) -> list:
+        """Парсит параметры метода"""
+        if not params_str.strip():
+            return []
+
+        params = []
+        param_parts = self.split_by_commas_outside_brackets(params_str)
+
+        for param_str in param_parts:
+            param_str = param_str.strip()
+            if not param_str:
+                continue
+
+            # Парсим отдельный параметр
+            param_info = self.parse_single_parameter(param_str)
+            if param_info:
+                params.append(param_info)
+
+        return params
+
+    def split_by_commas_outside_brackets(self, s: str) -> list:
+        """Разделяет строку по запятым вне скобок"""
+        result = []
+        current = ""
+        depth = 0
+        in_string = False
+        string_char = None
+
+        for char in s:
+            if not in_string and char in ['"', "'"]:
+                in_string = True
+                string_char = char
+                current += char
+            elif in_string and char == string_char:
+                in_string = False
+                current += char
+            elif not in_string:
+                if char == "[":
+                    depth += 1
+                    current += char
+                elif char == "]":
+                    depth -= 1
+                    current += char
+                elif char == "," and depth == 0:
+                    result.append(current.strip())
+                    current = ""
+                else:
+                    current += char
+            else:
+                current += char
+
+        if current.strip():
+            result.append(current.strip())
+
+        return result
+
+    def remove_duplicate_methods(self):
+        """Удаляет дублирующиеся методы из классов"""
+        for scope in self.scopes:
+            if scope["level"] == 0:  # Глобальная область
+                # Удаляем дубликаты в symbol table
+                for class_name, class_symbol in scope["symbol_table"].symbols.items():
+                    if class_symbol.get("key") == "class":
+                        methods = class_symbol.get("methods", [])
+                        unique_methods = []
+                        seen = set()
+
+                        for method in methods:
+                            # Создаем ключ для сравнения
+                            method_key = (
+                                method["name"],
+                                tuple(
+                                    (p["name"], p["type"])
+                                    for p in method.get("parameters", [])
+                                ),
+                                method.get("return_type", "None"),
+                                method.get("is_static", False),
+                                method.get("is_classmethod", False),
+                            )
+
+                            if method_key not in seen:
+                                seen.add(method_key)
+                                unique_methods.append(method)
+
+                        class_symbol["methods"] = unique_methods
+
+                # Также удаляем дубликаты в узлах графа
+                for node in scope["graph"]:
+                    if node.get("node") == "class_declaration":
+                        methods = node.get("methods", [])
+                        unique_methods = []
+                        seen = set()
+
+                        for method in methods:
+                            method_key = (
+                                method["name"],
+                                tuple(
+                                    (p["name"], p["type"])
+                                    for p in method.get("parameters", [])
+                                ),
+                                method.get("return_type", "None"),
+                            )
+
+                            if method_key not in seen:
+                                seen.add(method_key)
+                                unique_methods.append(method)
+
+                        node["methods"] = unique_methods
+
+    def collect_inherited_methods_for_all_classes(self):
+        """Собирает унаследованные методы для всех классов"""
+        for scope in self.scopes:
+            if scope["level"] == 0:  # Глобальная область
+                # Проходим по всем классам
+                for class_name, class_symbol in scope["symbol_table"].symbols.items():
+                    if class_symbol.get("key") == "class":
+                        base_classes = class_symbol.get("base_classes", [])
+                        if base_classes:
+                            inherited_methods = {}
+
+                            # Собираем методы из всех родительских классов
+                            for base_class in base_classes:
+                                parent_symbol = scope["symbol_table"].get_symbol(
+                                    base_class
+                                )
+                                if parent_symbol:
+                                    # Методы родителя
+                                    for method in parent_symbol.get("methods", []):
+                                        method_name = method["name"]
+                                        if method_name not in inherited_methods:
+                                            inherited_methods[method_name] = {
+                                                "name": method["name"],
+                                                "parameters": method.get(
+                                                    "parameters", []
+                                                ),
+                                                "return_type": method.get(
+                                                    "return_type", "None"
+                                                ),
+                                                "is_static": method.get(
+                                                    "is_static", False
+                                                ),
+                                                "is_classmethod": method.get(
+                                                    "is_classmethod", False
+                                                ),
+                                                "inherited_from": base_class,
+                                            }
+
+                                    # Также собираем унаследованные методы родителя
+                                    if "inherited_methods" in parent_symbol:
+                                        for method_name, method_info in parent_symbol[
+                                            "inherited_methods"
+                                        ].items():
+                                            if method_name not in inherited_methods:
+                                                inherited_methods[method_name] = (
+                                                    method_info
+                                                )
+
+                            # Сохраняем в символ класса
+                            class_symbol["inherited_methods"] = inherited_methods
+
+                            # Также обновляем узел в графе
+                            for node in scope["graph"]:
+                                if (
+                                    node.get("node") == "class_declaration"
+                                    and node.get("class_name") == class_name
+                                ):
+                                    node["inherited_methods"] = inherited_methods
+                                    break
