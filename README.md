@@ -10,7 +10,7 @@ I'm creating this language for specialists working primarily with neural network
 
 ## Examples
 
-### Imports:
+### Imports
 
 ```python
 cimport "my_header.h" # your module in C
@@ -35,7 +35,7 @@ def main() -> None:
     return
 ```
 
-### Input:
+### Input
 
 ```python
 def main() -> int:
@@ -44,7 +44,7 @@ def main() -> int:
     return 0
 ```
 
-### Cycles:
+### Cycles
 
 ```python
 def main() -> int:
@@ -53,7 +53,7 @@ def main() -> int:
     return 0
 ```
 
-### del:
+### del
 
 ```python
 def func() -> str:
@@ -72,7 +72,7 @@ def main() -> int:
     return 0
 ```
 
-### C code -> function should starts with @:
+### C code -> function should starts with @
 
 ```python
 cimport <math.h>
@@ -82,7 +82,7 @@ def main() -> float:
     return a
 ```
 
-### Tuples and lists:
+### Tuples and lists
 
 ```python
 def main() -> int:
@@ -141,7 +141,7 @@ def main() -> int:
     return 0
 ```
 
-### Methods:
+### Methods
 
 ```python
 def main() -> int:
@@ -151,7 +151,7 @@ def main() -> int:
     return 0
 ```
 
-### OOP:
+### OOP
 
 ```python
 class Object:
@@ -204,7 +204,7 @@ def main() -> int:
     return 0
 ```
 
-#### Note:
+#### Note
 
 Don't use self.ATTRIBUTE directly in your expressions.
 
@@ -252,7 +252,7 @@ int Matrix_get(Matrix* self) {
 // a value of type "list_int" (aka "struct <unnamed>") cannot be used to initialize an entity of type "int"
 ```
 
-### Pthread:
+### Pthread
 
 ```python
 cimport <stdio.h>
