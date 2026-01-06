@@ -1322,64 +1322,6 @@ class Parser:
             "is_immutable": True,
         }
 
-    def parse_global_line(
-        self, line: str, scope: dict, all_lines: list, current_index: int
-    ):
-        """Парсит строку в глобальной области видимости"""
-        if not line:
-            return
-
-        for key in KEYS:
-            if line.startswith(key + " ") or line == key:
-                if key == "const":
-                    self.parse_const(line, scope)
-                elif key == "var":
-                    self.parse_var(line, scope)
-                elif key == "def":
-                    self.parse_function_declaration(
-                        line, scope, all_lines, current_index
-                    )
-                return
-
-        # В глобальной области только объявления
-        print(f"Warning: Unexpected line in global scope: {line}")
-
-    def parse_function_line(self, line: str, scope: dict):
-        """Парсит строку внутри функции"""
-        if not line:
-            return
-
-        parsed = False
-
-        for key in KEYS:
-            if line.startswith(key + " ") or line == key:
-                if key == "const":
-                    parsed = self.parse_const(line, scope)
-                elif key == "var":
-                    parsed = self.parse_var(line, scope)
-                elif key == "def":
-                    # Вложенные функции пока не поддерживаем
-                    parsed = False
-                elif key == "del":
-                    parsed = self.parse_delete(line, scope)
-                elif key == "return":
-                    parsed = self.parse_return(line, scope)
-                elif key == "print":  # <-- Добавляем обработку print
-                    parsed = self.parse_print(line, scope)
-                break
-
-        if not parsed:
-            if re.match(r"[a-zA-Z_][a-zA-Z0-9_]*\s*\(", line) and "var " in line:
-                parsed = self.parse_function_call_assignment(line, scope)
-            elif re.match(r"[a-zA-Z_][a-zA-Z0-9_]*\s*\(", line):
-                parsed = self.parse_function_call(line, scope)
-            elif "=" in line and not any(
-                line.startswith(k + " ") for k in ["const", "var", "def"]
-            ):
-                parsed = self.parse_assignment(line, scope)
-            elif "+=" in line or "-=" in line or "*=" in line or "/=" in line:
-                parsed = self.parse_augmented_assignment(line, scope)
-
     def parse_break(self, line: str, scope: dict):
         """Парсит оператор break"""
         scope["graph"].append(
@@ -1641,6 +1583,33 @@ class Parser:
 
     def parse_var(self, line: str, scope: dict):
         """Парсит объявление переменной с поддержкой tuple и list"""
+
+        def find_equals_outside_brackets(s: str) -> int:
+            """Находит позицию символа '=', которая не находится внутри скобок"""
+            depth = 0
+            in_string = False
+            string_char = None
+
+            for i, char in enumerate(s):
+                # Обработка строк
+                if not in_string and char in ['"', "'"]:
+                    in_string = True
+                    string_char = char
+                elif in_string and char == string_char:
+                    # Проверяем экранирование
+                    if i == 0 or s[i - 1] != "\\":
+                        in_string = False
+                # Обработка скобок (только вне строк)
+                elif not in_string:
+                    if char == "[":
+                        depth += 1
+                    elif char == "]":
+                        depth -= 1
+                    elif char == "=" and depth == 0:
+                        return i
+
+            return -1
+
         # Упрощенный паттерн для захвата всей строки
         pattern = r"var\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.+)"
         match = re.match(pattern, line)
@@ -1651,7 +1620,7 @@ class Parser:
         name, type_and_value = match.groups()
 
         # Разделяем тип и значение - ищем первый "=", который не находится внутри скобок
-        equals_pos = self.find_equals_outside_brackets(type_and_value)
+        equals_pos = find_equals_outside_brackets(type_and_value)
         if equals_pos == -1:
             return False
 
@@ -3072,126 +3041,6 @@ class Parser:
 
         return False
 
-    def parse_builtin_function_assignment(
-        self,
-        line: str,
-        scope: dict,
-        var_name: str,
-        var_type: str,
-        func_name: str,
-        args: list,
-    ):
-        """Парсит присваивание результата встроенной функции"""
-        # Добавляем переменную
-        symbol_id = scope["symbol_table"].add_symbol(
-            name=var_name, key="var", var_type=var_type
-        )
-
-        scope["local_variables"].append(symbol_id)
-
-        # Определяем тип возвращаемого значения
-        return_type = self.get_builtin_return_type(func_name, args)
-
-        # Проверяем совместимость типов
-        if var_type != return_type and return_type != "unknown":
-            print(
-                f"Warning: тип переменной '{var_name}' ({var_type}) не совпадает с возвращаемым типом '{func_name}' ({return_type})"
-            )
-
-        operations = [
-            {"type": "NEW_VAR", "target": var_name, "var_type": var_type},
-            {
-                "type": "BUILTIN_FUNCTION_CALL_ASSIGN",
-                "function": func_name,
-                "arguments": args,
-                "target": var_name,
-                "return_type": return_type,
-            },
-        ]
-
-        # Собираем зависимости
-        dependencies = []
-        for arg in args:
-            if (
-                arg
-                and not arg.startswith('"')
-                and not arg.endswith('"')
-                and not arg.startswith("'")
-                and not arg.endswith("'")
-                and not arg.isdigit()
-                and arg not in ["True", "False", "None"]
-            ):
-                var_pattern = r"([a-zA-Z_][a-zA-Z0-9_]*)"
-                vars_in_arg = re.findall(var_pattern, arg)
-                for var in vars_in_arg:
-                    if (
-                        var not in KEYS
-                        and var not in DATA_TYPES
-                        and var not in dependencies
-                    ):
-                        dependencies.append(var)
-
-        scope["graph"].append(
-            {
-                "node": "builtin_function_call_assignment",
-                "content": line,
-                "symbols": [var_name],
-                "function": func_name,
-                "arguments": args,
-                "return_type": return_type,
-                "operations": operations,
-                "dependencies": dependencies,
-            }
-        )
-
-        return True
-
-    def parse_user_function_assignment(
-        self,
-        line: str,
-        scope: dict,
-        var_name: str,
-        var_type: str,
-        func_name: str,
-        args: list,
-    ):
-        """Парсит присваивание результата пользовательской функции"""
-        # Добавляем переменную
-        symbol_id = scope["symbol_table"].add_symbol(
-            name=var_name, key="var", var_type=var_type
-        )
-
-        scope["local_variables"].append(symbol_id)
-
-        operations = [
-            {"type": "NEW_VAR", "target": var_name, "var_type": var_type},
-            {
-                "type": "FUNCTION_CALL_ASSIGN",
-                "function": func_name,
-                "arguments": args,
-                "target": var_name,
-            },
-        ]
-
-        dependencies = []
-        for arg in args:
-            if arg.isalpha() and arg not in KEYS and arg not in DATA_TYPES:
-                dependencies.append(arg)
-
-        scope["graph"].append(
-            {
-                "node": "function_call_assignment",
-                "content": line,
-                "symbols": [var_name],
-                "function": func_name,
-                "arguments": args,
-                "operations": operations,
-                "dependencies": dependencies,
-            }
-        )
-
-        return True
-
     def parse_condition(self, condition: str) -> dict:
         """Парсит условие для циклов и if"""
         # Используем AST парсер для сложных условий
@@ -3573,30 +3422,6 @@ class Parser:
             args.append(self.parse_expression_to_ast(current_arg.strip()))
 
         return args
-
-    def parse_literal_to_ast(self, value: str) -> dict:
-        """Парсит литералы в AST"""
-        if value.startswith('"') and value.endswith('"'):
-            return {"type": "literal", "value": value[1:-1], "data_type": "str"}
-        elif value.startswith("'") and value.endswith("'"):
-            return {"type": "literal", "value": value[1:-1], "data_type": "str"}
-        elif value.isdigit() or (value.startswith("-") and value[1:].isdigit()):
-            return {"type": "literal", "value": int(value), "data_type": "int"}
-        elif value == "True":
-            return {"type": "literal", "value": True, "data_type": "bool"}
-        elif value == "False":
-            return {"type": "literal", "value": False, "data_type": "bool"}
-        elif value == "None":
-            return {"type": "literal", "value": None, "data_type": "None"}
-        elif value == "null":
-            return {"type": "literal", "value": "null", "data_type": "null"}
-        elif value.startswith("&"):
-            return {"type": "address_of", "variable": value[1:].strip(), "value": value}
-        elif value.startswith("*"):
-            return {"type": "dereference", "pointer": value[1:].strip(), "value": value}
-
-        # Если это не литерал, пытаемся парсить как выражение
-        return self.parse_expression_to_ast(value)
 
     def parse_list_literal(self, value: str) -> dict:
         """Парсит литерал списка: [1, 2, 3] или [[1, 2], [3, 4]]"""
@@ -4887,41 +4712,6 @@ class Parser:
 
         return {"type": "constructor_call", "class_name": class_name, "arguments": args}
 
-    def parse_attribute_access(self, expression: str) -> dict:
-        """Парсит доступ к атрибуту: obj.attr или obj.method()"""
-        # Проверяем доступ к атрибуту
-        if "." in expression:
-            parts = expression.split(".", 1)
-            if len(parts) == 2:
-                obj_name, rest = parts
-
-                # Проверяем, является ли rest вызовом метода
-                method_pattern = r"([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)"
-                method_match = re.match(method_pattern, rest)
-
-                if method_match:
-                    # Это вызов метода: obj.method(args)
-                    method_name, args_str = method_match.groups()
-                    args = []
-                    if args_str.strip():
-                        args = self.parse_function_arguments_to_ast(args_str)
-
-                    return {
-                        "type": "method_call_expression",
-                        "object": obj_name,
-                        "method": method_name,
-                        "arguments": args,
-                    }
-                else:
-                    # Просто доступ к атрибуту: obj.attr
-                    return {
-                        "type": "attribute_access",
-                        "object": obj_name,
-                        "attribute": rest,
-                    }
-
-        return {"type": "unknown", "value": expression}
-
     def parse_static_method_call(self, expression: str) -> dict:
         """Парсит вызов статического метода: ClassName.method(args)"""
         pattern = r"([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)"
@@ -4942,58 +4732,6 @@ class Parser:
             "method": method_name,
             "arguments": args,
         }
-
-    def parse_object_creation_node(
-        self, line: str, scope: dict, var_name: str, class_name: str, args_str: str
-    ):
-        """Создает узел для создания объекта"""
-        args = []
-        if args_str.strip():
-            args = self.parse_function_arguments_to_ast(args_str)
-
-        # Добавляем переменную в таблицу символов
-        scope["symbol_table"].add_symbol(name=var_name, key="var", var_type=class_name)
-
-        # Создаем AST для вызова конструктора
-        constructor_ast = {
-            "type": "constructor_call",
-            "class_name": class_name,
-            "arguments": args,
-        }
-
-        operations = [
-            {"type": "NEW_VAR", "target": var_name, "var_type": class_name},
-            {
-                "type": "CONSTRUCTOR_CALL",
-                "class_name": class_name,
-                "target": var_name,
-                "arguments": args,
-            },
-        ]
-
-        # Собираем зависимости из аргументов
-        dependencies = []
-        for arg in args:
-            deps = self.extract_dependencies_from_ast(arg)
-            dependencies.extend(deps)
-
-        # Создаем узел
-        scope["graph"].append(
-            {
-                "node": "object_creation",
-                "content": line,
-                "symbols": [var_name],
-                "var_name": var_name,
-                "var_type": class_name,
-                "class_name": class_name,
-                "arguments": args,
-                "operations": operations,
-                "dependencies": dependencies,
-                "expression_ast": constructor_ast,
-            }
-        )
-
-        return True
 
     def parse_object_method_call_node(
         self, line: str, scope: dict, obj_name: str, method_name: str, args_str: str
@@ -5344,120 +5082,8 @@ class Parser:
         return False
 
     ###############################################################################################
-    # LITERAL
-    ###############################################################################################
-
-    def is_string_literal(self, expression: str) -> bool:
-        """Проверяет, является ли выражение строковым литералом"""
-        return (expression.startswith('"') and expression.endswith('"')) or (
-            expression.startswith("'") and expression.endswith("'")
-        )
-
-    def is_dict_literal(self, content: str) -> bool:
-        """Определяет, является ли содержимое литералом словаря"""
-        if not content:
-            # Пустой {} - может быть и словарем и множеством
-            # По умолчанию считаем словарем
-            return True
-
-        # Проверяем наличие хотя бы одного ':' вне строк и вложенных структур
-        in_string = False
-        string_char = None
-        depth = 0  # Для вложенных структур
-
-        i = 0
-        while i < len(content):
-            char = content[i]
-
-            if not in_string and char in ['"', "'"]:
-                in_string = True
-                string_char = char
-            elif in_string and char == string_char:
-                if i > 0 and content[i - 1] == "\\":
-                    pass  # Экранированная кавычка
-                else:
-                    in_string = False
-            elif not in_string:
-                if char in ["[", "{", "("]:
-                    depth += 1
-                elif char in ["]", "}", ")"]:
-                    depth -= 1
-                elif char == ":" and depth == 0:
-                    return True  # Нашли ':' на верхнем уровне - это словарь
-
-            i += 1
-
-        return False  # Не нашли ':' - вероятно множество
-
-    def is_set_literal(self, content: str) -> bool:
-        """Проверяет, является ли содержимое литералом множества"""
-        # Множество не содержит двоеточий
-        if ":" in content:
-            return False
-
-        # Проверяем баланс скобок
-        balance = 0
-        in_string = False
-        string_char = None
-
-        for char in content:
-            if not in_string and char in ['"', "'"]:
-                in_string = True
-                string_char = char
-            elif in_string and char == string_char:
-                in_string = False
-            elif not in_string:
-                if char == "{":
-                    balance += 1
-                elif char == "}":
-                    balance -= 1
-
-        return balance == 0
-
-    ###############################################################################################
     # EXTRACT
     ###############################################################################################
-
-    def extract_element_type(self, type_str: str, container: str) -> str:
-        """Извлекает тип элементов из объявления типа"""
-        pattern = rf"{container}\[([^\]]+)\]"
-        match = re.search(pattern, type_str)
-        if match:
-            return match.group(1).strip()
-        return "any"
-
-    def extract_tuple_size(self, tuple_ast: dict) -> int:
-        """Извлекает размер кортежа из AST"""
-        return len(tuple_ast.get("items", []))
-
-    def extract_list_element_type(self, list_type: str) -> str:
-        """Извлекает тип элементов из объявления типа списка, учитывая вложенность"""
-        # Убираем "list[" в начале и "]" в конце
-        if list_type.startswith("list[") and list_type.endswith("]"):
-            inner = list_type[5:-1]  # Убираем "list[" и "]"
-
-            # Теперь нужно найти баланс скобок
-            balance = 0
-            end_index = -1
-
-            for i, char in enumerate(inner):
-                if char == "[":
-                    balance += 1
-                elif char == "]":
-                    balance -= 1
-                    if balance < 0:
-                        # Недопустимая строка
-                        return "any"
-
-                # Когда баланс становится 0, мы нашли конец
-                if balance == 0:
-                    end_index = i
-                    break
-
-            if end_index != -1:
-                return inner[: end_index + 1]
-
-        return "any"
 
     def extract_content_inside_brackets(
         self, s: str, prefix: str, closing_bracket: str
@@ -5819,33 +5445,6 @@ class Parser:
 
         return False
 
-    def find_loop_body_end(
-        self, lines: list, start_index: int, base_indent: int
-    ) -> int:
-        """Находит конец тела цикла"""
-        if start_index >= len(lines):
-            return start_index
-
-        # Преобразуем base_indent в реальный отступ
-        base_real_indent = base_indent + 1
-
-        i = start_index
-        while i < len(lines):
-            line = lines[i]
-            if not line.strip():
-                i += 1
-                continue
-
-            current_indent = self.calculate_indent_level(line)
-
-            # Если отступ стал меньше или равен базовому отступу (не включая увеличение для тела)
-            if current_indent <= base_indent:
-                return i
-
-            i += 1
-
-        return len(lines)
-
     def get_builtin_return_type(self, func_name: str, args: list) -> str:
         """Определяет тип возвращаемого значения для встроенной функции"""
         if func_name == "len":
@@ -5863,54 +5462,6 @@ class Parser:
         elif func_name == "input":  # ДОБАВЛЕНО
             return "str"  # input всегда возвращает строку
         return "unknown"
-
-    def find_equals_outside_brackets(self, s: str) -> int:
-        """Находит позицию символа '=', которая не находится внутри скобок"""
-        depth = 0
-        in_string = False
-        string_char = None
-
-        for i, char in enumerate(s):
-            # Обработка строк
-            if not in_string and char in ['"', "'"]:
-                in_string = True
-                string_char = char
-            elif in_string and char == string_char:
-                # Проверяем экранирование
-                if i == 0 or s[i - 1] != "\\":
-                    in_string = False
-            # Обработка скобок (только вне строк)
-            elif not in_string:
-                if char == "[":
-                    depth += 1
-                elif char == "]":
-                    depth -= 1
-                elif char == "=" and depth == 0:
-                    return i
-
-        return -1
-
-    def has_unbalanced_parentheses(self, s: str) -> bool:
-        """Проверяет, есть ли несбалансированные скобки"""
-        balance = 0
-        in_string = False
-        string_char = None
-
-        for char in s:
-            if not in_string and char in ['"', "'"]:
-                in_string = True
-                string_char = char
-            elif in_string and char == string_char:
-                in_string = False
-            elif not in_string:
-                if char == "(":
-                    balance += 1
-                elif char == ")":
-                    balance -= 1
-                    if balance < 0:
-                        return True
-
-        return balance != 0
 
     def build_operations_from_ast(
         self, ast: dict, target: str, operations: list, dependencies: list, scope: dict
@@ -6201,45 +5752,50 @@ class Parser:
 
         return True
 
-    def collect_inherited_methods_for_class(
-        self, class_name: str, class_symbol: dict
-    ) -> dict:
-        """Собирает унаследованные методы для класса"""
-        inherited_methods = {}
-
-        base_classes = class_symbol.get("base_classes", [])
-        for base_class in base_classes:
-            # Ищем родительский класс
-            for scope in self.scopes:
-                if scope["level"] == 0:  # Глобальная область
-                    parent_symbol = scope["symbol_table"].get_symbol(base_class)
-                    if parent_symbol:
-                        # Собираем методы родительского класса
-                        for method in parent_symbol.get("methods", []):
-                            method_name = method["name"]
-                            if method_name not in inherited_methods:
-                                inherited_methods[method_name] = {
-                                    **method,
-                                    "inherited_from": base_class,
-                                }
-
-                        # Также собираем унаследованные методы родителя
-                        if "inherited_methods" in parent_symbol:
-                            for method_name, method_info in parent_symbol[
-                                "inherited_methods"
-                            ].items():
-                                if method_name not in inherited_methods:
-                                    inherited_methods[method_name] = method_info
-
-        return inherited_methods
-
     def parse_parameters(self, params_str: str) -> list:
         """Парсит параметры метода"""
+
+        def _split_by_commas_outside_brackets(s: str) -> list:
+            """Разделяет строку по запятым вне скобок"""
+            result = []
+            current = ""
+            depth = 0
+            in_string = False
+            string_char = None
+
+            for char in s:
+                if not in_string and char in ['"', "'"]:
+                    in_string = True
+                    string_char = char
+                    current += char
+                elif in_string and char == string_char:
+                    in_string = False
+                    current += char
+                elif not in_string:
+                    if char == "[":
+                        depth += 1
+                        current += char
+                    elif char == "]":
+                        depth -= 1
+                        current += char
+                    elif char == "," and depth == 0:
+                        result.append(current.strip())
+                        current = ""
+                    else:
+                        current += char
+                else:
+                    current += char
+
+            if current.strip():
+                result.append(current.strip())
+
+            return result
+
         if not params_str.strip():
             return []
 
         params = []
-        param_parts = self.split_by_commas_outside_brackets(params_str)
+        param_parts = _split_by_commas_outside_brackets(params_str)
 
         for param_str in param_parts:
             param_str = param_str.strip()
@@ -6252,42 +5808,6 @@ class Parser:
                 params.append(param_info)
 
         return params
-
-    def split_by_commas_outside_brackets(self, s: str) -> list:
-        """Разделяет строку по запятым вне скобок"""
-        result = []
-        current = ""
-        depth = 0
-        in_string = False
-        string_char = None
-
-        for char in s:
-            if not in_string and char in ['"', "'"]:
-                in_string = True
-                string_char = char
-                current += char
-            elif in_string and char == string_char:
-                in_string = False
-                current += char
-            elif not in_string:
-                if char == "[":
-                    depth += 1
-                    current += char
-                elif char == "]":
-                    depth -= 1
-                    current += char
-                elif char == "," and depth == 0:
-                    result.append(current.strip())
-                    current = ""
-                else:
-                    current += char
-            else:
-                current += char
-
-        if current.strip():
-            result.append(current.strip())
-
-        return result
 
     def remove_duplicate_methods(self):
         """Удаляет дублирующиеся методы из классов"""
