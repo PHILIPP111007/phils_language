@@ -651,6 +651,12 @@ class CCodeGenerator:
         # Получаем C тип
         c_type = self.map_type_to_c(var_type)
 
+        if expression_ast.get("type") == "complex_attribute_access":
+            # Генерируем правильное выражение
+            expr = self.generate_expression(expression_ast)
+            self.add_line(f"{c_type} {var_name} = {expr};")
+            return
+
         # Обработка list[int] с литералом
         if expression_ast.get("type") == "list_literal" and var_type.startswith(
             "list["
@@ -1501,19 +1507,37 @@ class CCodeGenerator:
         self.add_line(f"{func_name}({args_str});")
 
     def generate_return(self, node: Dict):
-        """Генерирует return"""
+        """Генерирует return с поддержкой кастомных типов"""
         operations = node.get("operations", [])
 
-        if operations:
-            for op in operations:
-                if op.get("type") == "RETURN":
-                    value_ast = op.get("value")
-                    if value_ast:
-                        expr = self.generate_expression(value_ast)
-                        self.add_line(f"return {expr};")
-                        return
+        for op in operations:
+            if op.get("type") == "RETURN":
+                value_ast = op.get("value", {})
 
-        # Если не нашли значение, генерируем return без значения
+                # Если это просто переменная (например, return item)
+                if value_ast.get("type") == "variable":
+                    var_name = value_ast.get("value", "")
+
+                    # Получаем информацию о переменной
+                    var_info = self.get_variable_info(var_name)
+                    if var_info:
+                        var_type = var_info.get("py_type", "")
+
+                        # Если тип переменной - список или кортеж
+                        if var_type.startswith("list[") or var_type.startswith(
+                            "tuple["
+                        ):
+                            # Возвращаем указатель напрямую
+                            self.add_line(f"return {var_name};")
+                            return
+
+                # Для других случаев генерируем выражение
+                if value_ast:
+                    expr = self.generate_expression(value_ast)
+                    self.add_line(f"return {expr};")
+                    return
+
+        # Если ничего не нашли
         self.add_line("return;")
 
     def generate_print(self, node: Dict):
@@ -3378,22 +3402,7 @@ class CCodeGenerator:
             return f"{variable}[{index_expr}]"
 
         elif node_type == "complex_attribute_access":
-            # Обработка self.data[index]
-            obj_name = ast.get("object", "")
-            attr_name = ast.get("attribute", "")
-            index_ast = ast.get("index", {})
-
-            index_expr = self.generate_expression(index_ast)
-
-            # Проверяем тип объекта
-            var_info = self.get_variable_info(obj_name)
-
-            if var_info and self._is_class_type(var_info.get("py_type", "")):
-                # Для классов используем стрелочку: self->data[index]
-                return f"{obj_name}->{attr_name}[{index_expr}]"
-            else:
-                # Для обычных структур используем точку
-                return f"{obj_name}.{attr_name}[{index_expr}]"
+            return self._generate_complex_attribute_access(ast)
 
         elif node_type == "slice_access":
             variable = ast.get("variable", "")
@@ -3483,6 +3492,45 @@ class CCodeGenerator:
 
             return var_name
 
+        # elif node_type == "binary_operation":
+        #     left_ast = ast.get("left", {})
+        #     right_ast = ast.get("right", {})
+        #     operator = ast.get("operator_symbol", "")
+
+        #     left = self.generate_expression(left_ast)
+        #     right = self.generate_expression(right_ast)
+
+        #     # Проверяем, являются ли операнды строками
+        #     left_is_string = self._is_string_expression(left_ast)
+        #     right_is_string = self._is_string_expression(right_ast)
+
+        #     # Для сложения строк используем strcat
+        #     if operator == "+" and (left_is_string or right_is_string):
+        #         # Создаем временную переменную для результата
+        #         temp_var = self.generate_temporary_var("str")
+
+        #         # Генерируем код для конкатенации строк
+        #         self.add_line(
+        #             f"char* {temp_var} = malloc(strlen({left}) + strlen({right}) + 1);"
+        #         )
+        #         self.add_line(f"if (!{temp_var}) {{")
+        #         self.indent_level += 1
+        #         self.add_line(
+        #             f'fprintf(stderr, "Memory allocation failed for string concatenation\\n");'
+        #         )
+        #         self.add_line(f"exit(1);")
+        #         self.indent_level -= 1
+        #         self.add_line(f"}}")
+        #         self.add_line(f"strcpy({temp_var}, {left});")
+        #         self.add_line(f"strcat({temp_var}, {right});")
+
+        #         return temp_var
+
+        #     if operator == "**":
+        #         return f"pow({left}, {right})"
+
+        #     c_operator = self.operator_map.get(operator, operator)
+        #     return f"({left} {c_operator} {right})"
         elif node_type == "binary_operation":
             left_ast = ast.get("left", {})
             right_ast = ast.get("right", {})
@@ -3491,32 +3539,29 @@ class CCodeGenerator:
             left = self.generate_expression(left_ast)
             right = self.generate_expression(right_ast)
 
-            # Проверяем, являются ли операнды строками
-            left_is_string = self._is_string_expression(left_ast)
-            right_is_string = self._is_string_expression(right_ast)
+            # Если это формула индекса i * self.cols + j
+            if (
+                operator == "+"
+                and left_ast.get("type") == "binary_operation"
+                and left_ast.get("operator_symbol") == "*"
+                and right_ast.get("type") == "variable"
+            ):
+                # Проверяем, что это действительно i * cols + j
+                left_left = left_ast.get("left", {})
+                left_right = left_ast.get("right", {})
 
-            # Для сложения строк используем strcat
-            if operator == "+" and (left_is_string or right_is_string):
-                # Создаем временную переменную для результата
-                temp_var = self.generate_temporary_var("str")
+                if (
+                    left_left.get("type") == "variable"
+                    and left_right.get("type") == "attribute_access"
+                    and left_right.get("object") == "self"
+                    and left_right.get("attribute") == "cols"
+                ):
+                    # Генерируем правильную формулу: i * self->cols + j
+                    i_var = left_left.get("value", "i")
+                    j_var = right_ast.get("value", "j")
+                    return f"{i_var} * self->cols + {j_var}"
 
-                # Генерируем код для конкатенации строк
-                self.add_line(
-                    f"char* {temp_var} = malloc(strlen({left}) + strlen({right}) + 1);"
-                )
-                self.add_line(f"if (!{temp_var}) {{")
-                self.indent_level += 1
-                self.add_line(
-                    f'fprintf(stderr, "Memory allocation failed for string concatenation\\n");'
-                )
-                self.add_line(f"exit(1);")
-                self.indent_level -= 1
-                self.add_line(f"}}")
-                self.add_line(f"strcpy({temp_var}, {left});")
-                self.add_line(f"strcat({temp_var}, {right});")
-
-                return temp_var
-
+            # Обычная обработка
             if operator == "**":
                 return f"pow({left}, {right})"
 
@@ -3531,6 +3576,49 @@ class CCodeGenerator:
             c_operator = self.operator_map.get(operator, operator)
 
             return f"{c_operator}({operand})"
+
+        elif node_type == "method_call":
+            # Это вызов метода внутри выражения
+            object_name = ast.get("object", "")
+            method_name = ast.get("method", "")
+            args = ast.get("arguments", [])
+
+            # Проверяем тип объекта
+            var_info = self.get_variable_info(object_name)
+
+            if var_info:
+                obj_type = var_info.get("py_type", "")
+
+                if self._is_class_type(obj_type):
+                    # Это вызов метода класса: obj.method(args)
+                    arg_strings = [self.generate_expression(arg) for arg in args]
+                    args_str = ", ".join(arg_strings) if arg_strings else ""
+                    full_args = f"{object_name}"
+                    if args_str:
+                        full_args = f"{object_name}, {args_str}"
+                    return f"{obj_type}_{method_name}({full_args})"
+
+                elif object_name == "self":
+                    # self.method(args) внутри метода класса
+                    # Находим текущий класс
+                    current_class = None
+                    for scope in reversed(self.variable_scopes):
+                        if "class_name" in scope:
+                            current_class = scope.get("class_name")
+                            break
+
+                    if current_class:
+                        arg_strings = [self.generate_expression(arg) for arg in args]
+                        args_str = ", ".join(arg_strings) if arg_strings else ""
+                        full_args = f"self"
+                        if args_str:
+                            full_args = f"self, {args_str}"
+                        return f"{current_class}_{method_name}({full_args})"
+
+            # Если не смогли определить, генерируем ошибку
+            return (
+                f"/* ERROR: Неизвестный вызов метода {object_name}.{method_name}() */"
+            )
 
         elif node_type == "function_call":
             func_name = ast.get("function", "")
@@ -3649,6 +3737,57 @@ class CCodeGenerator:
             ast_value = ast_value[1:]
 
         return ast_value
+
+    def _generate_complex_attribute_access(self, ast: Dict) -> str:
+        """Генерирует доступ к элементу сложного атрибута (self.data[index])"""
+        obj_name = ast.get("object", "")
+        attr_name = ast.get("attribute", "")
+        index_ast = ast.get("index", {})
+
+        index_expr = self.generate_expression(index_ast)
+
+        # Получаем информацию об объекте
+        var_info = self.get_variable_info(obj_name)
+
+        if not var_info:
+            # Если переменная не найдена, возможно это self внутри метода класса
+            if obj_name == "self":
+                # Ищем текущий класс
+                current_class = self._get_current_class()
+                if current_class and current_class in self.class_fields:
+                    # Проверяем тип атрибута
+                    attr_type = self.class_fields[current_class].get(attr_name)
+                    if attr_type and attr_type.startswith("list["):
+                        # Генерируем вызов специализированной функции
+                        struct_name = self.generate_list_struct_name(attr_type)
+                        return f"get_{struct_name}(self->{attr_name}, {index_expr})"
+
+        # Если это переменная (не self)
+        if var_info:
+            obj_py_type = var_info.get("py_type", "")
+
+            # Если это класс или указатель на класс
+            if self._is_class_type(obj_py_type) or var_info.get("is_pointer", False):
+                # Получаем информацию о классе
+                class_name = obj_py_type.replace("*", "").strip()
+                if class_name in self.class_fields:
+                    attr_type = self.class_fields[class_name].get(attr_name)
+                    if attr_type and attr_type.startswith("list["):
+                        struct_name = self.generate_list_struct_name(attr_type)
+                        return (
+                            f"get_{struct_name}({obj_name}->{attr_name}, {index_expr})"
+                        )
+
+        # По умолчанию - прямой доступ к массиву
+        return f"{obj_name}->{attr_name}[{index_expr}]"
+
+    def _get_current_class(self) -> Optional[str]:
+        """Получает имя текущего класса из контекста"""
+        # Ищем в текущем и родительских scope'ах
+        for i in range(len(self.variable_scopes) - 1, -1, -1):
+            if "class_name" in self.variable_scopes[i]:
+                return self.variable_scopes[i]["class_name"]
+        return None
 
     def _is_string_expression(self, ast: Dict) -> bool:
         """Определяет, является ли выражение строкой"""
@@ -4135,14 +4274,25 @@ class CCodeGenerator:
         obj_name = ast.get("object", "")
         attr_name = ast.get("attribute", "")
 
-        # Проверяем тип объекта
+        # Проверяем, является ли объект классом
         var_info = self.get_variable_info(obj_name)
-        if var_info:
+
+        if obj_name == "self":
+            # self всегда является указателем на структуру класса
+            return f"self->{attr_name}"
+        elif var_info:
             obj_type = var_info.get("py_type", "")
 
-            # Если это класс, используем стрелочку
+            # Проверяем, является ли это классом или указателем
             if self._is_class_type(obj_type):
+                # Для классов используем стрелочку
                 return f"{obj_name}->{attr_name}"
+            elif var_info.get("is_pointer", False):
+                # Для указателей используем стрелочку
+                return f"{obj_name}->{attr_name}"
+            else:
+                # Для обычных структур используем точку
+                return f"{obj_name}.{attr_name}"
 
         # По умолчанию используем точку
         return f"{obj_name}.{attr_name}"
@@ -4201,6 +4351,27 @@ class CCodeGenerator:
             else:
                 # Если это выражение (возвращаем результат)
                 return f"{obj_type}_{method_name}({full_args})"
+
+        # Для атрибутов объектов (self.attribute)
+        elif object_name == "self":
+            # self.get(i, j) должно стать Matrix_get(self, i, j)
+            # Получаем класс из текущего scope
+            current_scope = None
+            for scope in reversed(self.variable_scopes):
+                if "class_name" in scope:
+                    current_scope = scope
+                    break
+
+            if current_scope:
+                class_name = current_scope.get("class_name", "")
+                full_args = f"self"
+                if args_str:
+                    full_args = f"self, {args_str}"
+
+                if is_standalone:
+                    self.add_line(f"{class_name}_{method_name}({full_args});")
+                else:
+                    return f"{class_name}_{method_name}({full_args})"
         # Обработка методов для списков
         # Обработка методов для строк
         elif obj_type == "str":
@@ -4673,44 +4844,54 @@ class CCodeGenerator:
 
     def generate_class_methods(self, json_data: List[Dict]):
         """Генерирует методы для всех классов"""
+        # Собираем все методы классов
+        class_method_scopes = {}
+
         for scope in json_data:
             if scope.get("type") == "class_method":
                 class_name = scope.get("class_name", "")
                 method_name = scope.get("method_name", "")
 
-                # Пропускаем конструктор
-                if method_name == "__init__":
-                    continue
+                if class_name not in class_method_scopes:
+                    class_method_scopes[class_name] = {}
 
-                self.generate_class_method_implementation(class_name, scope)
+                class_method_scopes[class_name][method_name] = scope
+
+        # Генерируем методы
+        for class_name, methods in class_method_scopes.items():
+            for method_name, scope in methods.items():
+                if method_name != "__init__":
+                    self.generate_class_method_implementation(class_name, scope)
 
     def generate_class_method_implementation(self, class_name: str, scope: Dict):
-        """Генерирует реализацию метода класса с учетом наследования"""
+        """Генерирует реализацию метода класса с кастомным типом возвращаемого значения"""
         method_name = scope.get("method_name", "")
         return_type = scope.get("return_type", "void")
+
+        print(f"DEBUG: Генерация метода {class_name}_{method_name} -> {return_type}")
+
+        print(
+            f"DEBUG generate_class_method_implementation: {class_name}.{method_name}() -> {return_type}"
+        )
+        print(f"DEBUG: Scope keys: {scope.keys()}")
+        print(f"DEBUG: Graph length: {len(scope.get('graph', []))}")
+
+        # Проверяем, является ли тип возвращаемого значения кастомным
+        if return_type.startswith("list[") or return_type.startswith("tuple["):
+            # Генерируем структуры для кастомного типа
+            if return_type.startswith("list["):
+                self.generate_list_struct(return_type)
+                struct_name = self.generate_list_struct_name(return_type)
+                c_return_type = f"{struct_name}*"
+            elif return_type.startswith("tuple["):
+                self.generate_tuple_struct(return_type)
+                struct_name = self.generate_tuple_struct_name(return_type)
+                c_return_type = f"{struct_name}*"
+        else:
+            c_return_type = self.map_type_to_c(return_type)
+
+        # Генерируем параметры
         parameters = scope.get("parameters", [])
-
-        # Получаем информацию о методе из иерархии
-        method_info = self.all_class_methods.get(class_name, {}).get(method_name)
-
-        if not method_info:
-            print(f"WARNING: Метод {method_name} не найден для класса {class_name}")
-            return
-
-        # Определяем, является ли метод унаследованным
-        is_inherited = method_info.get("origin") != class_name
-
-        # Для унаследованных методов не генерируем реализацию повторно
-        if is_inherited:
-            self.add_line(
-                f"// Метод {method_name} унаследован от {method_info['origin']}"
-            )
-            return
-
-        # Входим в scope метода
-        self.enter_scope()
-
-        # Объявляем параметры
         param_decls = []
 
         for param in parameters:
@@ -4718,19 +4899,15 @@ class CCodeGenerator:
             param_type = param.get("type", "int")
 
             if param_name == "self":
-                # self - это указатель на структуру класса
                 c_param_type = f"{class_name}*"
-                self.declare_variable("self", class_name, is_pointer=True)
             else:
                 c_param_type = self.map_type_to_c(param_type)
-                self.declare_variable(param_name, param_type)
 
             param_decls.append(f"{c_param_type} {param_name}")
 
-        # Генерируем сигнатуру метода
-        c_return_type = self.map_type_to_c(return_type)
         params_str = ", ".join(param_decls) if param_decls else "void"
 
+        # Сигнатура метода
         self.add_line(f"{c_return_type} {class_name}_{method_name}({params_str}) {{")
         self.indent_level += 1
 
@@ -4738,17 +4915,9 @@ class CCodeGenerator:
         for node in scope.get("graph", []):
             self.generate_graph_node(node)
 
-        # Если метод должен что-то возвращать, но нет return
-        return_info = scope.get("return_info", {})
-        if c_return_type != "void" and not return_info.get("has_return", False):
-            self.add_line(f"return 0; // default return")
-
         self.indent_level -= 1
         self.add_line("}")
         self.add_empty_line()
-
-        # Выходим из scope метода
-        self.exit_scope()
 
     def add_class_method_declaration(self, class_name: str, method: Dict):
         """Добавляет forward declaration для метода класса"""
@@ -4797,34 +4966,48 @@ class CCodeGenerator:
 
     def analyze_classes(self, json_data: List[Dict]):
         """Анализирует все классы и их методы для определения полей"""
-        # Сначала находим все методы __init__
-        init_scopes = {}
+        print("DEBUG analyze_classes: Начинаем анализ классов")
 
+        # Собираем все конструкторы
         for scope in json_data:
             if (
-                scope.get("type") == "class_method"
+                scope.get("type") == "constructor"
                 and scope.get("method_name") == "__init__"
             ):
                 class_name = scope.get("class_name", "")
-                init_scopes[class_name] = scope
+                print(f"DEBUG: Найден конструктор для класса {class_name}")
 
-        # Сначала анализируем методы __init__ для определения полей
-        for scope in json_data:
-            if (
-                scope.get("type") == "class_method"
-                and scope.get("method_name") == "__init__"
-            ):
-                class_name = scope.get("class_name", "")
-                self._analyze_init_method(class_name, scope)
+                if class_name not in self.class_fields:
+                    self.class_fields[class_name] = {}
 
-        # Затем анализируем другие методы для ссылок на поля
-        for scope in json_data:
-            if (
-                scope.get("type") == "class_method"
-                and scope.get("method_name") != "__init__"
-            ):
-                class_name = scope.get("class_name", "")
-                self._analyze_method_for_fields(class_name, scope)
+                # Получаем параметры конструктора
+                parameters = scope.get("parameters", [])
+                param_types = {}
+
+                for param in parameters:
+                    param_name = param.get("name", "")
+                    param_type = param.get("type", "int")
+                    if param_name != "self":
+                        param_types[param_name] = param_type
+                        print(f"DEBUG: Параметр {param_name}: {param_type}")
+
+                # Анализируем присваивания атрибутов
+                for node in scope.get("graph", []):
+                    if node.get("node") == "attribute_assignment":
+                        obj_name = node.get("object", "")
+                        attr_name = node.get("attribute", "")
+                        value_ast = node.get("value", {})
+
+                        if obj_name == "self":
+                            # Определяем тип значения
+                            field_type = self._infer_field_type_from_ast(
+                                value_ast, param_types
+                            )
+                            if field_type:
+                                self.class_fields[class_name][attr_name] = field_type
+                                print(
+                                    f"DEBUG: Поле {class_name}.{attr_name} = {field_type}"
+                                )
 
     def _analyze_init_method(self, class_name: str, init_scope: Dict):
         """Анализирует метод __init__ для определения полей класса"""
@@ -6306,7 +6489,9 @@ class CCodeGenerator:
 
     def generate_all_methods(self, json_data: List[Dict]):
         """Генерирует все методы всех классов"""
-        # Сначала собираем все методы классов
+        print("DEBUG generate_all_methods: Начало")
+
+        # Собираем все методы классов
         class_method_scopes = {}
 
         for scope in json_data:
@@ -6314,29 +6499,23 @@ class CCodeGenerator:
                 class_name = scope.get("class_name", "")
                 method_name = scope.get("method_name", "")
 
+                print(f"DEBUG: Найден метод {class_name}.{method_name}")
+
                 if class_name not in class_method_scopes:
                     class_method_scopes[class_name] = {}
 
                 class_method_scopes[class_name][method_name] = scope
 
         # Генерируем методы для каждого класса
-        for class_name, method_scopes in class_method_scopes.items():
-            all_methods = self.all_class_methods.get(class_name, {})
+        for class_name, methods in class_method_scopes.items():
+            print(
+                f"DEBUG: Генерация методов для класса {class_name}: {list(methods.keys())}"
+            )
 
-            for method_name in all_methods.keys():
-                if method_name in method_scopes:
-                    # Метод определен в этом классе
-                    scope = method_scopes[method_name]
+            for method_name, scope in methods.items():
+                if method_name != "__init__":
+                    print(f"DEBUG: Генерация метода {class_name}.{method_name}")
                     self.generate_class_method_implementation(class_name, scope)
-                else:
-                    # Метод унаследован - не генерируем
-                    method_info = all_methods[method_name]
-                    if method_info.get("origin") != class_name:
-                        self.add_line(
-                            f"// Метод {class_name}_{method_name} унаследован от {method_info['origin']}"
-                        )
-                        # Генерируем заглушку или вызываем родительский метод
-                        self._generate_inherited_method_stub(class_name, method_info)
 
     def generate_method_call_expression(self, ast: Dict) -> str:
         """Генерирует выражение вызова метода с учетом наследования"""

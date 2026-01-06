@@ -10,7 +10,7 @@ I'm creating this language for specialists working primarily with neural network
 
 ## Examples
 
-Imports:
+### Imports:
 
 ```python
 cimport "my_header.h" # your module in C
@@ -35,7 +35,7 @@ def main() -> None:
     return
 ```
 
-Input:
+### Input:
 
 ```python
 def main() -> int:
@@ -44,7 +44,7 @@ def main() -> int:
     return 0
 ```
 
-Cycles:
+### Cycles:
 
 ```python
 def main() -> int:
@@ -53,7 +53,7 @@ def main() -> int:
     return 0
 ```
 
-del:
+### del:
 
 ```python
 def func() -> str:
@@ -72,7 +72,7 @@ def main() -> int:
     return 0
 ```
 
-C code -> function should starts with @:
+### C code -> function should starts with @:
 
 ```python
 cimport <math.h>
@@ -82,7 +82,7 @@ def main() -> float:
     return a
 ```
 
-Tuples and lists:
+### Tuples and lists:
 
 ```python
 def main() -> int:
@@ -141,7 +141,7 @@ def main() -> int:
     return 0
 ```
 
-Methods:
+### Methods:
 
 ```python
 def main() -> int:
@@ -151,7 +151,7 @@ def main() -> int:
     return 0
 ```
 
-OOP:
+### OOP:
 
 ```python
 class Object:
@@ -204,7 +204,55 @@ def main() -> int:
     return 0
 ```
 
-Pthread:
+#### Note:
+
+Don't use self.ATTRIBUTE directly in your expressions.
+
+```python
+class Matrix:
+    def __init__(self, data: list[int]):
+        self.data = data
+    
+    def get(self) -> int:
+        var a: list[int] = self.data
+        var item: int = a[10]
+        return item
+```
+
+Converts to
+
+```c
+int Matrix_get(Matrix* self) {
+    list_int* a = self->data;
+    int item = get_list_int(a, 10);
+    return item;
+}
+```
+
+And
+
+```python
+class Matrix:
+    def __init__(self, data: list[int]):
+        self.data = data
+    
+    def get(self) -> int:
+        var item: int = self.data[10]
+        return item
+```
+
+Converts to
+
+```c
+int Matrix_get(Matrix* self) {
+    int item = self->data[10];  // Here is an error
+    return item;
+}
+
+// a value of type "list_int" (aka "struct <unnamed>") cannot be used to initialize an entity of type "int"
+```
+
+### Pthread:
 
 ```python
 cimport <stdio.h>
