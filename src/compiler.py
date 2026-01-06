@@ -300,6 +300,8 @@ class CCodeGenerator:
         return_type = scope.get("return_type", "int")
         parameters = scope.get("parameters", [])
 
+        print(f"DEBUG generate_function_scope: {func_name}() -> {return_type}")
+
         # Входим в новый scope
         self.enter_scope()
 
@@ -316,11 +318,12 @@ class CCodeGenerator:
         c_return_type = self.map_type_to_c(return_type)
         params_str = ", ".join(param_decls) if param_decls else "void"
 
+        print(f"DEBUG: C return type for {return_type} is {c_return_type}")
+
         self.add_line(f"{c_return_type} {func_name}({params_str}) {{")
         self.indent_level += 1
 
         # Обрабатываем узлы графа
-        # ИСПРАВЛЕНИЕ: Отслеживаем уже обработанные объявления
         processed_declarations = set()
 
         for node in scope.get("graph", []):
@@ -328,14 +331,9 @@ class CCodeGenerator:
 
             if node_type == "declaration":
                 var_name = node.get("var_name", "")
-                # Проверяем, не обрабатывали ли мы уже это объявление
                 if var_name not in processed_declarations:
                     self.generate_graph_node(node)
                     processed_declarations.add(var_name)
-                else:
-                    # Пропускаем дубликат
-                    print(f"DEBUG: Пропускаем дублирующее объявление {var_name}")
-                    continue
             else:
                 self.generate_graph_node(node)
 
@@ -386,6 +384,8 @@ class CCodeGenerator:
             self.generate_attribute_assignment(node)
         elif node_type == "method_call":
             self.generate_method_call(node)
+        elif node_type == "static_method_call":  # ДОБАВЬТЕ ЭТО!
+            self.generate_object_method_call(node)
         elif node_type == "index_assignment":  # НОВОЕ: присваивание по индексу
             self.generate_index_assignment(node)
         elif node_type == "slice_assignment":  # НОВОЕ: присваивание среза
@@ -1758,6 +1758,8 @@ class CCodeGenerator:
         return_type = node.get("return_type", "int")
         parameters = node.get("parameters", [])
 
+        print(f"DEBUG add_function_declaration: {func_name}() -> {return_type}")
+
         # Генерируем параметры
         param_decls = []
         for param in parameters:
@@ -1769,6 +1771,8 @@ class CCodeGenerator:
         # Генерируем forward declaration
         c_return_type = self.map_type_to_c(return_type)
         params_str = ", ".join(param_decls) if param_decls else "void"
+
+        print(f"DEBUG: Forward declaration: {c_return_type} {func_name}({params_str});")
 
         declaration = f"{c_return_type} {func_name}({params_str});"
         self.function_declarations.append(declaration)
@@ -6998,3 +7002,158 @@ class CCodeGenerator:
 
         # По умолчанию
         return "int"
+
+    def generate_static_method_call(self, node: Dict):
+        """Генерирует вызов метода объекта (ошибочно назван static_method_call)"""
+        # Получаем имя объекта и метода
+        object_name = node.get("class_name", "")  # На самом деле это имя объекта!
+        method_name = node.get("method", "")
+        args = node.get("arguments", [])
+
+        # 1. Определяем тип объекта
+        var_info = self.get_variable_info(object_name)
+        if not var_info:
+            print(f"ERROR: Object '{object_name}' not found")
+            self.add_line(f"// ERROR: Object '{object_name}' not found for method call")
+            return
+
+        object_type = var_info.get("py_type", "")
+        if not object_type:
+            print(f"ERROR: No type for object '{object_name}'")
+            self.add_line(f"// ERROR: No type for object '{object_name}'")
+            return
+
+        print(
+            f"DEBUG: Generating method call: {object_name}.{method_name}() where {object_name} has type {object_type}"
+        )
+
+        # 2. Генерируем аргументы
+        arg_strings = []
+        for arg in args:
+            if isinstance(arg, dict):
+                arg_str = self.generate_expression(arg)
+                if arg_str is None:
+                    arg_str = "0"
+                arg_strings.append(arg_str)
+            else:
+                arg_strings.append(str(arg))
+
+        # 3. Определяем, как генерировать вызов в зависимости от типа объекта
+
+        # 3.1. Если это класс
+        if self._is_class_type(object_type):
+            # Формат: ClassName_methodName(self, args...)
+            if arg_strings:
+                self.add_line(
+                    f"{object_type}_{method_name}({object_name}, {', '.join(arg_strings)});"
+                )
+            else:
+                self.add_line(f"{object_type}_{method_name}({object_name});")
+
+        # 3.2. Если это список
+        elif object_type.startswith("list["):
+            struct_name = self.generate_list_struct_name(object_type)
+            # Методы списка имеют префикс append_, get_, set_ и т.д.
+            if method_name in ["append", "get", "set", "len", "free"]:
+                if arg_strings:
+                    self.add_line(
+                        f"{method_name}_{struct_name}({object_name}, {', '.join(arg_strings)});"
+                    )
+                else:
+                    self.add_line(f"{method_name}_{struct_name}({object_name});")
+            else:
+                # Универсальный вызов
+                if arg_strings:
+                    self.add_line(
+                        f"{struct_name}_{method_name}({object_name}, {', '.join(arg_strings)});"
+                    )
+                else:
+                    self.add_line(f"{struct_name}_{method_name}({object_name});")
+
+        # 3.3. Если это кортеж
+        elif object_type.startswith("tuple["):
+            struct_name = self.generate_tuple_struct_name(object_type)
+            # Методы кортежа имеют префикс get_, len_, free_ и т.д.
+            if method_name in ["get", "len", "free"]:
+                if arg_strings:
+                    self.add_line(
+                        f"{method_name}_{struct_name}({object_name}, {', '.join(arg_strings)});"
+                    )
+                else:
+                    self.add_line(f"{method_name}_{struct_name}({object_name});")
+            else:
+                # Универсальный вызов
+                if arg_strings:
+                    self.add_line(
+                        f"{struct_name}_{method_name}({object_name}, {', '.join(arg_strings)});"
+                    )
+                else:
+                    self.add_line(f"{struct_name}_{method_name}({object_name});")
+
+        # 3.4. Если это строка
+        elif object_type == "str":
+            # Методы строк имеют префикс string_
+            if method_name in ["upper", "lower", "capitalize", "strip", "format"]:
+                if arg_strings:
+                    self.add_line(
+                        f"string_{method_name}({object_name}, {', '.join(arg_strings)});"
+                    )
+                else:
+                    self.add_line(f"string_{method_name}({object_name});")
+            else:
+                # Универсальный вызов
+                if arg_strings:
+                    self.add_line(
+                        f"string_{method_name}({object_name}, {', '.join(arg_strings)});"
+                    )
+                else:
+                    self.add_line(f"string_{method_name}({object_name});")
+
+        # 3.5. Другие типы
+        else:
+            # Универсальный формат: object_type_method_name(object, args...)
+            if arg_strings:
+                self.add_line(
+                    f"{object_type}_{method_name}({object_name}, {', '.join(arg_strings)});"
+                )
+            else:
+                self.add_line(f"{object_type}_{method_name}({object_name});")
+
+    def generate_object_method_call(self, node: Dict):
+        """Генерирует вызов метода объекта (obj.method())"""
+        object_name = node.get(
+            "class_name", ""
+        )  # В JSON это поле называется class_name
+        method_name = node.get("method", "")
+        args = node.get("arguments", [])
+
+        print(f"DEBUG generate_object_method_call: {object_name}.{method_name}()")
+
+        # Универсальная реализация
+        var_info = self.get_variable_info(object_name)
+        if not var_info:
+            self.add_line(f"// ERROR: Object '{object_name}' not found")
+            return
+
+        object_type = var_info.get("py_type", "")
+        if not object_type:
+            self.add_line(f"// ERROR: No type for '{object_name}'")
+            return
+
+        # Генерируем аргументы
+        arg_exprs = []
+        for arg in args:
+            if isinstance(arg, dict):
+                expr = self.generate_expression(arg)
+                if expr is None:
+                    expr = "0"
+                arg_exprs.append(expr)
+            else:
+                arg_exprs.append(str(arg))
+
+        # Собираем все аргументы: self + остальные
+        all_args = [object_name] + arg_exprs
+        args_str = ", ".join(all_args)
+
+        # Формируем имя функции: TypeName_methodName
+        self.add_line(f"{object_type}_{method_name}({args_str});")

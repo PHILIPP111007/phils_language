@@ -1399,7 +1399,7 @@ class Parser:
         self, line: str, parent_scope: dict, all_lines: list, current_index: int
     ):
         """Обрабатывает объявление функции"""
-        pattern = r"def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)\s*(?:->\s*([a-zA-Z_][a-zA-Z0-9_]*))?\s*:"
+        pattern = r"def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)\s*(?:->\s*(.+?))?\s*:"
         match = re.match(pattern, line)
 
         if not match:
@@ -1407,6 +1407,8 @@ class Parser:
 
         func_name, params_str, return_type = match.groups()
         return_type = return_type if return_type else "None"
+
+        print(f"DEBUG: Найдена функция {func_name}() -> {return_type}")
 
         # Парсим параметры
         parameters = []
