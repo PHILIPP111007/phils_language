@@ -220,16 +220,21 @@ class CCodeGenerator:
         return False
 
     def declare_variable(self, name: str, var_type: str, is_pointer: bool = False):
-        """Объявляет переменную в текущем scope"""
+        """Объявляет или обновляет переменную в текущем scope"""
         scope = self.get_current_scope()
+
         c_type = self.map_type_to_c(var_type, is_pointer)
+
+        # Обновляем или создаем переменную
         scope[name] = {
             "c_type": c_type,
             "py_type": var_type,
             "is_pointer": is_pointer,
             "is_deleted": False,
-            "delete_type": None,  # "full" или "pointer"
+            "delete_type": None,
         }
+
+        print(f"DEBUG: Обновлена переменная '{name}': {var_type} -> {c_type}")
 
     def mark_variable_deleted(self, name: str, delete_type: str = "full") -> bool:
         """Помечает переменную как удаленную"""
@@ -248,15 +253,18 @@ class CCodeGenerator:
         return False
 
     def is_variable_declared(self, name: str) -> bool:
-        """Проверяет, объявлена ли переменная"""
+        """Проверяет, объявлена ли переменная (и не удалена ли она)"""
         for level in range(self.current_scope_level, -1, -1):
             if level < len(self.variable_scopes):
                 if name in self.variable_scopes[level]:
-                    return True
+                    var_info = self.variable_scopes[level][name]
+                    # Проверяем, не удалена ли переменная
+                    if not var_info.get("is_deleted", False):
+                        return True
         return False
 
     def get_variable_info(self, name: str) -> Optional[Dict]:
-        """Получает информацию о переменной"""
+        """Получает информацию о переменной (даже если она удалена)"""
         for level in range(self.current_scope_level, -1, -1):
             if level < len(self.variable_scopes):
                 if name in self.variable_scopes[level]:
@@ -350,6 +358,8 @@ class CCodeGenerator:
 
         if node_type == "declaration":
             self.generate_declaration(node)
+        elif node_type == "redeclaration":  # ДОБАВЬТЕ ЭТО!
+            self.generate_redeclaration(node)
         elif node_type == "delete":
             self.generate_delete(node)
         elif node_type == "del_pointer":
@@ -638,24 +648,46 @@ class CCodeGenerator:
         self.add_line("// continue statement")
 
     def generate_declaration(self, node: Dict):
-        """Генерирует объявление переменной"""
+        """Генерирует объявление переменной с поддержкой повторных объявлений"""
         var_name = node.get("var_name", "")
         var_type = node.get("var_type", "")
         expression_ast = node.get("expression_ast", {})
 
         print(f"DEBUG: Генерация объявления для {var_name}: {var_type}")
 
-        # Объявляем переменную в scope
+        # Проверяем, объявлена ли уже переменная
+        var_info = self.get_variable_info(var_name)
+        is_redeclaration = var_info is not None and not var_info.get(
+            "is_deleted", False
+        )
+
+        if is_redeclaration:
+            print(f"DEBUG: Переменная '{var_name}' уже объявлена, переобъявляем")
+
+            # Освобождаем старую память
+            old_py_type = var_info.get("py_type", "")
+            if old_py_type.startswith("list["):
+                struct_name = self.generate_list_struct_name(old_py_type)
+                self.add_line(f"if ({var_name}) {{")
+                self.indent_level += 1
+                self.add_line(f"free_{struct_name}({var_name});")
+                self.indent_level -= 1
+                self.add_line("}")
+            elif old_py_type == "str":
+                self.add_line(f"if ({var_name}) {{")
+                self.indent_level += 1
+                self.add_line(f"free({var_name});")
+                self.indent_level -= 1
+                self.add_line("}")
+
+        # Объявляем/обновляем переменную
         self.declare_variable(var_name, var_type)
+        var_info = self.get_variable_info(var_name)
 
-        # Получаем C тип
-        c_type = self.map_type_to_c(var_type)
-
-        if expression_ast.get("type") == "complex_attribute_access":
-            # Генерируем правильное выражение
-            expr = self.generate_expression(expression_ast)
-            self.add_line(f"{c_type} {var_name} = {expr};")
+        if not var_info:
             return
+
+        c_type = var_info["c_type"]
 
         # Обработка list[int] с литералом
         if expression_ast.get("type") == "list_literal" and var_type.startswith(
@@ -663,11 +695,18 @@ class CCodeGenerator:
         ):
             items = expression_ast.get("items", [])
 
-            # Генерируем код для создания списка
-            struct_name = self.generate_list_struct_name(var_type)
-            self.add_line(
-                f"{c_type} {var_name} = create_{struct_name}({max(len(items), 4)});"
-            )
+            if is_redeclaration:
+                # Для повторного объявления используем присваивание
+                struct_name = self.generate_list_struct_name(var_type)
+                self.add_line(
+                    f"{var_name} = create_{struct_name}({max(len(items), 4)});"
+                )
+            else:
+                # Для первого объявления генерируем объявление с инициализацией
+                struct_name = self.generate_list_struct_name(var_type)
+                self.add_line(
+                    f"{c_type} {var_name} = create_{struct_name}({max(len(items), 4)});"
+                )
 
             # Добавляем элементы
             for item_ast in items:
@@ -676,46 +715,23 @@ class CCodeGenerator:
 
             return
 
-        # Обработка tuple[int] с литералом
-        elif expression_ast.get("type") == "tuple_literal" and var_type.startswith(
-            "tuple["
-        ):
-            items = expression_ast.get("items", [])
-
-            if items:
-                # Создаем временный массив
-                temp_array = f"temp_{var_name}"
-                self.add_line(f"int {temp_array}[{len(items)}] = {{")
-                self.indent_level += 1
-                for i, item_ast in enumerate(items):
-                    item_expr = self.generate_expression(item_ast)
-                    self.add_line(f"{item_expr}{',' if i < len(items) - 1 else ''}")
-                self.indent_level -= 1
-                self.add_line("};")
-
-                # Создаем кортеж
-                struct_name = self.generate_tuple_struct_name(var_type)
-                self.add_line(
-                    f"{c_type} {var_name} = create_{struct_name}({temp_array}, {len(items)});"
-                )
-            else:
-                # Пустой кортеж
-                self.add_line(f"{c_type} {var_name};")
-                self.add_line(f"{var_name}.data = NULL;")
-                self.add_line(f"{var_name}.size = 0;")
-
-            return
-
         # Обычная инициализация
         if expression_ast:
             expr = self.generate_expression(expression_ast)
-            self.add_line(f"{c_type} {var_name} = {expr};")
+
+            if is_redeclaration:
+                # Повторное объявление = присваивание
+                self.add_line(f"{var_name} = {expr};")
+            else:
+                # Первое объявление
+                self.add_line(f"{c_type} {var_name} = {expr};")
         else:
             # Объявление без инициализации
-            if c_type.endswith("*"):
-                self.add_line(f"{c_type} {var_name} = NULL;")
-            else:
-                self.add_line(f"{c_type} {var_name};")
+            if not is_redeclaration:
+                if c_type.endswith("*"):
+                    self.add_line(f"{c_type} {var_name} = NULL;")
+                else:
+                    self.add_line(f"{c_type} {var_name};")
 
     def _generate_expression_for_declaration(
         self, ast: Dict, target_var: str, c_type: str
@@ -1514,28 +1530,28 @@ class CCodeGenerator:
             if op.get("type") == "RETURN":
                 value_ast = op.get("value", {})
 
-                # Если это просто переменная (например, return item)
+                if not value_ast:
+                    self.add_line("return;")
+                    return
+
+                # Определяем тип возвращаемого значения
                 if value_ast.get("type") == "variable":
                     var_name = value_ast.get("value", "")
-
-                    # Получаем информацию о переменной
                     var_info = self.get_variable_info(var_name)
-                    if var_info:
-                        var_type = var_info.get("py_type", "")
 
-                        # Если тип переменной - список или кортеж
-                        if var_type.startswith("list[") or var_type.startswith(
-                            "tuple["
-                        ):
-                            # Возвращаем указатель напрямую
+                    if var_info:
+                        py_type = var_info.get("py_type", "")
+
+                        # Если возвращаем список или кортеж
+                        if py_type.startswith("list[") or py_type.startswith("tuple["):
+                            # Просто возвращаем указатель
                             self.add_line(f"return {var_name};")
                             return
 
                 # Для других случаев генерируем выражение
-                if value_ast:
-                    expr = self.generate_expression(value_ast)
-                    self.add_line(f"return {expr};")
-                    return
+                expr = self.generate_expression(value_ast)
+                self.add_line(f"return {expr};")
+                return
 
         # Если ничего не нашли
         self.add_line("return;")
@@ -1797,34 +1813,28 @@ class CCodeGenerator:
                         class_name = node.get("class_name", "")
                         methods = node.get("methods", [])
 
-                        # Собираем информацию о конструкторе
-                        init_method = None
-                        for method in methods:
-                            if method.get("name") == "__init__":
-                                init_method = method
-                                break
-
-                        # Генерируем объявление конструктора
-                        if init_method:
-                            params = []
-                            init_params = init_method.get("parameters", [])
-                            # Пропускаем self параметр
-                            for param in init_params[1:]:
-                                param_name = param.get("name", "")
-                                param_type = param.get("type", "int")
-                                c_param_type = self.map_type_to_c(param_type)
-                                params.append(f"{c_param_type} {param_name}")
-
-                            params_str = ", ".join(params) if params else "void"
-                            self.function_declarations.append(
-                                f"{class_name}* create_{class_name}({params_str});"
-                            )
-
-                        # Собираем объявления методов из описания класса
+                        # Генерируем объявления методов
                         for method in methods:
                             if method.get("name") != "__init__":
                                 method_name = method.get("name", "")
                                 return_type = method.get("return_type", "void")
+
+                                # Определяем C тип возвращаемого значения
+                                if return_type.startswith("list["):
+                                    self.generate_list_struct(return_type)
+                                    struct_name = self.generate_list_struct_name(
+                                        return_type
+                                    )
+                                    c_return_type = f"{struct_name}*"
+                                elif return_type.startswith("tuple["):
+                                    self.generate_tuple_struct(return_type)
+                                    struct_name = self.generate_tuple_struct_name(
+                                        return_type
+                                    )
+                                    c_return_type = f"{struct_name}*"
+                                else:
+                                    c_return_type = self.map_type_to_c(return_type)
+
                                 params = method.get("parameters", [])
 
                                 # Формируем параметры метода
@@ -1834,7 +1844,6 @@ class CCodeGenerator:
                                     param_type = param.get("type", "int")
 
                                     if i == 0 and param_name == "self":
-                                        # Первый параметр - self, это указатель на класс
                                         param_decls.append(f"{class_name}* self")
                                     else:
                                         c_param_type = self.map_type_to_c(param_type)
@@ -1845,39 +1854,8 @@ class CCodeGenerator:
                                 params_str = (
                                     ", ".join(param_decls) if param_decls else "void"
                                 )
-                                self.function_declarations.append(
-                                    f"{return_type} {class_name}_{method_name}({params_str});"
-                                )
-
-        # Также добавляем объявления из class_method scope (для точности)
-        for scope in json_data:
-            if scope.get("type") == "class_method":
-                class_name = scope.get("class_name", "")
-                method_name = scope.get("method_name", "")
-                return_type = scope.get("return_type", "void")
-
-                if method_name != "__init__":
-                    parameters = scope.get("parameters", [])
-
-                    # Формируем параметры
-                    param_decls = []
-                    for i, param in enumerate(parameters):
-                        param_name = param.get("name", "")
-                        param_type = param.get("type", "int")
-
-                        if i == 0 and param_name == "self":
-                            param_decls.append(f"{class_name}* self")
-                        else:
-                            c_param_type = self.map_type_to_c(param_type)
-                            param_decls.append(f"{c_param_type} {param_name}")
-
-                    params_str = ", ".join(param_decls) if param_decls else "void"
-
-                    declaration = (
-                        f"{return_type} {class_name}_{method_name}({params_str});"
-                    )
-                    if declaration not in self.function_declarations:
-                        self.function_declarations.append(declaration)
+                                declaration = f"{c_return_type} {class_name}_{method_name}({params_str});"
+                                self.function_declarations.append(declaration)
 
         # Добавляем объявление main
         self.function_declarations.append("int main(void);")
@@ -1927,7 +1905,9 @@ class CCodeGenerator:
             seen = set()
 
             for decl in self.function_declarations:
-                if decl not in seen:
+                # Нормализуем декларацию
+                decl = decl.strip()
+                if decl and decl not in seen:
                     seen.add(decl)
                     unique_declarations.append(decl)
 
@@ -4869,7 +4849,7 @@ class CCodeGenerator:
                     self.generate_class_method_implementation(class_name, scope)
 
     def generate_class_method_implementation(self, class_name: str, scope: Dict):
-        """Генерирует реализацию метода класса"""
+        """Генерирует реализацию метода класса с поддержкой сложных типов возврата"""
         method_name = scope.get("method_name", "")
         return_type = scope.get("return_type", "void")
 
@@ -4877,7 +4857,11 @@ class CCodeGenerator:
             f"DEBUG generate_class_method_implementation: {class_name}.{method_name}() -> {return_type}"
         )
 
-        # Пропускаем методы, которые уже были сгенерированы
+        # Пропускаем конструктор
+        if method_name == "__init__":
+            return
+
+        # Проверяем, не генерировали ли уже этот метод
         func_name = f"{class_name}_{method_name}"
         if func_name in self.generated_functions:
             print(f"DEBUG: метод {func_name} уже сгенерирован, пропускаем")
@@ -4886,28 +4870,21 @@ class CCodeGenerator:
         # Регистрируем метод как сгенерированный
         self.generated_functions.add(func_name)
 
-        # Определяем, является ли метод унаследованным
-        is_inherited = False
-        origin_class = class_name
+        # Определяем C тип возвращаемого значения
+        if return_type.startswith("list["):
+            # Генерируем структуру для списка если нужно
+            self.generate_list_struct(return_type)
+            struct_name = self.generate_list_struct_name(return_type)
+            c_return_type = f"{struct_name}*"
+        elif return_type.startswith("tuple["):
+            # Генерируем структуру для кортежа если нужно
+            self.generate_tuple_struct(return_type)
+            struct_name = self.generate_tuple_struct_name(return_type)
+            c_return_type = f"{struct_name}*"
+        else:
+            c_return_type = self.map_type_to_c(return_type)
 
-        if (
-            class_name in self.all_class_methods
-            and method_name in self.all_class_methods[class_name]
-        ):
-            method_info = self.all_class_methods[class_name][method_name]
-            is_inherited = method_info.get("is_inherited", False)
-            origin_class = method_info.get("origin", class_name)
-
-            # Если метод унаследован и определен в другом классе, генерируем заглушку
-            if is_inherited and origin_class != class_name:
-                print(f"DEBUG: метод {method_name} унаследован от {origin_class}")
-                self._generate_inherited_method_stub(class_name, method_info)
-                return
-
-        # Генерируем обычную реализацию метода
-        print(f"DEBUG: генерация обычного метода {class_name}.{method_name}")
-
-        # Генерируем сигнатуру метода
+        # Генерируем параметры
         parameters = scope.get("parameters", [])
         param_decls = []
 
@@ -4922,16 +4899,16 @@ class CCodeGenerator:
 
             param_decls.append(f"{c_param_type} {param_name}")
 
-        c_return_type = self.map_type_to_c(return_type)
         params_str = ", ".join(param_decls) if param_decls else "void"
 
+        # Сигнатура метода
         self.add_line(f"{c_return_type} {class_name}_{method_name}({params_str}) {{")
         self.indent_level += 1
 
         # Входим в scope метода
         self.enter_scope()
 
-        # Объявляем параметры в scope
+        # Объявляем параметры в scope (кроме self)
         for param in parameters:
             param_name = param.get("name", "")
             if param_name != "self":
@@ -7290,3 +7267,108 @@ class CCodeGenerator:
 
         # Формируем имя функции: TypeName_methodName
         self.add_line(f"{object_type}_{method_name}({args_str});")
+
+    def generate_redeclaration(self, node: Dict):
+        """Генерирует код для повторного объявления переменной"""
+        var_name = node.get("var_name", "")
+        var_type = node.get("var_type", "")
+        expression_ast = node.get("expression_ast", {})
+
+        print(f"DEBUG generate_redeclaration: {var_name}: {var_type}")
+
+        # Получаем информацию о старой переменной
+        old_var_info = self.get_variable_info(var_name)
+
+        # Освобождаем старую память если нужно
+        if old_var_info:
+            old_py_type = old_var_info.get("py_type", "")
+
+            if old_py_type.startswith("list["):
+                struct_name = self.generate_list_struct_name(old_py_type)
+                self.add_line(f"if ({var_name}) {{")
+                self.indent_level += 1
+                self.add_line(f"free_{struct_name}({var_name});")
+                self.indent_level -= 1
+                self.add_line("}")
+            elif old_py_type.startswith("tuple["):
+                struct_name = self.generate_tuple_struct_name(old_py_type)
+                self.add_line(f"free_{struct_name}({var_name});")
+            elif old_py_type == "str":
+                self.add_line(f"if ({var_name}) {{")
+                self.indent_level += 1
+                self.add_line(f"free({var_name});")
+                self.indent_level -= 1
+                self.add_line("}")
+
+        # Обновляем переменную в scope
+        self.declare_variable(var_name, var_type)
+
+        # Генерируем код для нового значения
+        if expression_ast:
+            if (
+                var_type.startswith("list[")
+                and expression_ast.get("type") == "list_literal"
+            ):
+                # Генерируем код для нового списка
+                self._generate_list_redeclaration(var_name, var_type, expression_ast)
+            elif (
+                var_type.startswith("tuple[")
+                and expression_ast.get("type") == "tuple_literal"
+            ):
+                # Генерируем код для нового кортежа
+                self._generate_tuple_redeclaration(var_name, var_type, expression_ast)
+            else:
+                # Обычное присваивание
+                expr = self.generate_expression(expression_ast)
+                self.add_line(f"{var_name} = {expr};")
+
+    def _generate_list_redeclaration(
+        self, var_name: str, var_type: str, list_ast: Dict
+    ):
+        """Генерирует код для повторного объявления списка"""
+        items = list_ast.get("items", [])
+
+        # Генерируем структуру для списка если нужно
+        self.generate_list_struct(var_type)
+        struct_name = self.generate_list_struct_name(var_type)
+
+        # Создаем новый список
+        self.add_line(
+            f"{struct_name}* {var_name} = create_{struct_name}({max(len(items), 4)});"
+        )
+
+        # Добавляем элементы
+        for item_ast in items:
+            item_expr = self.generate_expression(item_ast)
+            self.add_line(f"append_{struct_name}({var_name}, {item_expr});")
+
+    def _generate_tuple_redeclaration(
+        self, var_name: str, var_type: str, tuple_ast: Dict
+    ):
+        """Генерирует код для повторного объявления кортежа"""
+        items = tuple_ast.get("items", [])
+
+        # Генерируем структуру для кортежа если нужно
+        self.generate_tuple_struct(var_type)
+        struct_name = self.generate_tuple_struct_name(var_type)
+
+        if items:
+            # Создаем временный массив
+            temp_array = f"temp_{var_name}"
+            element_type = self.map_type_to_c("int")  # по умолчанию int
+
+            self.add_line(f"{element_type} {temp_array}[{len(items)}] = {{")
+            self.indent_level += 1
+            for i, item_ast in enumerate(items):
+                item_expr = self.generate_expression(item_ast)
+                self.add_line(f"{item_expr}{',' if i < len(items) - 1 else ''}")
+            self.indent_level -= 1
+            self.add_line("};")
+
+            # Создаем новый кортеж
+            self.add_line(
+                f"{var_name} = create_{struct_name}({temp_array}, {len(items)});"
+            )
+        else:
+            # Пустой кортеж
+            self.add_line(f"{var_name} = create_{struct_name}(NULL, 0);")

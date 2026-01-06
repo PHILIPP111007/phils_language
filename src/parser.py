@@ -4402,7 +4402,7 @@ class Parser:
     ):
         """Парсит объявление метода класса"""
         # Определяем паттерн для метода
-        pattern = r"def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)\s*(?:->\s*([a-zA-Z_][a-zA-Z0-9_]*))?\s*:"
+        pattern = r"def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)\s*(?:->\s*(.+?))?\s*:"
         match = re.match(pattern, line)
 
         if not match:
