@@ -74,6 +74,10 @@ class CCodeGenerator:
         self.inherited_methods = {}  # {class_name: {method_name: origin_class}}
         self.all_class_methods = {}  # {class_name: {method_name: method_info}}
 
+        # Для отслеживания уже сгенерированных функций
+        self.generated_functions = set()  # Имена уже сгенерированных функций
+        self.generated_structures = set()  # Имена уже сгенерированных структур
+
     def reset(self):
         """Сброс состояния генератора"""
         print(
@@ -88,6 +92,8 @@ class CCodeGenerator:
         self.generated_helpers.clear()
         self.generic_type_map.clear()
         self.class_fields.clear()  # Очищаем поля классов
+        self.generated_functions.clear()  # Очищаем кэш функций
+        self.generated_structures.clear()  # Очищаем кэш структур
         print(f"DEBUG reset: generated_helpers очищен")
 
     def indent(self) -> str:
@@ -147,10 +153,7 @@ class CCodeGenerator:
             # Генерируем структуру для кортежа
             self.generate_tuple_struct(py_type)
             struct_name = self.generate_tuple_struct_name(py_type)
-
-            if is_pointer:
-                return f"{struct_name}*"
-            return struct_name
+            return f"{struct_name}*"
         elif py_type.startswith("list["):
             # Генерируем структуру для list
             self.generate_list_struct(py_type)
@@ -867,66 +870,38 @@ class CCodeGenerator:
     ):
         """Генерирует объявление кортежа"""
         struct_name = self.generate_tuple_struct_name(var_type)
-        c_type = self.map_type_to_c(var_type)  # Это будет "tuple_int" для tuple[int]
+        # tuple всегда указатель!
+        c_type = f"{struct_name}*"
 
-        # Определяем тип кортежа
-        is_uniform = tuple_info.get("is_uniform", False)
-        is_fixed = tuple_info.get("is_fixed", False)
+        # Объявляем переменную в scope как указатель
+        self.declare_variable(var_name, var_type, is_pointer=True)
 
-        # Ищем соответствующую операцию создания
-        creation_op = None
-        for op in operations:
-            if op.get("type") in ["CREATE_TUPLE_UNIFORM", "CREATE_TUPLE_FIXED"]:
-                creation_op = op
-                break
+        if expression_ast and expression_ast.get("type") == "tuple_literal":
+            items = expression_ast.get("items", [])
 
-        if creation_op:
-            items = creation_op.get("items", [])
-            size = creation_op.get("size", 0)
+            if items:
+                # Создаем временный массив
+                temp_array = f"temp_{var_name}"
+                element_type = self.map_type_to_c("int")  # по умолчанию int
 
-            if creation_op.get("type") == "CREATE_TUPLE_UNIFORM":
-                # tuple[T] - универсальный кортеж
-                element_type = tuple_info.get("element_type", "int")
-                c_element_type = self.map_type_to_c(element_type)
+                self.add_line(f"{element_type} {temp_array}[{len(items)}] = {{")
+                self.indent_level += 1
+                for i, item_ast in enumerate(items):
+                    item_expr = self.generate_expression(item_ast)
+                    self.add_line(f"{item_expr}{',' if i < len(items) - 1 else ''}")
+                self.indent_level -= 1
+                self.add_line("};")
 
-                if items and size > 0:
-                    # Создаем временный массив для инициализации
-                    temp_array_name = f"temp_{var_name}"
-                    self.add_line(f"{c_element_type} {temp_array_name}[{size}] = {{")
-                    self.indent_level += 1
-                    for i, item_ast in enumerate(items):
-                        item_expr = self.generate_expression(item_ast)
-                        self.add_line(f"{item_expr}{',' if i < size - 1 else ''}")
-                    self.indent_level -= 1
-                    self.add_line("};")
-
-                    # Создаем кортеж из массива
-                    self.add_line(
-                        f"{c_type} {var_name} = create_{struct_name}({temp_array_name}, {size});"
-                    )
-                elif size == 0:
-                    # Пустой кортеж
-                    self.add_line(f"{c_type} {var_name};")
-                    self.add_line(f"{var_name}.data = NULL;")
-                    self.add_line(f"{var_name}.size = 0;")
-                else:
-                    # Кортеж без инициализации
-                    self.add_line(f"{c_type} {var_name};")
-
-            elif creation_op.get("type") == "CREATE_TUPLE_FIXED":
-                # tuple[T1, T2, ...] - фиксированный кортеж
-                if items and size > 0:
-                    # Генерируем аргументы для функции создания
-                    args = [self.generate_expression(item) for item in items]
-                    self.add_line(
-                        f"{c_type} {var_name} = create_{struct_name}({', '.join(args)});"
-                    )
-                else:
-                    # Кортеж без инициализации
-                    self.add_line(f"{c_type} {var_name};")
+                # Создаем tuple через функцию создания
+                self.add_line(
+                    f"{c_type} {var_name} = create_{struct_name}({temp_array}, {len(items)});"
+                )
+            else:
+                # Пустой tuple
+                self.add_line(f"{c_type} {var_name} = create_{struct_name}(NULL, 0);")
         else:
-            # Если нет операции создания, просто объявляем
-            self.add_line(f"{c_type} {var_name};")
+            # Объявление без инициализации
+            self.add_line(f"{c_type} {var_name} = NULL;")
 
     def generate_list_declaration(
         self, var_name: str, var_type: str, expression_ast: Dict, operations: List
@@ -1967,67 +1942,67 @@ class CCodeGenerator:
 
         inner = match.group(1)
         struct_name = self.generate_tuple_struct_name(py_type)
+        element_type = self.map_type_to_c(inner)
 
-        # Определяем, является ли это универсальным tuple[T]
-        is_fixed = "," in inner
+        # Структура tuple
+        struct_code = f"typedef struct {{\n"
+        struct_code += f"    {element_type}* data;\n"
+        struct_code += f"    int size;\n"
+        struct_code += f"}} {struct_name};\n\n"
 
-        if not is_fixed:
-            # tuple[T] - универсальный кортеж
-            element_type = inner
-            c_element_type = self.map_type_to_c(element_type)
+        self.generated_helpers.append(struct_code)
 
-            # Универсальная структура для tuple[T]
-            struct_code = f"typedef struct {{\n"
-            struct_code += f"    {c_element_type}* data;\n"
-            struct_code += f"    int size;\n"
-            struct_code += f"}} {struct_name};\n\n"
+        # Функции для tuple
+        functions = []
 
-            # Функция создания из массива
-            create_func = f"{struct_name} create_{struct_name}({c_element_type} arr[], int size) {{\n"
-            create_func += f"    {struct_name} t;\n"
-            create_func += f"    t.size = size;\n"
-            create_func += f"    t.data = malloc(size * sizeof({c_element_type}));\n"
-            create_func += f"    if (!t.data) {{\n"
-            create_func += (
-                f'        fprintf(stderr, "Memory allocation failed for tuple\\n");\n'
-            )
-            create_func += f"        exit(1);\n"
-            create_func += f"    }}\n"
-            create_func += f"    for (int i = 0; i < size; i++) {{\n"
-            create_func += f"        t.data[i] = arr[i];\n"
-            create_func += f"    }}\n"
-            create_func += f"    return t;\n"
-            create_func += f"}}\n\n"
+        # Создание
+        functions.append(f"""
+    {struct_name}* create_{struct_name}(const {element_type} arr[], int size) {{
+        {struct_name}* t = malloc(sizeof({struct_name}));
+        if (!t) {{
+            fprintf(stderr, "Memory allocation failed for tuple\\n");
+            exit(1);
+        }}
+        
+        t->size = size;
+        t->data = malloc(size * sizeof({element_type}));
+        if (!t->data) {{
+            fprintf(stderr, "Memory allocation failed for tuple data\\n");
+            free(t);
+            exit(1);
+        }}
+        
+        for (int i = 0; i < size; i++) {{
+            t->data[i] = arr[i];
+        }}
+        
+        return t;
+    }}
+    """)
 
-            # Функция len()
-            len_func = f"int builtin_len_{struct_name}({struct_name}* t) {{\n"
-            len_func += f"    if (!t) return 0;\n"
-            len_func += f"    return t->size;\n"
-            len_func += f"}}\n\n"
+        # Получение элемента (read-only)
+        functions.append(f"""
+    {element_type} get_{struct_name}(const {struct_name}* t, int index) {{
+        if (!t || index < 0 || index >= t->size) {{
+            fprintf(stderr, "Index out of bounds in tuple\\n");
+            exit(1);
+        }}
+        return t->data[index];
+    }}
+    """)
 
-            # Функция очистки
-            free_func = f"void free_{struct_name}({struct_name}* t) {{\n"
-            free_func += f"    if (t->data) {{\n"
-            free_func += f"        free(t->data);\n"
-            free_func += f"        t->data = NULL;\n"
-            free_func += f"    }}\n"
-            free_func += f"    t->size = 0;\n"
-            free_func += f"}}\n\n"
+        # Длина
+        functions.append(f"""
+    int builtin_len_{struct_name}(const {struct_name}* t) {{
+        if (!t) return 0;
+        return t->size;
+    }}
+    """)
 
-            # Функция доступа к элементу по индексу
-            get_func = (
-                f"{c_element_type} get_{struct_name}({struct_name}* t, int index) {{\n"
-            )
-            get_func += f"    if (!t || index < 0 || index >= t->size) {{\n"
-            get_func += f'        fprintf(stderr, "Index out of bounds in tuple\\n");\n'
-            get_func += f"        exit(1);\n"
-            get_func += f"    }}\n"
-            get_func += f"    return t->data[index];\n"
-            get_func += f"}}\n\n"
-
-            # Функция slice для кортежа - ДОБАВЛЕНО
-            slice_func = f"""{struct_name} slice_{struct_name}({struct_name}* t, int start, int stop, int step) {{
-        if (!t) return ({struct_name}){{NULL, 0}};
+        # Срез (возвращает новый tuple)
+        functions.append(f"""
+    {struct_name}* slice_{struct_name}(const {struct_name}* t, int start, int stop, int step) {{
+        if (!t) return NULL;
         
         // Нормализация индексов
         if (start < 0) start = t->size + start;
@@ -2048,41 +2023,77 @@ class CCodeGenerator:
             exit(1);
         }}
         
-        // Создаем временный массив
-        {c_element_type}* temp_data = malloc(new_size * sizeof({c_element_type}));
-        if (!temp_data) {{
+        // Создаем новый tuple
+        {struct_name}* result = malloc(sizeof({struct_name}));
+        if (!result) {{
             fprintf(stderr, "Memory allocation failed for tuple slice\\n");
             exit(1);
         }}
         
-        // Копируем элементы с учетом шага
+        result->size = new_size;
+        result->data = malloc(new_size * sizeof({element_type}));
+        if (!result->data) {{
+            fprintf(stderr, "Memory allocation failed for tuple slice data\\n");
+            free(result);
+            exit(1);
+        }}
+        
+        // Копируем элементы
         int pos = 0;
         if (step > 0) {{
             for (int i = start; i < stop && pos < new_size; i += step) {{
-                if (i >= 0 && i < t->size) {{
-                    temp_data[pos++] = t->data[i];
-                }}
+                result->data[pos++] = t->data[i];
             }}
         }} else {{
             for (int i = start; i > stop && pos < new_size; i += step) {{
-                if (i >= 0 && i < t->size) {{
-                    temp_data[pos++] = t->data[i];
-                }}
+                result->data[pos++] = t->data[i];
             }}
         }}
         
-        // Создаем кортеж
-        {struct_name} result;
-        result.size = new_size;
-        result.data = temp_data;
-        
         return result;
-    }}\n\n"""
+    }}
+    """)
 
-            # Добавляем все функции
-            self.generated_helpers.extend(
-                [struct_code, create_func, len_func, free_func, get_func, slice_func]
-            )
+        # Освобождение памяти
+        functions.append(f"""
+    void free_{struct_name}({struct_name}* t) {{
+        if (t) {{
+            if (t->data) {{
+                free(t->data);
+            }}
+            free(t);
+        }}
+    }}
+    """)
+
+        # Копирование (глубокая копия)
+        functions.append(f"""
+    {struct_name}* copy_{struct_name}(const {struct_name}* t) {{
+        if (!t) return NULL;
+        
+        {struct_name}* copy = malloc(sizeof({struct_name}));
+        if (!copy) {{
+            fprintf(stderr, "Memory allocation failed for tuple copy\\n");
+            exit(1);
+        }}
+        
+        copy->size = t->size;
+        copy->data = malloc(t->size * sizeof({element_type}));
+        if (!copy->data) {{
+            fprintf(stderr, "Memory allocation failed for tuple copy data\\n");
+            free(copy);
+            exit(1);
+        }}
+        
+        for (int i = 0; i < t->size; i++) {{
+            copy->data[i] = t->data[i];
+        }}
+        
+        return copy;
+    }}
+    """)
+
+        self.generated_helpers.extend(functions)
 
     def generate_list_struct(self, py_type: str):
         """Генерирует структуру C для списка любой вложенности"""
@@ -2101,22 +2112,19 @@ class CCodeGenerator:
 
         print(f"DEBUG generate_list_struct: {py_type}")
         print(f"  struct_name: {struct_name}")
-        print(f"  element_type: {type_info.get('element_type')}")
-        print(f"  element_py_type: {type_info.get('element_py_type')}")
-        print(f"  is_c_type: {type_info.get('is_c_type')}")
-
-        # Определяем element_type
-        element_type = type_info.get("element_type", "void*")
-        element_py_type = type_info.get("element_py_type")
-        is_c_type = type_info.get("is_c_type", False)
 
         # Генерируем структуру только если еще не генерировали
-        if struct_name not in self.generated_structs:
-            self.generated_structs.add(struct_name)
+        if struct_name not in self.generated_structures:
+            self.generated_structures.add(struct_name)
+
+            # Определяем element_type
+            element_type = type_info.get("element_type", "void*")
+            element_py_type = type_info.get("element_py_type")
+            is_c_type = type_info.get("is_c_type", False)
 
             print(f"  Генерация структуры {struct_name} с element_type={element_type}")
 
-            # ВАЖНО: Создаем правильную структуру
+            # Создаем правильную структуру
             struct_code = f"typedef struct {{\n"
             struct_code += f"    {element_type}* data;  // Указатель на массив элементов типа {element_type}\n"
             struct_code += f"    int size;\n"
@@ -2124,27 +2132,13 @@ class CCodeGenerator:
             struct_code += f"}} {struct_name};\n\n"
 
             self.generated_helpers.append(struct_code)
-        else:
-            print(f"DEBUG: Структура {struct_name} уже сгенерирована")
 
-        # ВАЖНО: Всегда генерируем функции, если они еще не были сгенерированы
-        # Проверяем, есть ли slice функция для этой структуры
-        has_slice_function = False
-        for i, helper in enumerate(self.generated_helpers):
-            if f"slice_{struct_name}" in helper:
-                has_slice_function = True
-                print(f"DEBUG: Найдена slice_{struct_name} в helper {i}")
-                break
-
-        if not has_slice_function:
-            print(
-                f"DEBUG: Функция slice_{struct_name} отсутствует, генерируем все функции..."
-            )
+            # Генерируем функции (они сами проверяют дублирование)
             self._generate_list_functions(
                 struct_name, element_type, element_py_type, is_c_type
             )
         else:
-            print(f"DEBUG: Функция slice_{struct_name} уже существует")
+            print(f"DEBUG: Структура {struct_name} уже сгенерирована")
 
     def _generate_leaf_list_struct(self, leaf_type: str, struct_name: str):
         """Генерирует структуру для листового списка (например, list_int)"""
@@ -2176,16 +2170,21 @@ class CCodeGenerator:
         element_py_type: str = None,
         is_c_type: bool = False,
     ):
-        """Генерирует функции для работы со списком"""
+        """Генерирует функции для работы со списком (без дублирования)"""
+
+        print(f"DEBUG _generate_list_functions: struct_name={struct_name}")
+
+        # Проверяем, не генерировали ли мы уже функции для этой структуры
+        if struct_name in self.generated_functions:
+            print(f"DEBUG: Функции для {struct_name} уже сгенерированы, пропускаем")
+            return
+
+        # Помечаем как сгенерированные
+        self.generated_functions.add(struct_name)
 
         print(
             f"DEBUG _generate_list_functions: struct_name={struct_name}, element_type={element_type}, is_c_type={is_c_type}"
         )
-
-        print(
-            f"DEBUG _generate_list_functions: struct_name={struct_name}, element_type={element_type}, is_c_type={is_c_type}"
-        )
-        print(f"DEBUG: Будет добавлено 7 функций для {struct_name}")
 
         # Определяем, нужна ли специальная обработка для типа
         if is_c_type:
@@ -2193,260 +2192,278 @@ class CCodeGenerator:
             self._generate_generic_c_list_functions(
                 struct_name, element_type, element_py_type
             )
-            # return
+            return
 
-        # Оригинальный код для обычных типов...
-        # Функция создания
-        create_func = f"{struct_name}* create_{struct_name}(int initial_capacity) {{\n"
-        create_func += f"    {struct_name}* list = malloc(sizeof({struct_name}));\n"
-        create_func += f"    if (!list) {{\n"
-        create_func += (
-            f'        fprintf(stderr, "Memory allocation failed for list\\n");\n'
-        )
-        create_func += f"        exit(1);\n"
-        create_func += f"    }}\n"
-        create_func += (
-            f"    list->data = malloc(initial_capacity * sizeof({element_type}));\n"
-        )
-        create_func += f"    if (!list->data) {{\n"
-        create_func += (
-            f'        fprintf(stderr, "Memory allocation failed for list data\\n");\n'
-        )
-        create_func += f"        free(list);\n"
-        create_func += f"        exit(1);\n"
-        create_func += f"    }}\n"
-        create_func += f"    list->size = 0;\n"
-        create_func += f"    list->capacity = initial_capacity;\n"
-        create_func += f"    return list;\n"
-        create_func += f"}}\n\n"
+        # 1. Функция создания
+        create_func_name = f"create_{struct_name}"
+        if create_func_name not in self.generated_functions:
+            create_func = (
+                f"{struct_name}* {create_func_name}(int initial_capacity) {{\n"
+            )
+            create_func += f"    {struct_name}* list = malloc(sizeof({struct_name}));\n"
+            create_func += f"    if (!list) {{\n"
+            create_func += (
+                f'        fprintf(stderr, "Memory allocation failed for list\\n");\n'
+            )
+            create_func += f"        exit(1);\n"
+            create_func += f"    }}\n"
+            create_func += (
+                f"    list->data = malloc(initial_capacity * sizeof({element_type}));\n"
+            )
+            create_func += f"    if (!list->data) {{\n"
+            create_func += f'        fprintf(stderr, "Memory allocation failed for list data\\n");\n'
+            create_func += f"        free(list);\n"
+            create_func += f"        exit(1);\n"
+            create_func += f"    }}\n"
+            create_func += f"    list->size = 0;\n"
+            create_func += f"    list->capacity = initial_capacity;\n"
+            create_func += f"    return list;\n"
+            create_func += f"}}\n\n"
+            self.generated_helpers.append(create_func)
+            self.generated_functions.add(create_func_name)
 
-        # Функция добавления
-        append_func = (
-            f"void append_{struct_name}({struct_name}* list, {element_type} value) {{\n"
-        )
-        append_func += f"    if (list->size >= list->capacity) {{\n"
-        append_func += (
-            f"        list->capacity = list->capacity == 0 ? 4 : list->capacity * 2;\n"
-        )
-        append_func += f"        list->data = realloc(list->data, list->capacity * sizeof({element_type}));\n"
-        append_func += f"        if (!list->data) {{\n"
-        append_func += (
-            f'            fprintf(stderr, "Memory reallocation failed for list\\n");\n'
-        )
-        append_func += f"            exit(1);\n"
-        append_func += f"        }}\n"
-        append_func += f"    }}\n"
-        append_func += f"    list->data[list->size] = value;\n"
-        append_func += f"    list->size++;\n"
-        append_func += f"}}\n\n"
+        # 2. Функция добавления
+        append_func_name = f"append_{struct_name}"
+        if append_func_name not in self.generated_functions:
+            append_func = f"void {append_func_name}({struct_name}* list, {element_type} value) {{\n"
+            append_func += f"    if (list->size >= list->capacity) {{\n"
+            append_func += f"        list->capacity = list->capacity == 0 ? 4 : list->capacity * 2;\n"
+            append_func += f"        list->data = realloc(list->data, list->capacity * sizeof({element_type}));\n"
+            append_func += f"        if (!list->data) {{\n"
+            append_func += f'            fprintf(stderr, "Memory reallocation failed for list\\n");\n'
+            append_func += f"            exit(1);\n"
+            append_func += f"        }}\n"
+            append_func += f"    }}\n"
+            append_func += f"    list->data[list->size] = value;\n"
+            append_func += f"    list->size++;\n"
+            append_func += f"}}\n\n"
+            self.generated_helpers.append(append_func)
+            self.generated_functions.add(append_func_name)
 
-        # Функция len()
-        len_func = f"int builtin_len_{struct_name}({struct_name}* list) {{\n"
-        len_func += f"    if (!list) return 0;\n"
-        len_func += f"    return list->size;\n"
-        len_func += f"}}\n\n"
+        # 3. Функция len()
+        len_func_name = f"builtin_len_{struct_name}"
+        if len_func_name not in self.generated_functions:
+            len_func = f"int {len_func_name}({struct_name}* list) {{\n"
+            len_func += f"    if (!list) return 0;\n"
+            len_func += f"    return list->size;\n"
+            len_func += f"}}\n\n"
+            self.generated_helpers.append(len_func)
+            self.generated_functions.add(len_func_name)
 
-        # Функция очистки
-        free_func = f"void free_{struct_name}({struct_name}* list) {{\n"
-        free_func += f"    if (list) {{\n"
+        # 4. Функция очистки
+        free_func_name = f"free_{struct_name}"
+        if free_func_name not in self.generated_functions:
+            free_func = f"void {free_func_name}({struct_name}* list) {{\n"
+            free_func += f"    if (list) {{\n"
 
-        # Если элементы - указатели на списки, освобождаем их
-        if element_py_type and element_py_type.startswith("list["):
-            inner_struct_name = self.generate_list_struct_name(element_py_type)
-            free_func += f"        for (int i = 0; i < list->size; i++) {{\n"
-            free_func += f"            if (list->data[i]) {{\n"
-            free_func += f"                free_{inner_struct_name}(list->data[i]);\n"
-            free_func += f"            }}\n"
-            free_func += f"        }}\n"
+            # Если элементы - указатели на списки, освобождаем их
+            if element_py_type and element_py_type.startswith("list["):
+                inner_struct_name = self.generate_list_struct_name(element_py_type)
+                free_func += f"        for (int i = 0; i < list->size; i++) {{\n"
+                free_func += f"            if (list->data[i]) {{\n"
+                free_func += (
+                    f"                free_{inner_struct_name}(list->data[i]);\n"
+                )
+                free_func += f"            }}\n"
+                free_func += f"        }}\n"
 
-        free_func += f"        free(list->data);\n"
-        free_func += f"        free(list);\n"
-        free_func += f"    }}\n"
-        free_func += f"}}\n\n"
+            free_func += f"        free(list->data);\n"
+            free_func += f"        free(list);\n"
+            free_func += f"    }}\n"
+            free_func += f"}}\n\n"
+            self.generated_helpers.append(free_func)
+            self.generated_functions.add(free_func_name)
 
-        # Функция доступа к элементу (добавляем для всех типов)
-        get_func = (
-            f"{element_type} get_{struct_name}({struct_name}* list, int index) {{\n"
-        )
-        get_func += f"    if (!list || index < 0 || index >= list->size) {{\n"
-        get_func += f'        fprintf(stderr, "Index out of bounds in list\\n");\n'
-        get_func += f"        exit(1);\n"
-        get_func += f"    }}\n"
-        get_func += f"    return list->data[index];\n"
-        get_func += f"}}\n\n"
+        # 5. Функция доступа к элементу
+        get_func_name = f"get_{struct_name}"
+        if get_func_name not in self.generated_functions:
+            get_func = (
+                f"{element_type} {get_func_name}({struct_name}* list, int index) {{\n"
+            )
+            get_func += f"    if (!list || index < 0 || index >= list->size) {{\n"
+            get_func += f'        fprintf(stderr, "Index out of bounds in list\\n");\n'
+            get_func += f"        exit(1);\n"
+            get_func += f"    }}\n"
+            get_func += f"    return list->data[index];\n"
+            get_func += f"}}\n\n"
+            self.generated_helpers.append(get_func)
+            self.generated_functions.add(get_func_name)
 
-        # Функция установки элемента
-        set_func = f"void set_{struct_name}({struct_name}* list, int index, {element_type} value) {{\n"
-        set_func += f"    if (!list || index < 0 || index >= list->size) {{\n"
-        set_func += f'        fprintf(stderr, "Index out of bounds in list\\n");\n'
-        set_func += f"        exit(1);\n"
-        set_func += f"    }}\n"
-        set_func += f"    list->data[index] = value;\n"
-        set_func += f"}}\n\n"
+        # 6. Функция установки элемента
+        set_func_name = f"set_{struct_name}"
+        if set_func_name not in self.generated_functions:
+            set_func = f"void {set_func_name}({struct_name}* list, int index, {element_type} value) {{\n"
+            set_func += f"    if (!list || index < 0 || index >= list->size) {{\n"
+            set_func += f'        fprintf(stderr, "Index out of bounds in list\\n");\n'
+            set_func += f"        exit(1);\n"
+            set_func += f"    }}\n"
+            set_func += f"    list->data[index] = value;\n"
+            set_func += f"}}\n\n"
+            self.generated_helpers.append(set_func)
+            self.generated_functions.add(set_func_name)
 
-        # Функция slice для списка - ИСПРАВЛЕННАЯ ВЕРСИЯ
-        slice_func = f"""{struct_name}* slice_{struct_name}({struct_name}* list, int start, int stop, int step) {{
-            if (!list) return NULL;
-            
-            // Нормализация индексов
-            if (start < 0) start = list->size + start;
-            if (stop < 0) stop = list->size + stop;
-            if (start < 0) start = 0;
-            if (stop > list->size) stop = list->size;
-            
-            // Вычисляем размер результата
-            int new_size;
-            if (step > 0) {{
-                if (start >= stop) new_size = 0;
-                else new_size = (stop - start + step - 1) / step;
-            }} else if (step < 0) {{
-                if (start <= stop) new_size = 0;
-                else new_size = (start - stop - step - 1) / (-step);
-            }} else {{
-                fprintf(stderr, "ValueError: slice step cannot be zero\\n");
-                exit(1);
-            }}
-            
-            // Создаем новый список
-            {struct_name}* result = create_{struct_name}(new_size);
-            
-            // Копируем элементы с учетом шага
-            if (step > 0) {{
-                for (int i = start; i < stop && result->size < new_size; i += step) {{
-                    if (i >= 0 && i < list->size) {{
-                        append_{struct_name}(result, list->data[i]);
-                    }}
+        # 7. Функция slice для списка
+        slice_func_name = f"slice_{struct_name}"
+        if slice_func_name not in self.generated_functions:
+            slice_func = f"""{struct_name}* slice_{struct_name}({struct_name}* list, int start, int stop, int step) {{
+        if (!list) return NULL;
+        
+        // Нормализация индексов
+        if (start < 0) start = list->size + start;
+        if (stop < 0) stop = list->size + stop;
+        if (start < 0) start = 0;
+        if (stop > list->size) stop = list->size;
+        
+        // Вычисляем размер результата
+        int new_size;
+        if (step > 0) {{
+            if (start >= stop) new_size = 0;
+            else new_size = (stop - start + step - 1) / step;
+        }} else if (step < 0) {{
+            if (start <= stop) new_size = 0;
+            else new_size = (start - stop - step - 1) / (-step);
+        }} else {{
+            fprintf(stderr, "ValueError: slice step cannot be zero\\n");
+            exit(1);
+        }}
+        
+        // Создаем новый список
+        {struct_name}* result = create_{struct_name}(new_size);
+        
+        // Копируем элементы с учетом шага
+        if (step > 0) {{
+            for (int i = start; i < stop && result->size < new_size; i += step) {{
+                if (i >= 0 && i < list->size) {{
+                    append_{struct_name}(result, list->data[i]);
                 }}
-            }} else {{
-                for (int i = start; i > stop && result->size < new_size; i += step) {{
-                    if (i >= 0 && i < list->size) {{
-                        append_{struct_name}(result, list->data[i]);
-                    }}
+            }}
+        }} else {{
+            for (int i = start; i > stop && result->size < new_size; i += step) {{
+                if (i >= 0 && i < list->size) {{
+                    append_{struct_name}(result, list->data[i]);
                 }}
             }}
-            
-            return result;
-        }}\n\n"""
-
-        # Добавляем все функции ОДИН РАЗ!
-        self.generated_helpers.extend(
-            [
-                create_func,
-                append_func,
-                len_func,
-                free_func,
-                get_func,
-                set_func,
-                slice_func,
-            ]
-        )
-
-        print(f"DEBUG: Всего helpers после добавления: {len(self.generated_helpers)}")
+        }}
+        
+        return result;
+    }}\n\n"""
+            self.generated_helpers.append(slice_func)
+            self.generated_functions.add(slice_func_name)
 
     def _generate_generic_c_list_functions(
         self, struct_name: str, element_type: str, element_py_type: str
     ):
-        """Генерирует универсальные функции для списков C типов"""
+        """Генерирует универсальные функции для списков C типов (без дублирования)"""
 
-        # Функция создания
-        create_func = f"{struct_name}* create_{struct_name}(int initial_capacity) {{\n"
-        create_func += f"    {struct_name}* list = malloc(sizeof({struct_name}));\n"
-        create_func += f"    if (!list) {{\n"
-        create_func += f'        fprintf(stderr, "Memory allocation failed for {struct_name}\\n");\n'
-        create_func += f"        exit(1);\n"
-        create_func += f"    }}\n"
+        # Проверяем, не генерировали ли уже эти функции
+        base_name = struct_name
 
-        # ВАЖНО: Используем element_type для размера
-        create_func += (
-            f"    list->data = malloc(initial_capacity * sizeof({element_type}));\n"
-        )
-        create_func += f"    if (!list->data) {{\n"
-        create_func += f'        fprintf(stderr, "Memory allocation failed for {struct_name} data\\n");\n'
-        create_func += f"        free(list);\n"
-        create_func += f"        exit(1);\n"
-        create_func += f"    }}\n"
-        create_func += f"    list->size = 0;\n"
-        create_func += f"    list->capacity = initial_capacity;\n"
-        create_func += f"    return list;\n"
-        create_func += f"}}\n\n"
+        # 1. Функция создания
+        create_func_name = f"create_{struct_name}"
+        if create_func_name not in self.generated_functions:
+            create_func = (
+                f"{struct_name}* {create_func_name}(int initial_capacity) {{\n"
+            )
+            create_func += f"    {struct_name}* list = malloc(sizeof({struct_name}));\n"
+            create_func += f"    if (!list) {{\n"
+            create_func += f'        fprintf(stderr, "Memory allocation failed for {struct_name}\\n");\n'
+            create_func += f"        exit(1);\n"
+            create_func += f"    }}\n"
+            create_func += (
+                f"    list->data = malloc(initial_capacity * sizeof({element_type}));\n"
+            )
+            create_func += f"    if (!list->data) {{\n"
+            create_func += f'        fprintf(stderr, "Memory allocation failed for {struct_name} data\\n");\n'
+            create_func += f"        free(list);\n"
+            create_func += f"        exit(1);\n"
+            create_func += f"    }}\n"
+            create_func += f"    list->size = 0;\n"
+            create_func += f"    list->capacity = initial_capacity;\n"
+            create_func += f"    return list;\n"
+            create_func += f"}}\n\n"
+            self.generated_helpers.append(create_func)
+            self.generated_functions.add(create_func_name)
 
-        # Функция добавления
-        append_func = (
-            f"void append_{struct_name}({struct_name}* list, {element_type} value) {{\n"
-        )
-        append_func += f"    if (list->size >= list->capacity) {{\n"
-        append_func += (
-            f"        list->capacity = list->capacity == 0 ? 4 : list->capacity * 2;\n"
-        )
-        append_func += f"        list->data = realloc(list->data, list->capacity * sizeof({element_type}));\n"
-        append_func += f"        if (!list->data) {{\n"
-        append_func += f'            fprintf(stderr, "Memory reallocation failed for {struct_name}\\n");\n'
-        append_func += f"            exit(1);\n"
-        append_func += f"        }}\n"
-        append_func += f"    }}\n"
-        append_func += f"    list->data[list->size] = value;\n"
-        append_func += f"    list->size++;\n"
-        append_func += f"}}\n\n"
+        # 2. Функция добавления
+        append_func_name = f"append_{struct_name}"
+        if append_func_name not in self.generated_functions:
+            append_func = f"void {append_func_name}({struct_name}* list, {element_type} value) {{\n"
+            append_func += f"    if (list->size >= list->capacity) {{\n"
+            append_func += f"        list->capacity = list->capacity == 0 ? 4 : list->capacity * 2;\n"
+            append_func += f"        list->data = realloc(list->data, list->capacity * sizeof({element_type}));\n"
+            append_func += f"        if (!list->data) {{\n"
+            append_func += f'            fprintf(stderr, "Memory reallocation failed for {struct_name}\\n");\n'
+            append_func += f"            exit(1);\n"
+            append_func += f"        }}\n"
+            append_func += f"    }}\n"
+            append_func += f"    list->data[list->size] = value;\n"
+            append_func += f"    list->size++;\n"
+            append_func += f"}}\n\n"
+            self.generated_helpers.append(append_func)
+            self.generated_functions.add(append_func_name)
 
-        # Функция len()
-        len_func = f"int builtin_len_{struct_name}({struct_name}* list) {{\n"
-        len_func += f"    if (!list) return 0;\n"
-        len_func += f"    return list->size;\n"
-        len_func += f"}}\n\n"
+        # 3. Функция len()
+        len_func_name = f"builtin_len_{struct_name}"
+        if len_func_name not in self.generated_functions:
+            len_func = f"int {len_func_name}({struct_name}* list) {{\n"
+            len_func += f"    if (!list) return 0;\n"
+            len_func += f"    return list->size;\n"
+            len_func += f"}}\n\n"
+            self.generated_helpers.append(len_func)
+            self.generated_functions.add(len_func_name)
 
-        # Функция очистки
-        free_func = f"void free_{struct_name}({struct_name}* list) {{\n"
-        free_func += f"    if (list) {{\n"
+        # 4. Функция очистки
+        free_func_name = f"free_{struct_name}"
+        if free_func_name not in self.generated_functions:
+            free_func = f"void {free_func_name}({struct_name}* list) {{\n"
+            free_func += f"    if (list) {{\n"
 
-        # Для C типов проверяем, нужно ли освобождать элементы
-        if (
-            element_type.endswith("*")
-            and "char*" not in element_type
-            and "void*" not in element_type
-        ):
-            # Если это указатель на структуру (но не char* или void*)
-            # Определяем, есть ли у типа функция освобождения
-            base_type = element_type[:-1]  # Убираем *
+            # Для C типов проверяем, нужно ли освобождать элементы
             if (
-                base_type in self.class_types
-                or f"free_{base_type}" in self.generated_helpers
+                element_type.endswith("*")
+                and "char*" not in element_type
+                and "void*" not in element_type
             ):
-                free_func += f"        for (int i = 0; i < list->size; i++) {{\n"
-                free_func += f"            if (list->data[i]) {{\n"
-                free_func += f"                free_{base_type}(list->data[i]);\n"
-                free_func += f"            }}\n"
-                free_func += f"        }}\n"
-            elif "[" in base_type:  # Если это массив
-                free_func += f"        for (int i = 0; i < list->size; i++) {{\n"
-                free_func += f"            if (list->data[i]) {{\n"
-                free_func += f"                free(list->data[i]);\n"
-                free_func += f"            }}\n"
-                free_func += f"        }}\n"
+                # Если это указатель на структуру (но не char* или void*)
+                base_type = element_type[:-1]  # Убираем *
+                if base_type in self.class_types or f"free_{base_type}" in " ".join(
+                    self.generated_helpers
+                ):
+                    free_func += f"        for (int i = 0; i < list->size; i++) {{\n"
+                    free_func += f"            if (list->data[i]) {{\n"
+                    free_func += f"                free_{base_type}(list->data[i]);\n"
+                    free_func += f"            }}\n"
+                    free_func += f"        }}\n"
+                elif "[" in base_type:  # Если это массив
+                    free_func += f"        for (int i = 0; i < list->size; i++) {{\n"
+                    free_func += f"            if (list->data[i]) {{\n"
+                    free_func += f"                free(list->data[i]);\n"
+                    free_func += f"            }}\n"
+                    free_func += f"        }}\n"
 
-        free_func += f"        free(list->data);\n"
-        free_func += f"        free(list);\n"
-        free_func += f"    }}\n"
-        free_func += f"}}\n\n"
+            free_func += f"        free(list->data);\n"
+            free_func += f"        free(list);\n"
+            free_func += f"    }}\n"
+            free_func += f"}}\n\n"
+            self.generated_helpers.append(free_func)
+            self.generated_functions.add(free_func_name)
 
-        # Функция доступа к элементу
-        get_func = (
-            f"{element_type} get_{struct_name}({struct_name}* list, int index) {{\n"
-        )
-        get_func += f"    if (!list || index < 0 || index >= list->size) {{\n"
-        get_func += (
-            f'        fprintf(stderr, "Index out of bounds in {struct_name}\\n");\n'
-        )
-        get_func += f"        exit(1);\n"
-        get_func += f"    }}\n"
-        get_func += f"    return list->data[index];\n"
-        get_func += f"}}\n\n"
-
-        # Добавляем все функции
-        self.generated_helpers.append(create_func)
-        self.generated_helpers.append(append_func)
-        self.generated_helpers.append(len_func)
-        self.generated_helpers.append(free_func)
-        self.generated_helpers.append(get_func)
+        # 5. Функция доступа к элементу
+        get_func_name = f"get_{struct_name}"
+        if get_func_name not in self.generated_functions:
+            get_func = (
+                f"{element_type} {get_func_name}({struct_name}* list, int index) {{\n"
+            )
+            get_func += f"    if (!list || index < 0 || index >= list->size) {{\n"
+            get_func += (
+                f'        fprintf(stderr, "Index out of bounds in {struct_name}\\n");\n'
+            )
+            get_func += f"        exit(1);\n"
+            get_func += f"    }}\n"
+            get_func += f"    return list->data[index];\n"
+            get_func += f"}}\n\n"
+            self.generated_helpers.append(get_func)
+            self.generated_functions.add(get_func_name)
 
     def _generate_nested_list_functions(
         self, struct_name: str, element_type: str, inner_info: Dict
@@ -2953,17 +2970,23 @@ class CCodeGenerator:
         # 1. Собираем все типы
         self.collect_types_from_ast(json_data)
 
-        # 2. Анализируем наследование классов
-        self.analyze_class_inheritance(json_data)
-
-        # 3. Анализируем классы и их поля
-        self.analyze_classes(json_data)
-
         # 4. Собираем импорты и объявления
         self.collect_imports_and_declarations(json_data)
 
         # 5. Генерируем заголовок с импортами
         self.generate_c_imports()
+
+        # 8. Генерируем вспомогательные структуры и функции
+        self.generate_helpers_section()
+
+        # self.collect_class_fields_from_json(json_data)  # Новый метод
+        self.collect_class_fields_from_init_parameters(json_data)
+
+        # 2. Анализируем наследование классов
+        self.analyze_class_inheritance(json_data)
+
+        # 3. Анализируем классы и их поля
+        self.analyze_classes(json_data)
 
         # 6. Генерируем структуры классов (ПЕРЕД forward declarations!)
         for scope in json_data:
@@ -2974,9 +2997,6 @@ class CCodeGenerator:
 
         # 7. Генерируем forward declarations
         self.generate_forward_declarations()
-
-        # 8. Генерируем вспомогательные структуры и функции
-        self.generate_helpers_section()
 
         # 9. Генерируем конструкторы классов
         self.generate_class_constructors(json_data)
@@ -3357,6 +3377,24 @@ class CCodeGenerator:
 
             return f"{variable}[{index_expr}]"
 
+        elif node_type == "complex_attribute_access":
+            # Обработка self.data[index]
+            obj_name = ast.get("object", "")
+            attr_name = ast.get("attribute", "")
+            index_ast = ast.get("index", {})
+
+            index_expr = self.generate_expression(index_ast)
+
+            # Проверяем тип объекта
+            var_info = self.get_variable_info(obj_name)
+
+            if var_info and self._is_class_type(var_info.get("py_type", "")):
+                # Для классов используем стрелочку: self->data[index]
+                return f"{obj_name}->{attr_name}[{index_expr}]"
+            else:
+                # Для обычных структур используем точку
+                return f"{obj_name}.{attr_name}[{index_expr}]"
+
         elif node_type == "slice_access":
             variable = ast.get("variable", "")
             start_ast = ast.get("start", {})
@@ -3694,16 +3732,46 @@ class CCodeGenerator:
         """Анализирует метод __init__ для определения полей класса"""
         graph = init_scope.get("graph", [])
 
+        parameters = init_scope.get("parameters", [])
+        param_types = {}
+
+        # Собираем типы параметров (пропускаем self)
+        for param in parameters:
+            if param.get("name") != "self":
+                param_name = param.get("name", "")
+                param_type = param.get("type", "int")
+                param_types[param_name] = param_type
+
         for node in graph:
             if node.get("node") == "attribute_assignment":
                 # Присваивание атрибуту: self.attr = value
                 attr_name = node.get("attribute", "")
                 value = node.get("value", {})
 
-                # Определяем тип значения
-                field_type = self._infer_field_type(value)
-                if field_type:
-                    fields[attr_name] = field_type
+                # Проверяем, является ли значение параметром конструктора
+                if value.get("type") == "variable":
+                    var_name = value.get("value", "")
+
+                    # Если это параметр конструктора, берем его тип
+                    if var_name in param_types:
+                        field_type = param_types[var_name]
+                        fields[attr_name] = field_type
+                        print(
+                            f"DEBUG: Поле {attr_name} получает тип параметра {var_name}: {field_type}"
+                        )
+                    else:
+                        # Иначе пытаемся определить тип по значению
+                        field_type = self._infer_field_type(value)
+                        if field_type:
+                            fields[attr_name] = field_type
+                else:
+                    # Определяем тип по литералу или выражению
+                    field_type = self._infer_field_type(value)
+                    if field_type:
+                        fields[attr_name] = field_type
+                        print(
+                            f"DEBUG: Поле {attr_name} получает тип из значения: {field_type}"
+                        )
 
             elif node.get("node") == "declaration":
                 # Объявление атрибута с типом: self.attr: type = value
@@ -4836,6 +4904,7 @@ class CCodeGenerator:
 
         # Генерируем forward declaration
         self.add_line(f"typedef struct {class_name} {class_name};")
+        self.add_empty_line()
 
         # Генерируем структуру
         self.add_line(f"struct {class_name} {{")
@@ -4847,15 +4916,17 @@ class CCodeGenerator:
             self.add_line(f"// Наследование от {parent_class}")
             self.add_line(f"{parent_class} base;")
         else:
-            # Для корневого класса Object добавляем vtable
+            # Для корневого класса добавляем vtable
             self.add_line(f"void** vtable;")
 
-        # Добавляем поля класса
+        # Добавляем поля класса (если они были собраны)
         if class_name in self.class_fields and self.class_fields[class_name]:
             self.add_line(f"// Поля класса {class_name}")
             for field_name, field_type in self.class_fields[class_name].items():
                 c_type = self.map_type_to_c(field_type)
                 self.add_line(f"{c_type} {field_name};")
+        else:
+            self.add_line(f"// Поля не найдены для {class_name}")
 
         self.indent_level -= 1
         self.add_line(f"}};")
@@ -6480,3 +6551,270 @@ class CCodeGenerator:
                 self.add_line(f"{temp_var} {operator} {value_expr};")
             # Устанавливаем новое значение
             self.add_line(f"set_{struct_name}({variable}, {index_expr}, {temp_var});")
+
+    def analyze_all_classes(self, json_data: List[Dict]):
+        """Анализирует все классы и их поля перед генерацией кода"""
+        print(f"DEBUG: Анализируем все классы из JSON")
+
+        # Сначала соберем все конструкторы
+        init_scopes = {}
+
+        for scope in json_data:
+            if scope.get("type") in ["constructor", "class_method"]:
+                if scope.get("method_name") == "__init__":
+                    class_name = scope.get("class_name", "")
+                    init_scopes[class_name] = scope
+                    print(f"DEBUG: Найден конструктор для {class_name}")
+
+        # Теперь обрабатываем каждый класс
+        for scope in json_data:
+            if scope.get("type") == "module":
+                for node in scope.get("graph", []):
+                    if node.get("node") == "class_declaration":
+                        class_name = node.get("class_name", "")
+                        print(f"DEBUG: Анализируем класс {class_name}")
+
+                        # Собираем поля из конструктора
+                        if class_name in init_scopes:
+                            init_scope = init_scopes[class_name]
+                            self._analyze_init_method_for_fields(class_name, init_scope)
+
+    def collect_class_fields_from_json(self, json_data: List[Dict]):
+        """Собирает поля всех классов из JSON"""
+        print("DEBUG: collect_class_fields_from_json: начинаем сбор полей классов")
+
+        # 1. Находим все конструкторы __init__
+        init_methods = {}
+
+        for scope in json_data:
+            if scope.get("type") in ["constructor", "class_method"]:
+                if scope.get("method_name") == "__init__":
+                    class_name = scope.get("class_name")
+                    init_methods[class_name] = scope
+                    print(f"DEBUG: Найден конструктор для класса {class_name}")
+
+        # 2. Анализируем каждый конструктор
+        for class_name, init_scope in init_methods.items():
+            if class_name not in self.class_fields:
+                self.class_fields[class_name] = {}
+
+            print(f"DEBUG: Анализируем конструктор {class_name}.__init__")
+
+            # Анализируем узлы графа
+            for node in init_scope.get("graph", []):
+                if node.get("node") == "attribute_assignment":
+                    obj = node.get("object", "")
+                    attr = node.get("attribute", "")
+
+                    if obj == "self":
+                        # Определяем тип поля
+                        # Пока просто ставим int для всех полей
+                        # Позже можно улучшить определение типов
+                        self.class_fields[class_name][attr] = "int"
+                        print(f"DEBUG: Добавлено поле {class_name}.{attr} = int")
+
+        print(f"DEBUG: Всего классов с полями: {len(self.class_fields)}")
+        for class_name, fields in self.class_fields.items():
+            print(f"DEBUG:   {class_name}: {fields}")
+
+    def collect_class_fields_from_init_parameters(self, json_data: List[Dict]):
+        """Собирает типы полей классов из параметров конструктора"""
+        print("DEBUG: collect_class_fields_from_init_parameters")
+
+        # 1. Собираем все методы __init__
+        init_scopes = {}
+
+        for scope in json_data:
+            if scope.get("type") in ["constructor", "class_method"]:
+                if scope.get("method_name") == "__init__":
+                    class_name = scope.get("class_name")
+                    init_scopes[class_name] = scope
+                    print(f"DEBUG: Найден конструктор для {class_name}")
+
+        # 2. Анализируем каждый конструктор
+        for class_name, init_scope in init_scopes.items():
+            if class_name not in self.class_fields:
+                self.class_fields[class_name] = {}
+
+            print(f"DEBUG: Анализируем конструктор {class_name}.__init__")
+
+            # Получаем параметры конструктора
+            parameters = init_scope.get("parameters", [])
+
+            # Собираем типы параметров (пропускаем self)
+            param_types = {}
+            for param in parameters:
+                param_name = param.get("name", "")
+                if param_name != "self":
+                    param_type = param.get("type", "int")
+                    param_types[param_name] = param_type
+                    print(f"DEBUG: Параметр {param_name}: {param_type}")
+
+            # Анализируем узлы графа
+            for node in init_scope.get("graph", []):
+                if node.get("node") == "attribute_assignment":
+                    obj = node.get("object", "")
+                    attr = node.get("attribute", "")
+                    value_ast = node.get("value", {})
+
+                    if obj == "self":
+                        # 1. Проверяем, является ли значение параметром конструктора
+                        if value_ast.get("type") == "variable":
+                            var_name = value_ast.get("value", "")
+
+                            if var_name in param_types:
+                                # Используем тип параметра
+                                field_type = param_types[var_name]
+                                self.class_fields[class_name][attr] = field_type
+                                print(
+                                    f"DEBUG: Поле {attr} <- тип параметра {var_name}: {field_type}"
+                                )
+                            else:
+                                # Иначе определяем тип по AST
+                                field_type = self._infer_field_type_from_ast(value_ast)
+                                if field_type:
+                                    self.class_fields[class_name][attr] = field_type
+                                    print(
+                                        f"DEBUG: Поле {attr} <- вычисленный тип: {field_type}"
+                                    )
+
+                        # 2. Проверяем литералы
+                        elif value_ast.get("type") == "literal":
+                            data_type = value_ast.get("data_type", "int")
+                            self.class_fields[class_name][attr] = data_type
+                            print(f"DEBUG: Поле {attr} <- литерал типа: {data_type}")
+
+                        # 3. Для выражений пытаемся определить тип
+                        else:
+                            field_type = self._infer_field_type_from_ast(value_ast)
+                            if field_type:
+                                self.class_fields[class_name][attr] = field_type
+                                print(f"DEBUG: Поле {attr} <- тип из AST: {field_type}")
+
+    def _infer_field_type_from_ast(self, ast: Dict, context_vars: Dict = None) -> str:
+        """Определяет тип поля по AST выражению (без хардкода)"""
+        if not ast:
+            return "int"  # По умолчанию
+
+        node_type = ast.get("type", "")
+
+        # Литералы
+        if node_type == "literal":
+            data_type = ast.get("data_type", "int")
+            return data_type
+
+        # Переменные - проверяем в контексте
+        elif node_type == "variable":
+            var_name = ast.get("value", "")
+
+            # Сначала проверяем переданный контекст (параметры конструктора)
+            if context_vars and var_name in context_vars:
+                return context_vars[var_name]
+
+            # Затем проверяем объявленные переменные
+            var_info = self.get_variable_info(var_name)
+            if var_info:
+                return var_info.get("py_type", "int")
+
+            # Если переменная не найдена, возвращаем "int" по умолчанию
+            return "int"
+
+        # Атрибуты объектов
+        elif node_type == "attribute_access":
+            obj_name = ast.get("object", "")
+            attr_name = ast.get("attribute", "")
+
+            # Если обращаемся к self.атрибут, нужно анализировать граф конструктора
+            # чтобы найти тип этого атрибута
+            if obj_name == "self":
+                # Пока возвращаем "int" по умолчанию
+                # TODO: рекурсивный анализ для определения типа атрибута
+                return "int"
+
+            return "int"
+
+        # Бинарные операции
+        elif node_type == "binary_operation":
+            left = ast.get("left", {})
+            right = ast.get("right", {})
+            operator = ast.get("operator_symbol", "")
+
+            left_type = self._infer_field_type_from_ast(left, context_vars)
+            right_type = self._infer_field_type_from_ast(right, context_vars)
+
+            # Для арифметических операций определяем результирующий тип
+            if operator in ["+", "-", "*", "/", "//", "%", "**"]:
+                # Если один из операндов float/double, результат float
+                if "float" in left_type or "double" in left_type:
+                    return "float"
+                if "float" in right_type or "double" in right_type:
+                    return "float"
+                # Если оба int, результат int
+                if left_type == "int" and right_type == "int":
+                    return "int"
+
+            # Для сравнений и логических операций результат bool
+            elif operator in ["<", ">", "<=", ">=", "==", "!=", "and", "or", "not"]:
+                return "bool"
+
+            return "int"
+
+        # Вызовы функций/методов
+        elif node_type == "function_call":
+            # Пока возвращаем "int" по умолчанию
+            # TODO: анализировать возвращаемый тип функции
+            return "int"
+
+        # Списки и кортежи
+        elif node_type == "list_literal":
+            items = ast.get("items", [])
+            if items:
+                # Определяем тип первого элемента
+                first_item_type = self._infer_field_type_from_ast(
+                    items[0], context_vars
+                )
+                return f"list[{first_item_type}]"
+            return "list[int]"
+
+        elif node_type == "tuple_literal":
+            items = ast.get("items", [])
+            if items:
+                # Определяем типы всех элементов
+                element_types = []
+                for item in items:
+                    element_types.append(
+                        self._infer_field_type_from_ast(item, context_vars)
+                    )
+
+                # Если все элементы одного типа
+                if len(set(element_types)) == 1:
+                    return f"tuple[{element_types[0]}]"
+                else:
+                    return f"tuple[{', '.join(element_types)}]"
+            return "tuple[int]"
+
+        # Доступ по индексу
+        elif node_type == "index_access":
+            variable = ast.get("variable", "")
+            var_info = self.get_variable_info(variable)
+            if var_info:
+                py_type = var_info.get("py_type", "")
+                if py_type.startswith("list["):
+                    # Извлекаем тип элемента списка
+                    match = re.match(r"list\[([^\]]+)\]", py_type)
+                    if match:
+                        return match.group(1)
+                elif py_type.startswith("tuple["):
+                    # Для кортежей возвращаем тип элемента
+                    match = re.match(r"tuple\[([^\]]+)\]", py_type)
+                    if match:
+                        inner = match.group(1)
+                        # Если это один тип (tuple[int])
+                        if "," not in inner:
+                            return inner
+                        # Если это несколько типов (tuple[int, float]), возвращаем первый
+                        return inner.split(",")[0].strip()
+            return "int"
+
+        # По умолчанию
+        return "int"
