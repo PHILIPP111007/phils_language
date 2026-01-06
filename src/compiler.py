@@ -3384,7 +3384,6 @@ class CCodeGenerator:
         if node_type == "index_access":
             variable = ast.get("variable", "")
             index_ast = ast.get("index", {})
-
             index_expr = self.generate_expression(index_ast)
             var_info = self.get_variable_info(variable)
 
@@ -3396,8 +3395,10 @@ class CCodeGenerator:
                     return f"get_{struct_name}({variable}, {index_expr})"
                 elif py_type.startswith("tuple["):
                     struct_name = self.generate_tuple_struct_name(py_type)
-                    # Tuple передается по указателю в функции get
-                    return f"get_{struct_name}(&{variable}, {index_expr})"
+                    # ИСПРАВЛЕНО: используем просто variable, так как это уже указатель
+                    return (
+                        f"get_{struct_name}({variable}, {index_expr})"  # ← ПРАВИЛЬНО!
+                    )
 
             return f"{variable}[{index_expr}]"
 
