@@ -145,9 +145,17 @@ def main() -> int:
 
 ```python
 def main() -> int:
-    var a: str = "pdked"
-    a.upper()
-    var b: list[str] = a.split(" ")
+    var a: str = "Hello world"
+    a = a.upper()
+    a = a.lower()
+    var a_list: list[str] = a.split(" ")
+
+    var c: int = 100
+    var c1: str = str(c)
+
+    var d: str = "10"
+    var d1: int = int(d)
+
     return 0
 ```
 

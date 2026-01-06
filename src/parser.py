@@ -5009,54 +5009,52 @@ class Parser:
         if not obj_symbol:
             print(f"Error: Object '{obj_name}' not found")
             return False
-        if obj_symbol:
-            obj_type = obj_symbol.get("type", "")
 
-            # Проверяем, есть ли такой метод в классе или его родителях
+        # ИНИЦИАЛИЗИРУЕМ ПЕРЕМЕННЫЕ ПО УМОЛЧАНИЮ
+        is_inherited = False
+        inherited_from = None
+        obj_type = obj_symbol.get("type", "")
+        method_found = False
+
+        # Проверяем, есть ли такой метод в классе или его родителях
+        if obj_type:
             for global_scope in self.scopes:
                 if global_scope.get("level") == 0:
                     class_symbol = global_scope["symbol_table"].get_symbol(obj_type)
                     if class_symbol:
                         # Проверяем собственные методы
-                        method_found_in_class = False
                         for method in class_symbol.get("methods", []):
                             if method["name"] == method_name:
-                                method_found_in_class = True
+                                method_found = True
+                                is_inherited = False
+                                inherited_from = None
                                 break
 
                         # Если не нашли в классе, проверяем унаследованные
-                        if (
-                            not method_found_in_class
-                            and "inherited_methods" in class_symbol
-                        ):
+                        if not method_found and "inherited_methods" in class_symbol:
                             if method_name in class_symbol["inherited_methods"]:
+                                method_found = True
                                 is_inherited = True
                                 inherited_from = class_symbol["inherited_methods"][
                                     method_name
-                                ]["inherited_from"]
+                                ].get("inherited_from")
 
-        scope["graph"].append(
-            {
-                "node": "method_call",
-                "content": line,
-                "object": obj_name,
-                "method": method_name,
-                "arguments": args,
-                "is_inherited": is_inherited,  # ← НОВОЕ ПОЛЕ
-                "inherited_from": inherited_from,  # ← НОВОЕ ПОЛЕ
-            }
-        )
+                        if method_found:
+                            break
 
-        obj_type = obj_symbol.get("type", "")
-
-        # Определяем информацию о методе
-        method_info = self.resolve_method_info(obj_type, method_name)
-
-        if not method_info["found"]:
+        if not method_found:
             print(
-                f"Error: Method '{method_name}' not found in class '{obj_type}' or its parents"
+                f"Warning: Method '{method_name}' not found in class '{obj_type}' or its parents"
             )
-            return False
+            # Можно продолжить выполнение, но пометить как неизвестный метод
+
+        # Определяем информацию о методе (если нужно)
+        method_info = {}
+        if obj_type:
+            # Определяем информацию о методе
+            method_info = (
+                self.resolve_method_info(obj_type, method_name) if obj_type else {}
+            )
 
         operations = [
             {
@@ -5064,8 +5062,8 @@ class Parser:
                 "object": obj_name,
                 "method": method_name,
                 "arguments": args,
-                "is_inherited": method_info["is_inherited"],
-                "inherited_from": method_info.get("inherited_from"),
+                "is_inherited": is_inherited,
+                "inherited_from": inherited_from,
                 "is_standalone": False,
             }
         ]
@@ -5083,8 +5081,8 @@ class Parser:
             "method": method_name,
             "arguments": args,
             "is_standalone": False,
-            "is_inherited": method_info["is_inherited"],
-            "inherited_from": method_info.get("inherited_from"),
+            "is_inherited": is_inherited,
+            "inherited_from": inherited_from,
         }
 
         scope["graph"].append(
@@ -5098,6 +5096,8 @@ class Parser:
                 "operations": operations,
                 "dependencies": list(set(dependencies)),
                 "expression_ast": method_ast,
+                "is_inherited": is_inherited,  # <-- Теперь переменная всегда определена
+                "inherited_from": inherited_from,  # <-- И эта тоже
             }
         )
 
@@ -6401,3 +6401,132 @@ class Parser:
                                 ):
                                     node["inherited_methods"] = inherited_methods
                                     break
+
+    def resolve_method_info(self, class_name: str, method_name: str) -> dict:
+        """Разрешает информацию о методе с учетом наследования"""
+        result = {"found": False, "is_inherited": False, "inherited_from": None}
+
+        # ПРОВЕРКА ВСТРОЕННЫХ ТИПОВ
+        builtin_methods = {
+            "str": [
+                "upper",
+                "lower",
+                "strip",
+                "split",
+                "join",
+                "replace",
+                "find",
+                "startswith",
+                "endswith",
+            ],
+            "int": ["to_string", "to_float", "abs", "max", "min"],
+            "float": ["to_string", "to_int", "abs", "round", "ceil", "floor"],
+            "list": [
+                "append",
+                "extend",
+                "insert",
+                "remove",
+                "pop",
+                "clear",
+                "index",
+                "count",
+                "sort",
+                "reverse",
+            ],
+            "dict": [
+                "keys",
+                "values",
+                "items",
+                "get",
+                "pop",
+                "clear",
+                "update",
+                "copy",
+            ],
+            "bool": ["__bool__", "__not__"],
+        }
+
+        if class_name in builtin_methods:
+            if method_name in builtin_methods[class_name]:
+                result["found"] = True
+                result["is_inherited"] = False
+                result["inherited_from"] = None
+                result["is_builtin"] = True  # Новое поле
+                return result
+
+        # Ищем класс в глобальной области видимости
+        for global_scope in self.scopes:
+            if global_scope.get("level") == 0:  # Глобальная область
+                class_symbol = global_scope["symbol_table"].get_symbol(class_name)
+
+                if not class_symbol or class_symbol.get("key") != "class":
+                    return result
+
+                # Проверяем собственные методы класса
+                for method in class_symbol.get("methods", []):
+                    if method["name"] == method_name:
+                        result["found"] = True
+                        result["is_inherited"] = False
+                        result["inherited_from"] = None
+                        # Добавляем полную информацию о методе
+                        result.update(
+                            {
+                                "name": method["name"],
+                                "parameters": method.get("parameters", []),
+                                "return_type": method.get("return_type", "None"),
+                                "is_static": method.get("is_static", False),
+                                "is_classmethod": method.get("is_classmethod", False),
+                            }
+                        )
+                        return result
+
+                # Проверяем статические методы
+                for method in class_symbol.get("static_methods", []):
+                    if method["name"] == method_name:
+                        result["found"] = True
+                        result["is_inherited"] = False
+                        result["inherited_from"] = None
+                        result.update(
+                            {
+                                "name": method["name"],
+                                "parameters": method.get("parameters", []),
+                                "return_type": method.get("return_type", "None"),
+                                "is_static": True,
+                                "is_classmethod": False,
+                            }
+                        )
+                        return result
+
+                # Проверяем унаследованные методы
+                if "inherited_methods" in class_symbol:
+                    if method_name in class_symbol["inherited_methods"]:
+                        method_info = class_symbol["inherited_methods"][method_name]
+                        result["found"] = True
+                        result["is_inherited"] = True
+                        result["inherited_from"] = method_info.get("inherited_from")
+                        result.update(
+                            {
+                                "name": method_info["name"],
+                                "parameters": method_info.get("parameters", []),
+                                "return_type": method_info.get("return_type", "None"),
+                                "is_static": method_info.get("is_static", False),
+                                "is_classmethod": method_info.get(
+                                    "is_classmethod", False
+                                ),
+                            }
+                        )
+                        return result
+
+                # Проверяем родительские классы рекурсивно
+                base_classes = class_symbol.get("base_classes", [])
+                for base_class in base_classes:
+                    parent_info = self.resolve_method_info(base_class, method_name)
+                    if parent_info["found"]:
+                        parent_info["inherited_from"] = parent_info.get(
+                            "inherited_from", base_class
+                        )
+                        return parent_info
+
+                break  # Выходим после проверки глобальной области
+
+        return result

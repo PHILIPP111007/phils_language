@@ -2914,6 +2914,7 @@ class CCodeGenerator:
 
         self.generate_sort_helpers()
         self.generate_string_helpers()
+        self.generate_builtin_int_helpers()
 
         if not self.generated_helpers:
             return
@@ -5773,6 +5774,26 @@ class CCodeGenerator:
         """Генерирует вспомогательные функции для работы со строками"""
         helpers = []
 
+        helpers.append("""
+        // Функция преобразования int в строку
+        char* int_to_string(int value) {
+            // Определяем максимальную длину int (включая знак)
+            char buffer[12]; // достаточно для 32-битного int
+            sprintf(buffer, "%d", value);
+            
+            char* result = (char*)malloc(strlen(buffer) + 1);
+            if (result == NULL) return NULL;
+            
+            strcpy(result, buffer);
+            return result;
+        }
+
+        // Универсальная функция преобразования в строку
+        char* builtin_str(int value) {
+            return int_to_string(value);
+        }
+        """)
+
         # 1. Функция upper
         helpers.append("""
     char* string_upper(const char* str) {
@@ -5940,140 +5961,255 @@ class CCodeGenerator:
     }
     """)
 
-        # 8. Функция split
-        helpers.append("""
-    typedef struct {
-        char** items;
-        int size;
-        int capacity;
-    } string_list;
+        #     # 8. Функция split
+        #     helpers.append("""
+        # typedef struct {
+        #     char** items;
+        #     int size;
+        #     int capacity;
+        # } string_list;
 
-    string_list* string_split(const char* str, const char* delimiter) {
-        if (!str) return NULL;
-        
-        string_list* result = malloc(sizeof(string_list));
-        result->size = 0;
-        result->capacity = 10;
-        result->items = malloc(result->capacity * sizeof(char*));
-        
-        if (!delimiter || delimiter[0] == '\\0') {
-            // Разделение по пробелам (по умолчанию)
-            const char* start = str;
-            const char* end = str;
+        # string_list* string_split(const char* str, const char* delimiter) {
+        #     if (!str) return NULL;
+
+        #     string_list* result = malloc(sizeof(string_list));
+        #     result->size = 0;
+        #     result->capacity = 10;
+        #     result->items = malloc(result->capacity * sizeof(char*));
+
+        #     if (!delimiter || delimiter[0] == '\\0') {
+        #         // Разделение по пробелам (по умолчанию)
+        #         const char* start = str;
+        #         const char* end = str;
+
+        #         while (*end) {
+        #             if (*end == ' ' || *end == '\\t' || *end == '\\n') {
+        #                 if (start != end) {
+        #                     // Добавляем токен
+        #                     int token_len = end - start;
+        #                     char* token = malloc(token_len + 1);
+        #                     strncpy(token, start, token_len);
+        #                     token[token_len] = '\\0';
+
+        #                     if (result->size >= result->capacity) {
+        #                         result->capacity *= 2;
+        #                         result->items = realloc(result->items, result->capacity * sizeof(char*));
+        #                     }
+        #                     result->items[result->size++] = token;
+        #                 }
+        #                 start = end + 1;
+        #             }
+        #             end++;
+        #         }
+
+        #         // Последний токен
+        #         if (start != end) {
+        #             int token_len = end - start;
+        #             char* token = malloc(token_len + 1);
+        #             strncpy(token, start, token_len);
+        #             token[token_len] = '\\0';
+
+        #             if (result->size >= result->capacity) {
+        #                 result->capacity *= 2;
+        #                 result->items = realloc(result->items, result->capacity * sizeof(char*));
+        #             }
+        #             result->items[result->size++] = token;
+        #         }
+        #     } else {
+        #         // Разделение по указанному разделителю
+        #         int delim_len = strlen(delimiter);
+        #         const char* start = str;
+        #         const char* pos = strstr(start, delimiter);
+
+        #         while (pos) {
+        #             int token_len = pos - start;
+        #             char* token = malloc(token_len + 1);
+        #             strncpy(token, start, token_len);
+        #             token[token_len] = '\\0';
+
+        #             if (result->size >= result->capacity) {
+        #                 result->capacity *= 2;
+        #                 result->items = realloc(result->items, result->capacity * sizeof(char*));
+        #             }
+        #             result->items[result->size++] = token;
+
+        #             start = pos + delim_len;
+        #             pos = strstr(start, delimiter);
+        #         }
+
+        #         // Последний токен
+        #         int token_len = strlen(start);
+        #         if (token_len > 0) {
+        #             char* token = malloc(token_len + 1);
+        #             strcpy(token, start);
+
+        #             if (result->size >= result->capacity) {
+        #                 result->capacity *= 2;
+        #                 result->items = realloc(result->items, result->capacity * sizeof(char*));
+        #             }
+        #             result->items[result->size++] = token;
+        #         }
+        #     }
+
+        #     return result;
+        # }
+
+        # void free_string_list(string_list* list) {
+        #     if (list) {
+        #         for (int i = 0; i < list->size; i++) {
+        #             free(list->items[i]);
+        #         }
+        #         free(list->items);
+        #         free(list);
+        #     }
+        # }
+        # """)
+
+        # 8. Функция split - возвращает list_str
+        helpers.append("""
+        list_str* string_split(const char* str, const char* delimiter) {
+            if (!str) return NULL;
             
-            while (*end) {
-                if (*end == ' ' || *end == '\\t' || *end == '\\n') {
-                    if (start != end) {
-                        // Добавляем токен
-                        int token_len = end - start;
-                        char* token = malloc(token_len + 1);
-                        strncpy(token, start, token_len);
-                        token[token_len] = '\\0';
-                        
-                        if (result->size >= result->capacity) {
-                            result->capacity *= 2;
-                            result->items = realloc(result->items, result->capacity * sizeof(char*));
+            // Создаем список строк
+            list_str* result = create_list_str(10);
+            
+            if (!delimiter || delimiter[0] == '\\0') {
+                // Разделение по пробелам (по умолчанию)
+                const char* start = str;
+                const char* end = str;
+                
+                while (*end) {
+                    if (*end == ' ' || *end == '\\t' || *end == '\\n') {
+                        if (start != end) {
+                            // Добавляем токен в список
+                            int token_len = end - start;
+                            char* token = malloc(token_len + 1);
+                            if (!token) {
+                                free_list_str(result);
+                                return NULL;
+                            }
+                            strncpy(token, start, token_len);
+                            token[token_len] = '\\0';
+                            
+                            append_list_str(result, token);
                         }
-                        result->items[result->size++] = token;
+                        start = end + 1;
                     }
-                    start = end + 1;
+                    end++;
                 }
-                end++;
+                
+                // Последний токен
+                if (start != end) {
+                    int token_len = end - start;
+                    char* token = malloc(token_len + 1);
+                    if (!token) {
+                        free_list_str(result);
+                        return NULL;
+                    }
+                    strncpy(token, start, token_len);
+                    token[token_len] = '\\0';
+                    
+                    append_list_str(result, token);
+                }
+            } else {
+                // Разделение по указанному разделителю
+                int delim_len = strlen(delimiter);
+                const char* start = str;
+                const char* pos = strstr(start, delimiter);
+                
+                while (pos) {
+                    int token_len = pos - start;
+                    char* token = malloc(token_len + 1);
+                    if (!token) {
+                        free_list_str(result);
+                        return NULL;
+                    }
+                    strncpy(token, start, token_len);
+                    token[token_len] = '\\0';
+                    
+                    append_list_str(result, token);
+                    
+                    start = pos + delim_len;
+                    pos = strstr(start, delimiter);
+                }
+                
+                // Последний токен
+                int token_len = strlen(start);
+                if (token_len > 0) {
+                    char* token = malloc(token_len + 1);
+                    if (!token) {
+                        free_list_str(result);
+                        return NULL;
+                    }
+                    strcpy(token, start);
+                    
+                    append_list_str(result, token);
+                }
             }
             
-            // Последний токен
-            if (start != end) {
-                int token_len = end - start;
-                char* token = malloc(token_len + 1);
-                strncpy(token, start, token_len);
-                token[token_len] = '\\0';
-                
-                if (result->size >= result->capacity) {
-                    result->capacity *= 2;
-                    result->items = realloc(result->items, result->capacity * sizeof(char*));
-                }
-                result->items[result->size++] = token;
-            }
-        } else {
-            // Разделение по указанному разделителю
-            int delim_len = strlen(delimiter);
-            const char* start = str;
-            const char* pos = strstr(start, delimiter);
-            
-            while (pos) {
-                int token_len = pos - start;
-                char* token = malloc(token_len + 1);
-                strncpy(token, start, token_len);
-                token[token_len] = '\\0';
-                
-                if (result->size >= result->capacity) {
-                    result->capacity *= 2;
-                    result->items = realloc(result->items, result->capacity * sizeof(char*));
-                }
-                result->items[result->size++] = token;
-                
-                start = pos + delim_len;
-                pos = strstr(start, delimiter);
-            }
-            
-            // Последний токен
-            int token_len = strlen(start);
-            if (token_len > 0) {
-                char* token = malloc(token_len + 1);
-                strcpy(token, start);
-                
-                if (result->size >= result->capacity) {
-                    result->capacity *= 2;
-                    result->items = realloc(result->items, result->capacity * sizeof(char*));
-                }
-                result->items[result->size++] = token;
-            }
+            return result;
         }
-        
-        return result;
-    }
+        """)
 
-    void free_string_list(string_list* list) {
-        if (list) {
-            for (int i = 0; i < list->size; i++) {
-                free(list->items[i]);
-            }
-            free(list->items);
-            free(list);
-        }
-    }
-    """)
-
-        # 9. Функция join
+        # Альтернативная версия с оптимизацией для избежания множественных strcat
         helpers.append("""
-    char* string_join(const char* separator, string_list* list) {
-        if (!list || list->size == 0) {
-            char* empty = malloc(1);
-            empty[0] = '\\0';
-            return empty;
-        }
-        
-        // Вычисляем общую длину
-        int total_len = 0;
-        for (int i = 0; i < list->size; i++) {
-            total_len += strlen(list->items[i]);
-        }
-        total_len += (list->size - 1) * strlen(separator);
-        
-        char* result = malloc(total_len + 1);
-        if (!result) return NULL;
-        
-        result[0] = '\\0';
-        for (int i = 0; i < list->size; i++) {
-            strcat(result, list->items[i]);
-            if (i < list->size - 1) {
-                strcat(result, separator);
+        char* string_join(const char* separator, list_str* list) {
+            if (!list || list->size == 0) {
+                char* empty = malloc(1);
+                if (!empty) return NULL;
+                empty[0] = '\\0';
+                return empty;
             }
+            
+            // Быстрая проверка для одного элемента
+            if (list->size == 1) {
+                char* result = malloc(strlen(list->data[0]) + 1);
+                if (!result) return NULL;
+                strcpy(result, list->data[0]);
+                return result;
+            }
+            
+            // Вычисляем длины всех элементов
+            int* lengths = malloc(list->size * sizeof(int));
+            if (!lengths) return NULL;
+            
+            int total_len = 0;
+            int sep_len = strlen(separator);
+            
+            for (int i = 0; i < list->size; i++) {
+                lengths[i] = strlen(list->data[i]);
+                total_len += lengths[i];
+            }
+            total_len += (list->size - 1) * sep_len;
+            
+            // Выделяем память
+            char* result = malloc(total_len + 1);
+            if (!result) {
+                free(lengths);
+                return NULL;
+            }
+            
+            // Собираем строку
+            char* current = result;
+            for (int i = 0; i < list->size; i++) {
+                // Копируем элемент
+                const char* item = list->data[i];
+                int item_len = lengths[i];
+                memcpy(current, item, item_len);
+                current += item_len;
+                
+                // Добавляем разделитель
+                if (i < list->size - 1) {
+                    memcpy(current, separator, sep_len);
+                    current += sep_len;
+                }
+            }
+            
+            result[total_len] = '\\0';
+            free(lengths);
+            return result;
         }
-        
-        return result;
-    }
-    """)
+        """)
 
         # 10. Функция replace
         helpers.append("""
@@ -6408,6 +6544,82 @@ class CCodeGenerator:
         return result;
     }
     """)
+
+        self.generated_helpers.extend(helpers)
+
+    def generate_builtin_int_helpers(self):
+        """Генерирует вспомогательные функции для конвертации в int"""
+        helpers = []
+
+        # Функция builtin_int для конвертации строки в int
+        helpers.append("""
+        int builtin_int(const char* str) {
+            if (!str || strlen(str) == 0) {
+                fprintf(stderr, "ValueError: empty string cannot be converted to int\\n");
+                exit(1);
+            }
+            
+            // Проверяем, является ли строка допустимым целым числом
+            int i = 0;
+            int sign = 1;
+            
+            // Обрабатываем знак
+            if (str[0] == '-') {
+                sign = -1;
+                i = 1;
+            } else if (str[0] == '+') {
+                i = 1;
+            }
+            
+            // Проверяем все символы
+            for (; str[i]; i++) {
+                if (str[i] < '0' || str[i] > '9') {
+                    fprintf(stderr, "ValueError: invalid literal for int(): '%s'\\n", str);
+                    exit(1);
+                }
+            }
+            
+            // Используем стандартную функцию atoi
+            return atoi(str);
+        }
+        """)
+
+        # Также добавим функцию для конвертации float в int
+        helpers.append("""
+        int builtin_int_from_float(double value) {
+            // Простое приведение float/double к int
+            return (int)value;
+        }
+        """)
+
+        # Функция для конвертации bool в int
+        helpers.append("""
+        int builtin_int_from_bool(bool value) {
+            return value ? 1 : 0;
+        }
+        """)
+
+        # Универсальная функция builtin_int с поддержкой разных типов
+        helpers.append("""
+        int builtin_int_universal(void* value, const char* type_hint) {
+            if (!value) {
+                return 0;
+            }
+            
+            if (type_hint) {
+                if (strcmp(type_hint, "str") == 0) {
+                    return builtin_int((char*)value);
+                } else if (strcmp(type_hint, "float") == 0 || strcmp(type_hint, "double") == 0) {
+                    return builtin_int_from_float(*(double*)value);
+                } else if (strcmp(type_hint, "bool") == 0) {
+                    return builtin_int_from_bool(*(bool*)value);
+                }
+            }
+            
+            // По умолчанию пытаемся конвертировать строку
+            return builtin_int((char*)value);
+        }
+        """)
 
         self.generated_helpers.extend(helpers)
 
