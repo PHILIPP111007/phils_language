@@ -96,6 +96,8 @@ class CCodeGenerator:
         self.generated_structures.clear()  # Очищаем кэш структур
         print(f"DEBUG reset: generated_helpers очищен")
 
+    # INDENT
+
     def indent(self) -> str:
         """Возвращает отступ для текущего уровня"""
         return "    " * self.indent_level
@@ -107,6 +109,8 @@ class CCodeGenerator:
     def add_empty_line(self):
         """Добавляет пустую строку"""
         self.output.append("")
+
+    # SCOPE
 
     def enter_scope(self):
         """Вход в новый scope (увеличение вложенности)"""
@@ -126,6 +130,58 @@ class CCodeGenerator:
         if self.current_scope_level < len(self.variable_scopes):
             return self.variable_scopes[self.current_scope_level]
         return {}
+
+    def generate_function_scope(self, scope: Dict):
+        """Генерирует код для функции"""
+        func_name = scope.get("function_name", "")
+        return_type = scope.get("return_type", "int")
+        parameters = scope.get("parameters", [])
+
+        print(f"DEBUG generate_function_scope: {func_name}() -> {return_type}")
+
+        # Входим в новый scope
+        self.enter_scope()
+
+        # Объявляем параметры
+        param_decls = []
+        for param in parameters:
+            param_name = param.get("name", "")
+            param_type = param.get("type", "int")
+            c_param_type = self.map_type_to_c(param_type)
+            param_decls.append(f"{c_param_type} {param_name}")
+            self.declare_variable(param_name, param_type)
+
+        # Сигнатура функции
+        c_return_type = self.map_type_to_c(return_type)
+        params_str = ", ".join(param_decls) if param_decls else "void"
+
+        print(f"DEBUG: C return type for {return_type} is {c_return_type}")
+
+        self.add_line(f"{c_return_type} {func_name}({params_str}) {{")
+        self.indent_level += 1
+
+        # Обрабатываем узлы графа
+        processed_declarations = set()
+
+        for node in scope.get("graph", []):
+            node_type = node.get("node")
+
+            if node_type == "declaration":
+                var_name = node.get("var_name", "")
+                if var_name not in processed_declarations:
+                    self.generate_graph_node(node)
+                    processed_declarations.add(var_name)
+            else:
+                self.generate_graph_node(node)
+
+        self.indent_level -= 1
+        self.add_line("}")
+        self.add_empty_line()
+
+        # Выходим из scope
+        self.exit_scope()
+
+    # TYPES
 
     def map_type_to_c(self, py_type: str, is_pointer: bool = False) -> str:
         """Преобразует тип Python в тип C с поддержкой автоматического распознавания C типов"""
@@ -176,21 +232,6 @@ class CCodeGenerator:
         if not isinstance(type_name, str):
             return False
 
-        # Проверяем по базовым C типам
-        base_types = {
-            "int",
-            "float",
-            "double",
-            "char",
-            "bool",
-            "void",
-            "short",
-            "long",
-            "long long",
-            "unsigned",
-            "signed",
-        }
-
         # Проверяем, является ли это известным C типом
         if type_name in self.known_c_types:
             return True
@@ -218,6 +259,8 @@ class CCodeGenerator:
                 return True
 
         return False
+
+    # VARIABLES
 
     def declare_variable(self, name: str, var_type: str, is_pointer: bool = False):
         """Объявляет или обновляет переменную в текущем scope"""
@@ -271,86 +314,62 @@ class CCodeGenerator:
                     return self.variable_scopes[level][name]
         return None
 
+    # GENERATE
+
+    def generate_from_json(self, json_data: List[Dict]) -> str:
+        """Генерирует C код из JSON AST"""
+        self.reset()
+
+        # 1. Собираем все типы
+        self.collect_types_from_ast(json_data)
+
+        # 4. Собираем импорты и объявления
+        self.collect_imports_and_declarations(json_data)
+
+        # 5. Генерируем заголовок с импортами
+        self.generate_c_imports()
+
+        # 8. Генерируем вспомогательные структуры и функции
+        self.generate_helpers_section()
+
+        # self.collect_class_fields_from_json(json_data)  # Новый метод
+        self.collect_class_fields_from_init_parameters(json_data)
+
+        # 2. Анализируем наследование классов
+        self.analyze_class_inheritance(json_data)
+
+        # 3. Анализируем классы и их поля
+        self.analyze_classes(json_data)
+
+        # 6. Генерируем структуры классов (ПЕРЕД forward declarations!)
+        for scope in json_data:
+            if scope.get("type") == "module":
+                for node in scope.get("graph", []):
+                    if node.get("node") == "class_declaration":
+                        self.generate_class_declaration_with_fields(node)
+
+        # 7. Генерируем forward declarations
+        self.generate_forward_declarations()
+
+        # 9. Генерируем конструкторы классов
+        self.generate_class_constructors(json_data)
+
+        # 10. Генерируем все методы классов
+        self.generate_all_methods(json_data)
+
+        # 11. Генерируем код для каждой функции
+        for scope in json_data:
+            if scope.get("type") == "function" and not scope.get("is_stub", False):
+                self.generate_function_scope(scope)
+
+        return "\n".join(self.output)
+
     def generate_temporary_var(self, var_type: str = "int") -> str:
         """Генерирует имя временной переменной"""
         temp_name = f"temp_{self.temp_var_counter}"
         self.temp_var_counter += 1
         self.declare_variable(temp_name, var_type)
         return temp_name
-
-    def compile(self, json_data: List[Dict]) -> str:
-        """Основной метод компиляции"""
-        return self.generate_from_json(json_data)
-
-    def generate_module_scope(self, scope: Dict):
-        """Генерирует код для модульного scope"""
-        # Обрабатываем импорты
-        for node in scope.get("graph", []):
-            if node.get("node") == "c_import":
-                self.generate_c_import(node)
-
-        self.add_empty_line()
-
-        # Обрабатываем объявления функций
-        for node in scope.get("graph", []):
-            if node.get("node") == "function_declaration":
-                self.add_function_declaration(node)
-
-        # Генерируем forward declarations
-        if self.function_declarations:
-            for decl in self.function_declarations:
-                self.add_line(decl)
-            self.add_empty_line()
-
-    def generate_function_scope(self, scope: Dict):
-        """Генерирует код для функции"""
-        func_name = scope.get("function_name", "")
-        return_type = scope.get("return_type", "int")
-        parameters = scope.get("parameters", [])
-
-        print(f"DEBUG generate_function_scope: {func_name}() -> {return_type}")
-
-        # Входим в новый scope
-        self.enter_scope()
-
-        # Объявляем параметры
-        param_decls = []
-        for param in parameters:
-            param_name = param.get("name", "")
-            param_type = param.get("type", "int")
-            c_param_type = self.map_type_to_c(param_type)
-            param_decls.append(f"{c_param_type} {param_name}")
-            self.declare_variable(param_name, param_type)
-
-        # Сигнатура функции
-        c_return_type = self.map_type_to_c(return_type)
-        params_str = ", ".join(param_decls) if param_decls else "void"
-
-        print(f"DEBUG: C return type for {return_type} is {c_return_type}")
-
-        self.add_line(f"{c_return_type} {func_name}({params_str}) {{")
-        self.indent_level += 1
-
-        # Обрабатываем узлы графа
-        processed_declarations = set()
-
-        for node in scope.get("graph", []):
-            node_type = node.get("node")
-
-            if node_type == "declaration":
-                var_name = node.get("var_name", "")
-                if var_name not in processed_declarations:
-                    self.generate_graph_node(node)
-                    processed_declarations.add(var_name)
-            else:
-                self.generate_graph_node(node)
-
-        self.indent_level -= 1
-        self.add_line("}")
-        self.add_empty_line()
-
-        # Выходим из scope
-        self.exit_scope()
 
     def generate_graph_node(self, node: Dict):
         """Генерирует код для узла графа"""
@@ -733,240 +752,6 @@ class CCodeGenerator:
                 else:
                     self.add_line(f"{c_type} {var_name};")
 
-    def _generate_expression_for_declaration(
-        self, ast: Dict, target_var: str, c_type: str
-    ) -> bool:
-        """Специальная обработка выражений в декларациях"""
-        node_type = ast.get("type", "")
-
-        if node_type == "method_call":
-            # Это вызов метода в выражении (например, b = a.upper())
-            object_name = ast.get("object", "")
-            method_name = ast.get("method", "")
-            args = ast.get("arguments", [])
-
-            print(
-                f"DEBUG _generate_expression_for_declaration: {object_name}.{method_name}() -> {target_var}"
-            )
-
-            # Генерируем аргументы
-            arg_strings = []
-            for arg in args:
-                arg_strings.append(self.generate_expression(arg))
-
-            args_str = ", ".join(arg_strings) if arg_strings else ""
-
-            # Проверяем тип объекта
-            var_info = self.get_variable_info(object_name)
-            if var_info:
-                obj_type = var_info.get("py_type", "")
-
-                if obj_type == "str":
-                    if method_name == "upper":
-                        self.add_line(
-                            f"{c_type} {target_var} = string_upper({object_name});"
-                        )
-                        return True
-                    elif method_name == "format":
-                        self.add_line(
-                            f"{c_type} {target_var} = string_format({object_name}, {args_str});"
-                        )
-                        return True
-                    elif method_name == "lower":
-                        self.add_line(
-                            f"{c_type} {target_var} = string_lower({object_name});"
-                        )
-                        return True
-
-            # Если не обработали выше, генерируем общее выражение
-            expr = self.generate_expression(ast)
-            self.add_line(f"{c_type} {target_var} = {expr};")
-            return True
-
-        return False
-
-    def _generate_assignment(
-        self, var_name: str, c_type: str, expr: str, var_type: str
-    ):
-        """Генерирует присваивание с правильной обработкой типов"""
-        if c_type == "char*" and isinstance(expr, str) and expr.startswith('"'):
-            # Для строковых литералов выделяем динамическую память
-            self.add_line(f"{c_type} {var_name} = malloc(strlen({expr}) + 1);")
-            self.add_line(f"if (!{var_name}) {{")
-            self.indent_level += 1
-            self.add_line(f'fprintf(stderr, "Memory allocation failed\\n");')
-            self.add_line(f"exit(1);")
-            self.indent_level -= 1
-            self.add_line(f"}}")
-            self.add_line(f"strcpy({var_name}, {expr});")
-        else:
-            self.add_line(f"{c_type} {var_name} = {expr};")
-
-    def generate_simple_declaration_with_init(
-        self,
-        var_name: str,
-        c_type: str,
-        var_type: str,
-        expression_ast: Dict,
-        operations: List,
-    ):
-        """Генерирует объявление простой переменной с правильной инициализацией"""
-        if expression_ast:
-            expr = self.generate_expression(expression_ast)
-
-            # Проверяем специальные случаи инициализации
-            special_case_handled = False
-            for op in operations:
-                if op.get("type") == "ASSIGN_POINTER":
-                    # Инициализация указателя
-                    value = op.get("value", {})
-                    if value.get("type") == "address_of":
-                        var = value.get("variable", "")
-                        self.add_line(f"{c_type} {var_name} = &{var};")
-                        special_case_handled = True
-                        return
-                elif op.get("type") == "ASSIGN_NULL":
-                    # Инициализация null
-                    self.add_line(f"{c_type} {var_name} = NULL;")
-                    special_case_handled = True
-                    return
-
-            # Обычная инициализация
-            if not special_case_handled:
-                if c_type == "char*" and isinstance(expr, str) and expr.startswith('"'):
-                    # Для строковых литералов выделяем динамическую память
-                    self.add_line(f"{c_type} {var_name} = malloc(strlen({expr}) + 1);")
-                    self.add_line(f"if (!{var_name}) {{")
-                    self.indent_level += 1
-                    self.add_line(f'fprintf(stderr, "Memory allocation failed\\n");')
-                    self.add_line(f"exit(1);")
-                    self.indent_level -= 1
-                    self.add_line(f"}}")
-                    self.add_line(f"strcpy({var_name}, {expr});")
-                else:
-                    self.add_line(f"{c_type} {var_name} = {expr};")
-        else:
-            # Объявление без инициализации
-            if c_type.endswith("*") or var_type == "str":
-                self.add_line(f"{c_type} {var_name} = NULL;")
-            else:
-                self.add_line(f"{c_type} {var_name};")
-
-            # Если есть операции инициализации
-            for op in operations:
-                if op.get("type") == "INITIALIZE":
-                    value_ast = op.get("value", {})
-                    if value_ast:
-                        expr = self.generate_expression(value_ast)
-                        self.add_line(f"{var_name} = {expr};")
-                    break
-
-    def generate_pointer_declaration(
-        self, var_name: str, var_type: str, expression_ast: Dict, operations: List
-    ):
-        """Генерирует объявление указателя"""
-        # Извлекаем базовый тип (убираем звездочку)
-        base_type = var_type[1:].strip()
-        c_type = self.map_type_to_c(base_type, is_pointer=True)
-
-        if expression_ast:
-            expr = self.generate_expression(expression_ast)
-
-            # Проверяем, является ли выражение взятием адреса (&variable)
-            if expression_ast.get("type") == "address_of":
-                self.add_line(f"{c_type} {var_name} = {expr};")
-            else:
-                # Инициализация указателя значением
-                self.add_line(f"{c_type} {var_name} = {expr};")
-        else:
-            # Объявление без инициализации
-            self.add_line(f"{c_type} {var_name} = NULL;")
-
-    def generate_tuple_declaration(
-        self,
-        var_name: str,
-        var_type: str,
-        expression_ast: Dict,
-        operations: List,
-        tuple_info: Dict,
-    ):
-        """Генерирует объявление кортежа"""
-        struct_name = self.generate_tuple_struct_name(var_type)
-        # tuple всегда указатель!
-        c_type = f"{struct_name}*"
-
-        # Объявляем переменную в scope как указатель
-        self.declare_variable(var_name, var_type, is_pointer=True)
-
-        if expression_ast and expression_ast.get("type") == "tuple_literal":
-            items = expression_ast.get("items", [])
-
-            if items:
-                # Создаем временный массив
-                temp_array = f"temp_{var_name}"
-                element_type = self.map_type_to_c("int")  # по умолчанию int
-
-                self.add_line(f"{element_type} {temp_array}[{len(items)}] = {{")
-                self.indent_level += 1
-                for i, item_ast in enumerate(items):
-                    item_expr = self.generate_expression(item_ast)
-                    self.add_line(f"{item_expr}{',' if i < len(items) - 1 else ''}")
-                self.indent_level -= 1
-                self.add_line("};")
-
-                # Создаем tuple через функцию создания
-                self.add_line(
-                    f"{c_type} {var_name} = create_{struct_name}({temp_array}, {len(items)});"
-                )
-            else:
-                # Пустой tuple
-                self.add_line(f"{c_type} {var_name} = create_{struct_name}(NULL, 0);")
-        else:
-            # Объявление без инициализации
-            self.add_line(f"{c_type} {var_name} = NULL;")
-
-    def generate_list_declaration(
-        self, var_name: str, var_type: str, expression_ast: Dict, operations: List
-    ):
-        """Генерирует объявление списка с поддержкой вложенных списков"""
-        # Убедимся, что структуры сгенерированы
-        self.generate_list_struct(var_type)
-
-        # Получаем информацию о типе
-        type_info = self.extract_nested_type_info(var_type)
-
-        if not type_info or not type_info.get("struct_name"):
-            print(f"ERROR: Не удалось получить информацию о типе {var_type}")
-            return
-
-        struct_name = type_info["struct_name"]
-        c_type = f"{struct_name}*"
-
-        # Ищем операцию CREATE_LIST
-        creation_op = None
-        for op in operations:
-            if op.get("type") == "CREATE_LIST":
-                creation_op = op
-                break
-
-        if creation_op:
-            items = creation_op.get("items", [])
-            size = len(items)
-
-            # Создаем внешний список
-            self.add_line(
-                f"{c_type} {var_name} = create_{struct_name}({max(size, 4)});"
-            )
-
-            # Генерируем элементы
-            self._generate_nested_list_elements_correctly(var_name, items, type_info, 0)
-        else:
-            # Список без инициализации
-            self.add_line(f"{c_type} {var_name} = create_{struct_name}(4);")
-
-        # Объявляем переменную в scope
-        self.declare_variable(var_name, var_type)
-
     def _generate_nested_list_elements_correctly(
         self, parent_var: str, items: List, type_info: Dict, level: int
     ):
@@ -990,7 +775,7 @@ class CCodeGenerator:
         # is_leaf=True означает list[int] (элементы int)
         # is_leaf=False означает list[list[...]] (элементы указатели на списки)
         if type_info.get("is_leaf", True):
-            print(f"  ЛИСТОВОЙ УРОВЕНЬ - добавляем простые элементы")
+            print("  ЛИСТОВОЙ УРОВЕНЬ - добавляем простые элементы")
             for i, item_ast in enumerate(items):
                 print(f"    элемент {i}: {item_ast.get('type')}")
 
@@ -1100,57 +885,6 @@ class CCodeGenerator:
 
         return tuple_var_name
 
-    def _generate_nested_list_elements_recursive(
-        self, parent_var: str, items: List, type_info: Dict, level: int
-    ):
-        """Рекурсивно генерирует элементы вложенного списка"""
-        if type_info["is_leaf"]:
-            # Дошли до листовых элементов (int, float и т.д.)
-            for item_ast in items:
-                item_expr = self.generate_expression(item_ast)
-                self.add_line(
-                    f"append_{type_info['struct_name']}({parent_var}, {item_expr});"
-                )
-            return
-
-        # Еще есть вложенность
-        struct_name = type_info["struct_name"]
-        inner_info = type_info["inner_info"]
-
-        if not inner_info:
-            return
-
-        for i, item_ast in enumerate(items):
-            if item_ast.get("type") == "list_literal":
-                # Создаем внутренний список
-                inner_items = item_ast.get("items", [])
-                temp_name = f"{parent_var}_l{level}_{i}"
-
-                # Генерируем структуру для внутреннего типа
-                if not inner_info["is_leaf"]:
-                    self.generate_list_struct(inner_info["py_type"])
-
-                # Создаем внутренний список
-                inner_c_type = (
-                    f"{inner_info['struct_name']}*"
-                    if inner_info["struct_name"]
-                    else "void*"
-                )
-                self.add_line(
-                    f"{inner_c_type} {temp_name} = create_{inner_info['struct_name']}({max(len(inner_items), 4)});"
-                )
-
-                # Рекурсивно обрабатываем элементы внутреннего списка
-                self._generate_nested_list_elements_recursive(
-                    temp_name, inner_items, inner_info, level + 1
-                )
-
-                # Добавляем внутренний список в родительский
-                self.add_line(f"append_{struct_name}({parent_var}, {temp_name});")
-            else:
-                # Для трехмерного массива это не должно случиться
-                print(f"WARNING: Ожидался list_literal на уровне {level}")
-
     def _generate_nested_list_elements(
         self, parent_var: str, items: List, type_info: Dict, level: int
     ):
@@ -1203,141 +937,6 @@ class CCodeGenerator:
                 print(
                     f"ERROR: Ожидался list_literal на уровне {level}, получено {item_ast.get('type')}"
                 )
-
-    def generate_nested_list_declaration(
-        self, var_name: str, list_ast: Dict, parent_type: str
-    ):
-        """Генерирует объявление вложенного списка"""
-        # Извлекаем тип элементов из родительского типа
-        match = re.match(r"list\[([^\]]+)\]", parent_type)
-        if not match:
-            return
-
-        element_type = match.group(1)  # Например, "list[int]" для внешнего списка
-
-        if element_type.startswith("list["):
-            # Это list[list[int]] - нам нужна структура list_int
-            # Но для создания внутреннего списка нам нужна структура для list[int]
-            inner_struct_name = self.generate_list_struct_name(
-                element_type
-            )  # Это даст list_int
-
-            # Создаем внутренний список
-            items = list_ast.get("items", [])
-            self.add_line(
-                f"{inner_struct_name}* {var_name} = create_{inner_struct_name}({max(len(items), 4)});"
-            )
-
-            # Определяем тип самых внутренних элементов
-            inner_match = re.match(r"list\[([^\]]+)\]", element_type)
-            if inner_match:
-                inner_element_type = inner_match.group(1)  # Например, "int"
-
-                # Добавляем элементы
-                for item_ast in items:
-                    if inner_element_type.startswith("list["):
-                        # Еще один уровень вложенности (list[list[list[int]]])
-                        temp_name = f"{var_name}_inner_{len(self.generated_helpers)}"
-                        self.generate_nested_list_declaration(
-                            temp_name, item_ast, element_type
-                        )
-                        self.add_line(
-                            f"append_{inner_struct_name}({var_name}, {temp_name});"
-                        )
-                    else:
-                        # Простой элемент (например, int)
-                        item_expr = self.generate_expression(item_ast)
-                        self.add_line(
-                            f"append_{inner_struct_name}({var_name}, {item_expr});"
-                        )
-        else:
-            # Это простой список (list[int]) - используем list_int
-            struct_name = self.generate_list_struct_name(
-                parent_type
-            )  # Это даст list_int
-            items = list_ast.get("items", [])
-            self.add_line(
-                f"{struct_name}* {var_name} = create_{struct_name}({max(len(items), 4)});"
-            )
-
-            for item_ast in items:
-                item_expr = self.generate_expression(item_ast)
-                self.add_line(f"append_{struct_name}({var_name}, {item_expr});")
-
-    def generate_nested_tuple_declaration(
-        self, var_name: str, tuple_ast: Dict, tuple_type: str
-    ):
-        """Генерирует объявление вложенного кортежа"""
-        struct_name = self.generate_tuple_struct_name(tuple_type)
-        c_type = self.map_type_to_c(tuple_type)
-
-        items = tuple_ast.get("items", [])
-        if items:
-            # Генерируем аргументы для функции создания
-            args = [self.generate_expression(item) for item in items]
-            self.add_line(
-                f"{c_type} {var_name} = create_{struct_name}({', '.join(args)});"
-            )
-        else:
-            # Пустой кортеж
-            self.add_line(f"{c_type} {var_name};")
-            self.add_line(f"{var_name}.data = NULL;")
-            self.add_line(f"{var_name}.size = 0;")
-
-    def generate_dict_declaration(
-        self, var_name: str, var_type: str, expression_ast: Dict, operations: List
-    ):
-        """Генерирует объявление словаря"""
-        # TODO: Реализовать генерацию словарей
-        c_type = self.map_type_to_c(var_type)
-        self.add_line(f"{c_type} {var_name} = NULL; // TODO: implement dict")
-        self.add_line(f"// Словарь типа {var_type}")
-
-    def generate_set_declaration(
-        self, var_name: str, var_type: str, expression_ast: Dict, operations: List
-    ):
-        """Генерирует объявление множества"""
-        # TODO: Реализовать генерацию множеств
-        c_type = self.map_type_to_c(var_type)
-        self.add_line(f"{c_type} {var_name} = NULL; // TODO: implement set")
-        self.add_line(f"// Множество типа {var_type}")
-
-    def generate_simple_declaration(
-        self, var_name: str, var_type: str, expression_ast: Dict, operations: List
-    ):
-        """Генерирует объявление простой переменной"""
-        c_type = self.map_type_to_c(var_type)
-
-        if expression_ast:
-            expr = self.generate_expression(expression_ast)
-            # Проверяем специальные случаи инициализации
-            for op in operations:
-                if op.get("type") == "ASSIGN_POINTER":
-                    # Инициализация указателя
-                    value = op.get("value", {})
-                    if value.get("type") == "address_of":
-                        var = value.get("variable", "")
-                        self.add_line(f"{c_type} {var_name} = &{var};")
-                        return
-                elif op.get("type") == "ASSIGN_NULL":
-                    # Инициализация null
-                    self.add_line(f"{c_type} {var_name} = NULL;")
-                    return
-
-            # Обычная инициализация
-            self.add_line(f"{c_type} {var_name} = {expr};")
-        else:
-            # Объявление без инициализации
-            self.add_line(f"{c_type} {var_name};")
-
-            # Если есть операции инициализации
-            for op in operations:
-                if op.get("type") == "INITIALIZE":
-                    value_ast = op.get("value", {})
-                    if value_ast:
-                        expr = self.generate_expression(value_ast)
-                        self.add_line(f"{var_name} = {expr};")
-                    break
 
     def generate_delete(self, node: Dict):
         """Генерирует код для del с поддержкой tuple и list"""
@@ -1758,108 +1357,6 @@ class CCodeGenerator:
             self.indent_level -= 1
             self.add_line("}")
 
-    def generate_c_import(self, node: Dict):
-        """Генерирует #include директиву"""
-        header = node.get("header", "")
-        is_system = node.get("is_system", False)
-
-        if is_system:
-            self.add_line(f"#include <{header}>")
-        else:
-            self.add_line(f'#include "{header}"')
-
-    def add_function_declaration(self, node: Dict):
-        """Добавляет forward declaration функции"""
-        func_name = node.get("function_name", "")
-        return_type = node.get("return_type", "int")
-        parameters = node.get("parameters", [])
-
-        print(f"DEBUG add_function_declaration: {func_name}() -> {return_type}")
-
-        # Генерируем параметры
-        param_decls = []
-        for param in parameters:
-            param_name = param.get("name", "")
-            param_type = param.get("type", "int")
-            c_param_type = self.map_type_to_c(param_type)
-            param_decls.append(f"{c_param_type} {param_name}")
-
-        # Генерируем forward declaration
-        c_return_type = self.map_type_to_c(return_type)
-        params_str = ", ".join(param_decls) if param_decls else "void"
-
-        print(f"DEBUG: Forward declaration: {c_return_type} {func_name}({params_str});")
-
-        declaration = f"{c_return_type} {func_name}({params_str});"
-        self.function_declarations.append(declaration)
-
-    def collect_imports_and_declarations(self, json_data: List[Dict]):
-        """Собирает импорты и объявления функций из JSON"""
-        self.c_imports = []
-        self.function_declarations = []
-
-        # Собираем импорты из module scope
-        for scope in json_data:
-            if scope.get("type") == "module":
-                for node in scope.get("graph", []):
-                    if node.get("node") == "c_import":
-                        self.c_imports.append(node)
-
-        # Собираем информацию о классах и их методах
-        for scope in json_data:
-            if scope.get("type") == "module":
-                for node in scope.get("graph", []):
-                    if node.get("node") == "class_declaration":
-                        class_name = node.get("class_name", "")
-                        methods = node.get("methods", [])
-
-                        # Генерируем объявления методов
-                        for method in methods:
-                            if method.get("name") != "__init__":
-                                method_name = method.get("name", "")
-                                return_type = method.get("return_type", "void")
-
-                                # Определяем C тип возвращаемого значения
-                                if return_type.startswith("list["):
-                                    self.generate_list_struct(return_type)
-                                    struct_name = self.generate_list_struct_name(
-                                        return_type
-                                    )
-                                    c_return_type = f"{struct_name}*"
-                                elif return_type.startswith("tuple["):
-                                    self.generate_tuple_struct(return_type)
-                                    struct_name = self.generate_tuple_struct_name(
-                                        return_type
-                                    )
-                                    c_return_type = f"{struct_name}*"
-                                else:
-                                    c_return_type = self.map_type_to_c(return_type)
-
-                                params = method.get("parameters", [])
-
-                                # Формируем параметры метода
-                                param_decls = []
-                                for i, param in enumerate(params):
-                                    param_name = param.get("name", "")
-                                    param_type = param.get("type", "int")
-
-                                    if i == 0 and param_name == "self":
-                                        param_decls.append(f"{class_name}* self")
-                                    else:
-                                        c_param_type = self.map_type_to_c(param_type)
-                                        param_decls.append(
-                                            f"{c_param_type} {param_name}"
-                                        )
-
-                                params_str = (
-                                    ", ".join(param_decls) if param_decls else "void"
-                                )
-                                declaration = f"{c_return_type} {class_name}_{method_name}({params_str});"
-                                self.function_declarations.append(declaration)
-
-        # Добавляем объявление main
-        self.function_declarations.append("int main(void);")
-
     def generate_c_imports(self):
         """Генерирует #include директивы"""
         seen = set()
@@ -2147,29 +1644,6 @@ class CCodeGenerator:
             )
         else:
             print(f"DEBUG: Структура {struct_name} уже сгенерирована")
-
-    def _generate_leaf_list_struct(self, leaf_type: str, struct_name: str):
-        """Генерирует структуру для листового списка (например, list_int)"""
-        if struct_name in self.generated_structs:
-            return
-
-        self.generated_structs.add(struct_name)
-
-        # Базовый тип элементов
-        element_type = self.map_type_to_c(
-            leaf_type
-        )  # Например, "int" для leaf_type="int"
-
-        struct_code = f"typedef struct {{\n"
-        struct_code += f"    {element_type}* data;\n"
-        struct_code += f"    int size;\n"
-        struct_code += f"    int capacity;\n"
-        struct_code += f"}} {struct_name};\n\n"
-
-        self.generated_helpers.append(struct_code)
-
-        # Генерируем функции для листового списка
-        self._generate_list_functions(struct_name, element_type, leaf_type)
 
     def _generate_list_functions(
         self,
@@ -2473,141 +1947,6 @@ class CCodeGenerator:
             self.generated_helpers.append(get_func)
             self.generated_functions.add(get_func_name)
 
-    def _generate_nested_list_functions(
-        self, struct_name: str, element_type: str, inner_info: Dict
-    ):
-        """Генерирует функции для работы с вложенным списком"""
-
-        # Функция создания
-        create_func = f"{struct_name}* create_{struct_name}(int initial_capacity) {{\n"
-        create_func += f"    {struct_name}* list = malloc(sizeof({struct_name}));\n"
-        create_func += f"    if (!list) {{\n"
-        create_func += (
-            f'        fprintf(stderr, "Memory allocation failed for list\\n");\n'
-        )
-        create_func += f"        exit(1);\n"
-        create_func += f"    }}\n"
-        create_func += (
-            f"    list->data = malloc(initial_capacity * sizeof({element_type}));\n"
-        )
-        create_func += f"    if (!list->data) {{\n"
-        create_func += (
-            f'        fprintf(stderr, "Memory allocation failed for list data\\n");\n'
-        )
-        create_func += f"        free(list);\n"
-        create_func += f"        exit(1);\n"
-        create_func += f"    }}\n"
-        create_func += f"    list->size = 0;\n"
-        create_func += f"    list->capacity = initial_capacity;\n"
-        create_func += f"    return list;\n"
-        create_func += f"}}\n\n"
-
-        # Функция добавления
-        append_func = (
-            f"void append_{struct_name}({struct_name}* list, {element_type} value) {{\n"
-        )
-        append_func += f"    if (list->size >= list->capacity) {{\n"
-        append_func += (
-            f"        list->capacity = list->capacity == 0 ? 4 : list->capacity * 2;\n"
-        )
-        append_func += f"        list->data = realloc(list->data, list->capacity * sizeof({element_type}));\n"
-        append_func += f"        if (!list->data) {{\n"
-        append_func += (
-            f'            fprintf(stderr, "Memory reallocation failed for list\\n");\n'
-        )
-        append_func += f"            exit(1);\n"
-        append_func += f"        }}\n"
-        append_func += f"    }}\n"
-        append_func += f"    list->data[list->size] = value;\n"
-        append_func += f"    list->size++;\n"
-        append_func += f"}}\n\n"
-
-        # Функция len()
-        len_func = f"int builtin_len_{struct_name}({struct_name}* list) {{\n"
-        len_func += f"    if (!list) return 0;\n"
-        len_func += f"    return list->size;\n"
-        len_func += f"}}\n\n"
-
-        # Функция очистки
-        free_func = f"void free_{struct_name}({struct_name}* list) {{\n"
-        free_func += f"    if (list) {{\n"
-
-        # Рекурсивно освобождаем память для вложенных списков
-        if inner_info and not inner_info["is_leaf"]:
-            inner_struct_name = inner_info["struct_name"]
-            free_func += f"        for (int i = 0; i < list->size; i++) {{\n"
-            free_func += f"            if (list->data[i]) {{\n"
-            free_func += f"                free_{inner_struct_name}(list->data[i]);\n"
-            free_func += f"            }}\n"
-            free_func += f"        }}\n"
-        elif element_type.endswith("*") and "list_" in element_type:
-            # Если элемент - указатель на какую-то структуру списка
-            base_struct = element_type[:-1]  # Убираем *
-            free_func += f"        for (int i = 0; i < list->size; i++) {{\n"
-            free_func += f"            if (list->data[i]) {{\n"
-            free_func += f"                free_{base_struct}(list->data[i]);\n"
-            free_func += f"            }}\n"
-            free_func += f"        }}\n"
-
-        free_func += f"        free(list->data);\n"
-        free_func += f"        free(list);\n"
-        free_func += f"    }}\n"
-        free_func += f"}}\n\n"
-
-        # Добавляем все функции
-        self.generated_helpers.append(create_func)
-        self.generated_helpers.append(append_func)
-        self.generated_helpers.append(len_func)
-        self.generated_helpers.append(free_func)
-
-    def extract_content_inside_brackets(
-        self, s: str, prefix: str, closing_bracket: str
-    ) -> str:
-        """Извлекает содержимое внутри скобок, учитывая вложенность"""
-        if not s.startswith(prefix):
-            return ""
-
-        content = s[len(prefix) :]
-        depth = 0
-        result = []
-
-        for char in content:
-            if char == "[":
-                depth += 1
-                result.append(char)
-            elif char == "]":
-                if depth == 0:
-                    # Нашли закрывающую скобку
-                    return "".join(result)
-                depth -= 1
-                result.append(char)
-            else:
-                result.append(char)
-
-        return "".join(result) if depth == 0 else ""
-
-    def clean_type_name_for_c(self, type_name: str) -> str:
-        """Очищает имя типа для использования в C идентификаторах"""
-        if not isinstance(type_name, str):
-            return "unknown"
-
-        # Удаляем все небуквенно-цифровые символы и заменяем на _
-        cleaned = re.sub(r"[^a-zA-Z0-9]", "_", type_name)
-        # Убираем множественные подчеркивания
-        cleaned = re.sub(r"_+", "_", cleaned)
-        # Убираем подчеркивания в начале и конце
-        cleaned = cleaned.strip("_")
-
-        # Если после очистки строка пустая, используем дефолтное имя
-        if not cleaned:
-            return "unknown"
-
-        # Делаем первую букву строчной для согласованности
-        if cleaned[0].isupper():
-            cleaned = cleaned[0].lower() + cleaned[1:]
-
-        return cleaned
-
     def generate_list_functions(
         self, struct_name: str, element_type: str, element_py_type: str = None
     ):
@@ -2829,86 +2168,6 @@ class CCodeGenerator:
 """
         self.generated_helpers.append(slice_func)
 
-    def generate_tuple_functions(self, py_type: str):
-        """Генерирует функции для кортежа с правильным использованием указателей"""
-        struct_name = self.generate_tuple_struct_name(py_type)
-        element_type = "int"
-
-        # Функция slice для tuple
-        slice_func = f"""
-    {struct_name}* slice_{struct_name}({struct_name}* tuple, int start, int stop, int step) {{
-        if (!tuple) return NULL;
-        
-        // Нормализация индексов
-        if (start < 0) start = tuple->size + start;
-        if (stop < 0) stop = tuple->size + stop;
-        if (start < 0) start = 0;
-        if (stop > tuple->size) stop = tuple->size;
-        
-        // Вычисляем размер результата
-        int new_size;
-        if (step > 0) {{
-            if (start >= stop) new_size = 0;
-            else new_size = (stop - start + step - 1) / step;
-        }} else if (step < 0) {{
-            if (start <= stop) new_size = 0;
-            else new_size = (start - stop - step - 1) / (-step);
-        }} else {{
-            fprintf(stderr, "ValueError: slice step cannot be zero\\n");
-            exit(1);
-        }}
-        
-        // Создаем временный массив
-        {element_type}* temp_data = malloc(new_size * sizeof({element_type}));
-        if (!temp_data) {{
-            fprintf(stderr, "Memory allocation failed for slice\\n");
-            exit(1);
-        }}
-        
-        // Копируем элементы
-        int pos = 0;
-        if (step > 0) {{
-            for (int i = start; i < stop && pos < new_size; i += step) {{
-                if (i >= 0 && i < tuple->size) {{
-                    temp_data[pos++] = tuple->data[i];
-                }}
-            }}
-        }} else {{
-            for (int i = start; i > stop && pos < new_size; i += step) {{
-                if (i >= 0 && i < tuple->size) {{
-                    temp_data[pos++] = tuple->data[i];
-                }}
-            }}
-        }}
-        
-        // Создаем кортеж
-        {struct_name}* result = malloc(sizeof({struct_name}));
-        if (!result) {{
-            fprintf(stderr, "Memory allocation failed for tuple slice\\n");
-            free(temp_data);
-            exit(1);
-        }}
-        result->size = new_size;
-        result->data = temp_data;
-        
-        return result;
-    }}
-"""
-        self.generated_helpers.append(slice_func)
-
-        # Функция освобождения tuple
-        free_func = f"""
-    void free_{struct_name}({struct_name}* tuple) {{
-        if (tuple) {{
-            if (tuple->data) {{
-                free(tuple->data);
-            }}
-            free(tuple);
-        }}
-    }}
-"""
-        self.generated_helpers.append(free_func)
-
     def generate_helpers_section(self):
         """Генерирует секцию с вспомогательными функциями и структурами в правильном порядке"""
 
@@ -2972,89 +2231,6 @@ class CCodeGenerator:
                     self.output.append(line)
             self.output.append("")  # Пустая строка между определениями
 
-    def generate_from_json(self, json_data: List[Dict]) -> str:
-        """Генерирует C код из JSON AST"""
-        self.reset()
-
-        # 1. Собираем все типы
-        self.collect_types_from_ast(json_data)
-
-        # 4. Собираем импорты и объявления
-        self.collect_imports_and_declarations(json_data)
-
-        # 5. Генерируем заголовок с импортами
-        self.generate_c_imports()
-
-        # 8. Генерируем вспомогательные структуры и функции
-        self.generate_helpers_section()
-
-        # self.collect_class_fields_from_json(json_data)  # Новый метод
-        self.collect_class_fields_from_init_parameters(json_data)
-
-        # 2. Анализируем наследование классов
-        self.analyze_class_inheritance(json_data)
-
-        # 3. Анализируем классы и их поля
-        self.analyze_classes(json_data)
-
-        # 6. Генерируем структуры классов (ПЕРЕД forward declarations!)
-        for scope in json_data:
-            if scope.get("type") == "module":
-                for node in scope.get("graph", []):
-                    if node.get("node") == "class_declaration":
-                        self.generate_class_declaration_with_fields(node)
-
-        # 7. Генерируем forward declarations
-        self.generate_forward_declarations()
-
-        # 9. Генерируем конструкторы классов
-        self.generate_class_constructors(json_data)
-
-        # 10. Генерируем все методы классов
-        self.generate_all_methods(json_data)
-
-        # 11. Генерируем код для каждой функции
-        for scope in json_data:
-            if scope.get("type") == "function" and not scope.get("is_stub", False):
-                self.generate_function_scope(scope)
-
-        return "\n".join(self.output)
-
-    def collect_types_from_ast(self, json_data: List[Dict]):
-        """Собирает все типы из AST для генерации структур"""
-        all_types = set()
-
-        def process_node(node):
-            if not isinstance(node, dict):
-                return
-
-            # Обрабатываем declaration узлы
-            if node.get("node") == "declaration":
-                var_type = node.get("var_type", "")
-                if var_type:
-                    if var_type.startswith("list["):
-                        all_types.add(var_type)
-                        # Также добавляем все вложенные типы
-                        self._collect_all_nested_list_types(var_type, all_types)
-                    elif var_type.startswith("tuple["):
-                        all_types.add(var_type)
-
-        # Проходим по всем scope и узлам
-        for scope in json_data:
-            if scope.get("type") in ["module", "function"]:
-                # Обрабатываем graph узлы
-                for node in scope.get("graph", []):
-                    process_node(node)
-
-        # Генерируем структуры для всех найденных типов
-        # Сортируем по глубине вложенности (от простых к сложным)
-        sorted_types = sorted(all_types, key=lambda x: (x.count("["), x))
-        for py_type in sorted_types:
-            if py_type.startswith("list["):
-                self.generate_list_struct(py_type)
-            elif py_type.startswith("tuple["):
-                self.generate_tuple_struct(py_type)
-
     def generate_list_struct_name(self, py_type: str) -> str:
         """Генерирует имя структуры для списка любой вложенности"""
         if not py_type.startswith("list["):
@@ -3067,202 +2243,6 @@ class CCodeGenerator:
 
         # Используем уже существующий метод _generate_struct_name_recursive
         return self._generate_struct_name_recursive(py_type)
-
-    def _collect_all_nested_list_types(self, list_type: str, type_set: set):
-        """Рекурсивно собирает все вложенные типы списков"""
-        if not list_type.startswith("list["):
-            return
-
-        type_set.add(list_type)
-
-        # Извлекаем внутренний тип
-        inner_type = self._parse_list_type(list_type)
-        if inner_type:
-            if inner_type.startswith("list["):
-                # Если внутренний тип тоже список, рекурсивно обрабатываем
-                self._collect_all_nested_list_types(inner_type, type_set)
-            else:
-                # Листовой тип - создаем базовую структуру list_тип
-                leaf_struct = f"list[{inner_type}]"
-                type_set.add(leaf_struct)
-
-    def _collect_nested_list_types(self, py_type: str, type_set: set):
-        """Рекурсивно собирает вложенные типы списков"""
-        if not py_type.startswith("list["):
-            return
-
-        type_set.add(py_type)
-
-        # Извлекаем внутренний тип
-        inner = self._extract_inner_type(py_type)
-        if inner and inner.startswith("list["):
-            type_set.add(inner)
-            self._collect_nested_list_types(inner, type_set)
-
-    def _process_ast_for_types(self, ast):
-        """Вспомогательный метод для обработки AST и сбора типов"""
-        if not isinstance(ast, dict):
-            return
-
-        node_type = ast.get("type", "")
-
-        if node_type == "tuple_literal":
-            # Определяем тип tuple на основе элементов
-            items = ast.get("items", [])
-            if items:
-                # Проверяем, все ли элементы одного типа
-                element_types = set()
-                for item in items:
-                    if isinstance(item, dict):
-                        if item.get("type") == "literal":
-                            data_type = item.get("data_type", "int")
-                            element_types.add(data_type)
-
-                # Если все элементы одного типа - это tuple[T]
-                if len(element_types) == 1:
-                    element_type = next(iter(element_types))
-                    py_type = f"tuple[{element_type}]"
-                    self.map_type_to_c(py_type)
-                else:
-                    # Разные типы - это tuple[T1, T2, ...]
-                    element_types_list = []
-                    for item in items:
-                        if isinstance(item, dict) and item.get("type") == "literal":
-                            data_type = item.get("data_type", "int")
-                            element_types_list.append(data_type)
-
-                    if element_types_list:
-                        py_type = f"tuple[{', '.join(element_types_list)}]"
-                        self.map_type_to_c(py_type)
-
-        elif node_type == "list_literal":
-            items = ast.get("items", [])
-            if items:
-                # Определяем тип первого элемента
-                first_item = items[0]
-                if isinstance(first_item, dict):
-                    if first_item.get("type") == "tuple_literal":
-                        element_type = "tuple"
-                    elif first_item.get("type") == "list_literal":
-                        element_type = "list"
-                    else:
-                        element_type = "int"
-                else:
-                    element_type = "int"
-
-                py_type = f"list[{element_type}]"
-                self.map_type_to_c(py_type)
-
-        # Рекурсивно обрабатываем вложенные структуры
-        for key, value in ast.items():
-            if isinstance(value, dict):
-                self._process_ast_for_types(value)
-            elif isinstance(value, list):
-                for item in value:
-                    if isinstance(item, dict):
-                        self._process_ast_for_types(item)
-
-    def get_list_depth(self, py_type: str) -> int:
-        """Определяет глубину вложенности списка"""
-        depth = 0
-        current_type = py_type
-
-        while current_type.startswith("list["):
-            depth += 1
-            # Извлекаем внутренний тип
-            inner_content = self.extract_content_inside_brackets(
-                current_type, "list[", "]"
-            )
-            if inner_content and inner_content.startswith("list["):
-                current_type = inner_content
-            else:
-                break
-
-        return depth
-
-    def extract_nested_type_info(self, py_type: str) -> Dict:
-        """Извлекает информацию о вложенном типе списка с рекурсивным анализом"""
-        if not py_type or not isinstance(py_type, str):
-            return self._create_default_type_info()
-
-        # Для отладки
-        print(f"DEBUG extract_nested_type_info: {py_type}")
-
-        # Базовый случай: не список
-        if not py_type.startswith("list["):
-            # Для простых типов
-            is_c_type = self._is_c_type(py_type)
-            c_type = py_type if is_c_type else self.map_type_to_c(py_type)
-            struct_name = f"list_{self.clean_type_name_for_c(py_type)}"
-
-            print(
-                f"DEBUG: Базовый тип - is_c_type={is_c_type}, c_type={c_type}, struct_name={struct_name}"
-            )
-
-            return {
-                "py_type": py_type,
-                "c_type": f"{struct_name}*",
-                "struct_name": struct_name,
-                "element_type": c_type,
-                "element_py_type": py_type,
-                "is_leaf": True,
-                "is_c_type": is_c_type,
-                "inner_info": None,
-            }
-
-        try:
-            # Извлекаем внутренний тип
-            inner_type = self._parse_list_type(py_type)
-            if not inner_type:
-                print(f"DEBUG: Не удалось извлечь внутренний тип из {py_type}")
-                return self._create_default_type_info()
-
-            print(f"DEBUG: Внутренний тип: {inner_type}")
-
-            # Генерируем имя структуры
-            struct_name = self._generate_struct_name_recursive(py_type)
-            print(f"DEBUG: Сгенерированное имя структуры: {struct_name}")
-
-            # Рекурсивно анализируем внутренний тип
-            inner_info = self.extract_nested_type_info(inner_type)
-
-            # Определяем информацию о текущем уровне
-            is_leaf = not inner_type.startswith("list[")
-
-            # Определяем element_type
-            if is_leaf:
-                # Если это list[T], то element_type = T
-                if self._is_c_type(inner_type):
-                    element_type = inner_type
-                else:
-                    element_type = self.map_type_to_c(inner_type)
-            else:
-                # Если это list[list[...]], то element_type = inner_struct*
-                if inner_info.get("struct_name"):
-                    element_type = f"{inner_info['struct_name']}*"
-                else:
-                    element_type = "void*"
-
-            result = {
-                "py_type": py_type,
-                "c_type": f"{struct_name}*",
-                "struct_name": struct_name,
-                "element_type": element_type,
-                "element_py_type": inner_type,
-                "is_leaf": is_leaf,
-                "is_c_type": inner_info.get("is_c_type", False) if is_leaf else False,
-                "inner_info": inner_info,
-            }
-
-            print(
-                f"DEBUG результат: struct_name={struct_name}, element_type={element_type}, is_c_type={result['is_c_type']}"
-            )
-
-            return result
-
-        except Exception as e:
-            print(f"ERROR в extract_nested_type_info для {py_type}: {e}")
-            return self._create_default_type_info()
 
     def _generate_struct_name_recursive(self, py_type: str) -> str:
         """Рекурсивно генерирует имя структуры для вложенного списка"""
@@ -3291,73 +2271,6 @@ class CCodeGenerator:
             # list[int] -> list_int
             clean_inner = self.clean_type_name_for_c(inner_type)
             return f"list_{clean_inner}"
-
-    def _parse_list_type(self, list_type: str) -> Optional[str]:
-        """Парсит тип списка и извлекает внутренний тип"""
-        if not list_type.startswith("list["):
-            return None
-
-        # Счетчик скобок для правильного парсинга вложенных типов
-        bracket_count = 0
-        start_idx = 4  # индекс после "list"
-
-        # Находим начало внутреннего типа
-        for i in range(start_idx, len(list_type)):
-            if list_type[i] == "[":
-                bracket_count += 1
-            elif list_type[i] == "]":
-                bracket_count -= 1
-                if bracket_count == 0:
-                    # Нашли закрывающую скобку
-                    inner_type = list_type[start_idx + 1 : i]  # +1 чтобы пропустить '['
-                    return inner_type.strip()
-
-        return None
-
-    def _extract_inner_type(self, list_type: str) -> Optional[str]:
-        """Извлекает внутренний тип из объявления list[...]"""
-        if not list_type.startswith("list["):
-            return None
-
-        # Ищем баланс скобок
-        balance = 0
-        start_pos = 4  # после "list"
-
-        for i in range(start_pos, len(list_type)):
-            char = list_type[i]
-            if char == "[":
-                balance += 1
-            elif char == "]":
-                balance -= 1
-                if balance == 0:
-                    # Нашли закрывающую скобку
-                    inner = list_type[start_pos + 1 : i]  # +1 чтобы пропустить '['
-                    return inner.strip()
-
-        return None
-
-    def _create_default_type_info(self) -> Dict:
-        """Создает информацию о типе по умолчанию"""
-        return {
-            "py_type": "unknown",
-            "c_type": "void*",
-            "struct_name": None,
-            "element_type": None,
-            "is_leaf": True,
-            "inner_info": None,
-        }
-
-    def _create_leaf_type_info(self, py_type: str) -> Dict:
-        """Создает информацию о листовом типе"""
-        c_type = self.map_type_to_c(py_type)
-        return {
-            "py_type": py_type,
-            "c_type": c_type,
-            "struct_name": None,
-            "element_type": None,
-            "is_leaf": True,
-            "inner_info": None,
-        }
 
     def generate_expression(self, ast: Dict) -> str:
         """Генерирует C выражение из AST с поддержкой tuple и list"""
@@ -3719,6 +2632,169 @@ class CCodeGenerator:
         # По умолчанию - прямой доступ к массиву
         return f"{obj_name}->{attr_name}[{index_expr}]"
 
+    def generate_class_declaration(self, node: Dict):
+        """Генерирует структуру для класса C динамически"""
+        class_name = node.get("class_name", "")
+
+        # Регистрируем класс
+        self.class_types.add(class_name)
+        self.type_map[class_name] = f"{class_name}*"
+
+        # Анализируем класс для определения полей
+        # (fields будут собраны позже при анализе методов)
+        if class_name not in self.class_fields:
+            self.class_fields[class_name] = {}
+
+        # Генерируем структуру
+        self.add_line(f"typedef struct {class_name} {{")
+        self.indent_level += 1
+
+        # Добавляем таблицу виртуальных методов
+        self.add_line(f"void** vtable;")
+
+        # Поля будут добавлены позже, после анализа методов
+        # Создаем временный комментарий
+        self.add_line(f"// Поля класса будут добавлены после анализа методов")
+
+        self.indent_level -= 1
+        self.add_line(f"}} {class_name};")
+        self.add_empty_line()
+
+    def _collect_all_nested_list_types(self, list_type: str, type_set: set):
+        """Рекурсивно собирает все вложенные типы списков"""
+        if not list_type.startswith("list["):
+            return
+
+        type_set.add(list_type)
+
+        # Извлекаем внутренний тип
+        inner_type = self._parse_list_type(list_type)
+        if inner_type:
+            if inner_type.startswith("list["):
+                # Если внутренний тип тоже список, рекурсивно обрабатываем
+                self._collect_all_nested_list_types(inner_type, type_set)
+            else:
+                # Листовой тип - создаем базовую структуру list_тип
+                leaf_struct = f"list[{inner_type}]"
+                type_set.add(leaf_struct)
+
+    def extract_nested_type_info(self, py_type: str) -> Dict:
+        """Извлекает информацию о вложенном типе списка с рекурсивным анализом"""
+        if not py_type or not isinstance(py_type, str):
+            return self._create_default_type_info()
+
+        # Для отладки
+        print(f"DEBUG extract_nested_type_info: {py_type}")
+
+        # Базовый случай: не список
+        if not py_type.startswith("list["):
+            # Для простых типов
+            is_c_type = self._is_c_type(py_type)
+            c_type = py_type if is_c_type else self.map_type_to_c(py_type)
+            struct_name = f"list_{self.clean_type_name_for_c(py_type)}"
+
+            print(
+                f"DEBUG: Базовый тип - is_c_type={is_c_type}, c_type={c_type}, struct_name={struct_name}"
+            )
+
+            return {
+                "py_type": py_type,
+                "c_type": f"{struct_name}*",
+                "struct_name": struct_name,
+                "element_type": c_type,
+                "element_py_type": py_type,
+                "is_leaf": True,
+                "is_c_type": is_c_type,
+                "inner_info": None,
+            }
+
+        try:
+            # Извлекаем внутренний тип
+            inner_type = self._parse_list_type(py_type)
+            if not inner_type:
+                print(f"DEBUG: Не удалось извлечь внутренний тип из {py_type}")
+                return self._create_default_type_info()
+
+            print(f"DEBUG: Внутренний тип: {inner_type}")
+
+            # Генерируем имя структуры
+            struct_name = self._generate_struct_name_recursive(py_type)
+            print(f"DEBUG: Сгенерированное имя структуры: {struct_name}")
+
+            # Рекурсивно анализируем внутренний тип
+            inner_info = self.extract_nested_type_info(inner_type)
+
+            # Определяем информацию о текущем уровне
+            is_leaf = not inner_type.startswith("list[")
+
+            # Определяем element_type
+            if is_leaf:
+                # Если это list[T], то element_type = T
+                if self._is_c_type(inner_type):
+                    element_type = inner_type
+                else:
+                    element_type = self.map_type_to_c(inner_type)
+            else:
+                # Если это list[list[...]], то element_type = inner_struct*
+                if inner_info.get("struct_name"):
+                    element_type = f"{inner_info['struct_name']}*"
+                else:
+                    element_type = "void*"
+
+            result = {
+                "py_type": py_type,
+                "c_type": f"{struct_name}*",
+                "struct_name": struct_name,
+                "element_type": element_type,
+                "element_py_type": inner_type,
+                "is_leaf": is_leaf,
+                "is_c_type": inner_info.get("is_c_type", False) if is_leaf else False,
+                "inner_info": inner_info,
+            }
+
+            print(
+                f"DEBUG результат: struct_name={struct_name}, element_type={element_type}, is_c_type={result['is_c_type']}"
+            )
+
+            return result
+
+        except Exception as e:
+            print(f"ERROR в extract_nested_type_info для {py_type}: {e}")
+            return self._create_default_type_info()
+
+    def _parse_list_type(self, list_type: str) -> Optional[str]:
+        """Парсит тип списка и извлекает внутренний тип"""
+        if not list_type.startswith("list["):
+            return None
+
+        # Счетчик скобок для правильного парсинга вложенных типов
+        bracket_count = 0
+        start_idx = 4  # индекс после "list"
+
+        # Находим начало внутреннего типа
+        for i in range(start_idx, len(list_type)):
+            if list_type[i] == "[":
+                bracket_count += 1
+            elif list_type[i] == "]":
+                bracket_count -= 1
+                if bracket_count == 0:
+                    # Нашли закрывающую скобку
+                    inner_type = list_type[start_idx + 1 : i]  # +1 чтобы пропустить '['
+                    return inner_type.strip()
+
+        return None
+
+    def _create_default_type_info(self) -> Dict:
+        """Создает информацию о типе по умолчанию"""
+        return {
+            "py_type": "unknown",
+            "c_type": "void*",
+            "struct_name": None,
+            "element_type": None,
+            "is_leaf": True,
+            "inner_info": None,
+        }
+
     def _get_current_class(self) -> Optional[str]:
         """Получает имя текущего класса из контекста"""
         # Ищем в текущем и родительских scope'ах
@@ -3754,34 +2830,6 @@ class CCodeGenerator:
                 ) or self._is_string_expression(right_ast)
 
         return False
-
-    def generate_class_declaration(self, node: Dict):
-        """Генерирует структуру для класса C динамически"""
-        class_name = node.get("class_name", "")
-
-        # Регистрируем класс
-        self.class_types.add(class_name)
-        self.type_map[class_name] = f"{class_name}*"
-
-        # Анализируем класс для определения полей
-        # (fields будут собраны позже при анализе методов)
-        if class_name not in self.class_fields:
-            self.class_fields[class_name] = {}
-
-        # Генерируем структуру
-        self.add_line(f"typedef struct {class_name} {{")
-        self.indent_level += 1
-
-        # Добавляем таблицу виртуальных методов
-        self.add_line(f"void** vtable;")
-
-        # Поля будут добавлены позже, после анализа методов
-        # Создаем временный комментарий
-        self.add_line(f"// Поля класса будут добавлены после анализа методов")
-
-        self.indent_level -= 1
-        self.add_line(f"}} {class_name};")
-        self.add_empty_line()
 
     def collect_class_fields(self, class_name: str, json_data: List[Dict]) -> Dict:
         """Собирает поля класса из всех его методов (включая __init__)"""
@@ -3947,67 +2995,6 @@ class CCodeGenerator:
         # По умолчанию
         return "int"
 
-    def generate_vtable(self, class_name: str, methods: List[Dict]):
-        """Генерирует таблицу виртуальных методов"""
-        # Определяем, какие методы виртуальные (переопределяемые)
-        virtual_methods = []
-        for method in methods:
-            method_name = method.get("name", "")
-            if method_name != "__init__":
-                virtual_methods.append(method)
-
-        if virtual_methods:
-            # Создаем тип для указателя на таблицу виртуальных методов
-            vtable_type_name = f"{class_name}_vtable"
-
-            self.add_line(f"typedef struct {{")
-            self.indent_level += 1
-            for method in virtual_methods:
-                method_name = method.get("name", "")
-                return_type = method.get("return_type", "void")
-                params = method.get("parameters", [])
-
-                # Пропускаем self параметр
-                actual_params = []
-                if params and params[0].get("name") == "self":
-                    # Определяем тип self для данного метода
-                    for param in params[1:]:
-                        param_name = param.get("name", "")
-                        param_type = param.get("type", "int")
-                        c_param_type = self.map_type_to_c(param_type)
-                        actual_params.append(f"{c_param_type} {param_name}")
-                else:
-                    for param in params:
-                        param_name = param.get("name", "")
-                        param_type = param.get("type", "int")
-                        c_param_type = self.map_type_to_c(param_type)
-                        actual_params.append(f"{c_param_type} {param_name}")
-
-                c_return_type = self.map_type_to_c(return_type)
-                params_str = ", ".join(actual_params) if actual_params else "void"
-
-                # Создаем указатель на функцию
-                # Для методов, параметр self уже учтен в сигнатуре функции
-                if params and params[0].get("name") == "self":
-                    self_param_type = params[0].get("type", class_name)
-                    func_ptr = f"({c_return_type} (*)({self_param_type}*"
-                    if actual_params:
-                        func_ptr += f", {params_str}"
-                    func_ptr += "))"
-                else:
-                    func_ptr = f"({c_return_type} (*)({params_str}))"
-
-                self.add_line(f"{func_ptr} {method_name};")
-
-            self.indent_level -= 1
-            self.add_line(f"}} {vtable_type_name};")
-            self.add_empty_line()
-
-            # Глобальная таблица виртуальных методов
-            self.add_line(f"// Таблица виртуальных методов для {class_name}")
-            self.add_line(f"extern {vtable_type_name} {class_name}_vtable_instance;")
-            self.add_empty_line()
-
     def generate_constructor(
         self,
         class_name: str,
@@ -4076,63 +3063,6 @@ class CCodeGenerator:
         self.add_line(f"}}")
         self.add_empty_line()
 
-    def _generate_field_initializations(
-        self, class_name: str, init_scope: Dict, constructor_params: List[str]
-    ):
-        """Генерирует инициализацию полей на основе метода __init__"""
-        if not init_scope:
-            return
-
-        graph = init_scope.get("graph", [])
-        if not graph:
-            return
-
-        # Создаем контекст параметров для подстановки
-        param_map = {}
-        for param in constructor_params:
-            parts = param.split()
-            if len(parts) >= 2:
-                param_map[parts[-1]] = parts[-1]  # Имя параметра
-
-        self.add_line(f"// Инициализация полей для {class_name}")
-
-        for node in graph:
-            node_type = node.get("node", "")
-
-            if node_type == "attribute_assignment":
-                # Присваивание атрибуту: self.attr = value
-                obj_name = node.get("object", "")
-                attr_name = node.get("attribute", "")
-                value_ast = node.get("value", {})
-
-                if obj_name == "self":
-                    # Генерируем выражение для значения
-                    if value_ast:
-                        try:
-                            value_expr = self.generate_expression(value_ast)
-                            # Заменяем параметры конструктора
-                            for param_name in param_map:
-                                value_expr = value_expr.replace(
-                                    param_name, param_map[param_name]
-                                )
-                            self.add_line(f"obj->{attr_name} = {value_expr};")
-                        except Exception as e:
-                            self.add_line(f"// Ошибка генерации выражения: {e}")
-
-    def _debug_expression_node(self, node: Dict):
-        """Отладочный вывод для узла expression"""
-        operations = node.get("operations", [])
-        self.add_line(f"// Количество операций в expression: {len(operations)}")
-
-        for i, op in enumerate(operations):
-            op_type = op.get("type", "")
-            self.add_line(f"// Операция {i}: тип={op_type}")
-
-            if op_type == "ATTRIBUTE_ASSIGN":
-                self.add_line(f"//   object={op.get('object')}")
-                self.add_line(f"//   attribute={op.get('attribute')}")
-                self.add_line(f"//   value={op.get('value')}")
-
     def generate_class_method(self, class_name: str, method: Dict):
         """Генерирует метод класса"""
         method_name = method.get("name", "")
@@ -4175,37 +3105,6 @@ class CCodeGenerator:
         self.indent_level -= 1
         self.add_line(f"}}")
         self.add_empty_line()
-
-    def register_class_type(self, class_name: str):
-        """Регистрирует тип как класс"""
-        self.class_types.add(class_name)
-        self.pointer_types.add(class_name)  # Классы обычно указатели на структуры
-
-        # Добавляем в маппинг типов
-        self.type_map[class_name] = f"{class_name}*"
-
-    def register_struct_type(self, struct_name: str, is_pointer: bool = True):
-        """Регистрирует тип как структуру"""
-        self.struct_types.add(struct_name)
-        if is_pointer:
-            self.pointer_types.add(struct_name)
-
-    def is_pointer_type(self, type_name: str) -> bool:
-        """Определяет, является ли тип указателем"""
-        # Проверяем различные условия
-        if type_name in self.pointer_types:
-            return True
-
-        # Проверяем по маппингу
-        if type_name in self.type_map:
-            c_type = self.type_map[type_name]
-            return c_type.endswith("*")
-
-        # Проверяем по имени
-        if type_name.endswith("*"):
-            return True
-
-        return False
 
     def generate_attribute_access(self, ast: Dict) -> str:
         """Генерирует доступ к атрибуту объекта"""
@@ -4780,27 +3679,6 @@ class CCodeGenerator:
                         # Генерируем конструктор
                         self.generate_constructor(class_name, init_method, init_scope)
 
-    def generate_class_methods(self, json_data: List[Dict]):
-        """Генерирует методы для всех классов"""
-        # Собираем все методы классов
-        class_method_scopes = {}
-
-        for scope in json_data:
-            if scope.get("type") == "class_method":
-                class_name = scope.get("class_name", "")
-                method_name = scope.get("method_name", "")
-
-                if class_name not in class_method_scopes:
-                    class_method_scopes[class_name] = {}
-
-                class_method_scopes[class_name][method_name] = scope
-
-        # Генерируем методы
-        for class_name, methods in class_method_scopes.items():
-            for method_name, scope in methods.items():
-                if method_name != "__init__":
-                    self.generate_class_method_implementation(class_name, scope)
-
     def generate_class_method_implementation(self, class_name: str, scope: Dict):
         """Генерирует реализацию метода класса с поддержкой сложных типов возврата"""
         method_name = scope.get("method_name", "")
@@ -4878,78 +3756,6 @@ class CCodeGenerator:
         self.indent_level -= 1
         self.add_line("}")
         self.add_empty_line()
-
-    def _generate_inherited_method_stub(self, class_name: str, method_info: Dict):
-        """Генерирует заглушку для унаследованного метода"""
-        method_name = method_info["name"]
-        return_type = method_info.get("return_type", "void")
-        parameters = method_info.get("parameters", [])
-        origin_class = method_info.get("origin")
-
-        if not origin_class:
-            return
-
-        print(
-            f"DEBUG: Генерация заглушки для унаследованного метода {class_name}.{method_name} из {origin_class}"
-        )
-
-        # Генерируем сигнатуру
-        param_decls = []
-        for param in parameters:
-            param_name = param.get("name", "")
-            param_type = param.get("type", "int")
-
-            if param_name == "self":
-                c_param_type = f"{class_name}*"
-            else:
-                c_param_type = self.map_type_to_c(param_type)
-
-            param_decls.append(f"{c_param_type} {param_name}")
-
-        c_return_type = self.map_type_to_c(return_type)
-        params_str = ", ".join(param_decls) if param_decls else "void"
-
-        self.add_line(f"{c_return_type} {class_name}_{method_name}({params_str}) {{")
-        self.indent_level += 1
-
-        # Вызываем метод родительского класса
-        if return_type != "void":
-            self.add_line(
-                f"return {origin_class}_{method_name}(({origin_class}*)self);"
-            )
-        else:
-            self.add_line(f"{origin_class}_{method_name}(({origin_class}*)self);")
-
-        self.indent_level -= 1
-        self.add_line("}")
-        self.add_empty_line()
-
-    def add_class_method_declaration(self, class_name: str, method: Dict):
-        """Добавляет forward declaration для метода класса"""
-        method_name = method.get("name", "")
-        return_type = method.get("return_type", "void")
-        parameters = method.get("parameters", [])
-
-        c_return_type = self.map_type_to_c(return_type)
-
-        # Формируем параметры
-        param_decls = []
-        for param in parameters:
-            param_name = param.get("name", "")
-            param_type = param.get("type", "int")
-
-            if param_name == "self":
-                # self - это указатель на структуру класса
-                c_param_type = f"{class_name}*"
-            else:
-                c_param_type = self.map_type_to_c(param_type)
-
-            param_decls.append(f"{c_param_type} {param_name}")
-
-        params_str = ", ".join(param_decls) if param_decls else "void"
-
-        declaration = f"{c_return_type} {class_name}_{method_name}({params_str});"
-        self.function_declarations.append(declaration)
 
     def _is_class_type(self, type_name: str) -> bool:
         """Определяет, является ли тип классом"""
@@ -5041,46 +3847,6 @@ class CCodeGenerator:
                     if var_type:
                         self.class_fields[class_name][attr_name] = var_type
 
-    def _analyze_method_for_fields(self, class_name: str, method_scope: Dict):
-        """Анализирует метод для ссылок на поля"""
-        if class_name not in self.class_fields:
-            self.class_fields[class_name] = {}
-
-        graph = method_scope.get("graph", [])
-
-        def collect_attribute_accesses(node):
-            accesses = []
-
-            if isinstance(node, dict):
-                node_type = node.get("type", "")
-
-                if node_type == "attribute_access":
-                    # Доступ к атрибуту: self.attr или obj.attr
-                    obj_name = node.get("object", "")
-                    attr_name = node.get("attribute", "")
-
-                    if obj_name == "self":
-                        accesses.append(attr_name)
-
-                # Рекурсивно проверяем все значения
-                for key, value in node.items():
-                    if isinstance(value, (dict, list)):
-                        if isinstance(value, dict):
-                            accesses.extend(collect_attribute_accesses(value))
-                        elif isinstance(value, list):
-                            for item in value:
-                                accesses.extend(collect_attribute_accesses(item))
-
-            return accesses
-
-        # Проходим по всему графу метода
-        for node in graph:
-            attr_accesses = collect_attribute_accesses(node)
-            for attr_name in attr_accesses:
-                # Если атрибут упоминается, но не зарегистрирован, добавляем как int
-                if attr_name not in self.class_fields[class_name]:
-                    self.class_fields[class_name][attr_name] = "int"
-
     def generate_class_declaration_with_fields(self, node: Dict):
         """Генерирует структуру для класса C с полями"""
         class_name = node.get("class_name", "")
@@ -5120,68 +3886,6 @@ class CCodeGenerator:
         self.add_line(f"}};")
         self.add_empty_line()
 
-    def _try_generate_init_logic(
-        self, class_name: str, init_scope: Dict, param_names: List[str]
-    ):
-        """Пытается сгенерировать логику из метода __init__"""
-        graph = init_scope.get("graph", [])
-
-        for node in graph:
-            node_type = node.get("node", "")
-
-            if node_type == "attribute_assignment":
-                # Старый формат
-                self._process_attribute_assignment(node, param_names)
-
-            elif node_type == "expression":
-                # Новый формат: выражение может содержать присваивание
-                self._process_expression_node(node, param_names)
-
-    def _process_expression_node(self, node: Dict, param_names: List[str]):
-        """Обрабатывает узел выражения"""
-        operations = node.get("operations", [])
-
-        for op in operations:
-            op_type = op.get("type", "")
-
-            if op_type == "ATTRIBUTE_ASSIGN":
-                # Это присваивание атрибуту
-                object_name = op.get("object", "")
-                attribute = op.get("attribute", "")
-                value = op.get("value", {})
-
-                if object_name == "self":
-                    # Генерируем выражение для значения
-                    if value:
-                        value_expr = self._generate_value_expression(value, param_names)
-                        if value_expr:
-                            self.add_line(f"obj->{attribute} = {value_expr};")
-
-    def _generate_value_expression(self, value: Dict, param_names: List[str]) -> str:
-        """Генерирует выражение для значения"""
-        if not value:
-            return ""
-
-        value_type = value.get("type", "")
-
-        if value_type == "variable":
-            var_name = value.get("value", "")
-            return var_name
-
-        elif value_type == "binary_operation":
-            left = value.get("left", {})
-            right = value.get("right", {})
-            operator = value.get("operator_symbol", "")
-
-            left_expr = self._generate_value_expression(left, param_names)
-            right_expr = self._generate_value_expression(right, param_names)
-            c_operator = self.operator_map.get(operator, operator)
-
-            if left_expr and right_expr:
-                return f"({left_expr} {c_operator} {right_expr})"
-
-        return ""
-
     def generate_attribute_assignment(self, node: Dict):
         """Генерирует присваивание атрибуту объекта"""
         object_name = node.get("object", "")
@@ -5201,27 +3905,6 @@ class CCodeGenerator:
         if value_ast:
             value_expr = self.generate_expression(value_ast)
             self.add_line(f"{object_name}->{attribute} = {value_expr};")
-
-    def _process_expression_in_init(self, node: Dict):
-        """Обрабатывает expression узел в методе __init__"""
-        operations = node.get("operations", [])
-
-        for op in operations:
-            op_type = op.get("type", "")
-
-            if op_type == "ATTRIBUTE_ASSIGN":
-                # Присваивание атрибуту: self.attr = value
-                object_name = op.get("object", "")
-                attr_name = op.get("attribute", "")
-                value_ast = op.get("value", {})
-
-                if object_name == "self":
-                    if value_ast:
-                        try:
-                            value_expr = self.generate_expression(value_ast)
-                            self.add_line(f"obj->{attr_name} = {value_expr};")
-                        except Exception as e:
-                            self.add_line(f"// Ошибка генерации выражения: {e}")
 
     def _process_attribute_assignment_in_init(self, node: Dict, param_names: List[str]):
         """Обрабатывает присваивание атрибуту в конструкторе"""
@@ -5491,59 +4174,6 @@ class CCodeGenerator:
         # Если input() используется в выражении, нужно вернуть значение
         # Для этого создадим узел с результатом
         return temp_var
-
-    def generate_expression_input(self, node: Dict) -> str:
-        """Генерирует выражение с input() и возвращает имя переменной"""
-        args = node.get("arguments", [])
-
-        # Создаем временную переменную для результата
-        temp_var = self.generate_temporary_var("str")
-
-        # Создаем prompt если есть аргументы
-        if args:
-            format_parts = []
-            value_parts = []
-
-            for arg in args:
-                if isinstance(arg, dict):
-                    if arg.get("type") == "literal" and arg.get("data_type") == "str":
-                        value = arg.get("value", "")
-                        format_parts.append(value)
-                    else:
-                        expr = self.generate_expression(arg)
-                        format_parts.append("%s")
-                        value_parts.append(expr)
-
-            prompt = " ".join(format_parts)
-            if value_parts:
-                args_str = ", ".join(value_parts)
-                self.add_line(f'printf("{prompt}", {args_str});')
-            else:
-                self.add_line(f'printf("{prompt}");')
-
-        # Читаем ввод
-        self.add_line(f"char {temp_var}_buffer[256];")
-        self.add_line(f"fgets({temp_var}_buffer, sizeof({temp_var}_buffer), stdin);")
-        self.add_line(f'{temp_var}_buffer[strcspn({temp_var}_buffer, "\\n")] = 0;')
-
-        # Выделяем память для строки
-        self.add_line(f"{temp_var} = malloc(strlen({temp_var}_buffer) + 1);")
-        self.add_line(f"strcpy({temp_var}, {temp_var}_buffer);")
-
-        return temp_var
-
-    def generate_print_from_ast(self, ast: Dict):
-        """Генерирует print из AST выражения"""
-        args = ast.get("arguments", [])
-
-        # Создаем временный узел для print
-        print_node = {
-            "node": "print",
-            "arguments": args,
-        }
-
-        # Используем существующий метод generate_print
-        self.generate_print(print_node)
 
     def generate_input_expression(self, node: Dict) -> str:
         """Генерирует выражение с input() и возвращает имя переменной с результатом"""
@@ -6614,130 +5244,6 @@ class CCodeGenerator:
 
         self.generated_helpers.extend(helpers)
 
-    def compile_method_call(self, node):
-        """Компилирует вызов метода: obj.method(args)"""
-        obj_name = node.get("object")
-        method_name = node.get("method")
-        args = node.get("arguments", [])
-
-        # Получаем информацию о классе
-        class_info = self.get_class_of_object(obj_name)
-
-        # Генерируем код вызова
-        arg_code = ", ".join(self.compile_expression(arg) for arg in args)
-        return f"{obj_name}->{method_name}({arg_code})"
-
-    def compile_assignment(self, node):
-        """Компилирует присваивание с вызовом метода"""
-        if node.get("is_method_call_assignment"):
-            # var x: type = obj.method(args)
-            target = node["var_name"]
-            obj_name = node["object"]
-            method_name = node["method"]
-            args = node["arguments"]
-
-            # Генерируем вызов метода
-            method_call = self.compile_method_call(
-                {"object": obj_name, "method": method_name, "arguments": args}
-            )
-
-            return f"{target} = {method_call};"
-
-    def analyze_class_inheritance(self, json_data: List[Dict]):
-        """Анализирует иерархию наследования классов"""
-        print("DEBUG analyze_class_inheritance: Начинаем анализ классов")
-
-        # Сначала собираем информацию о всех классах
-        class_info = {}
-
-        for scope in json_data:
-            if scope.get("type") == "module":
-                for node in scope.get("graph", []):
-                    if node.get("node") == "class_declaration":
-                        class_name = node.get("class_name", "")
-                        base_classes = node.get("base_classes", [])
-                        methods = node.get("methods", [])
-
-                        class_info[class_name] = {
-                            "base_classes": base_classes,
-                            "methods": {method["name"]: method for method in methods},
-                        }
-                        print(f"DEBUG: Класс {class_name} наследует от {base_classes}")
-
-        # Строим иерархию наследования
-        for class_name, info in class_info.items():
-            self.class_hierarchy[class_name] = info["base_classes"]
-            self.all_class_methods[class_name] = {}
-
-            # Начинаем с методов текущего класса
-            for method_name, method_info in info["methods"].items():
-                self.all_class_methods[class_name][method_name] = {
-                    **method_info,
-                    "origin": class_name,
-                    "is_inherited": False,
-                }
-
-            # Добавляем методы из родительских классов
-            if info["base_classes"]:
-                self._inherit_methods_from_parents(class_name, class_info)
-
-    def _inherit_methods_from_parents(self, class_name: str, class_info: Dict):
-        """Добавляет унаследованные методы из родительских классов"""
-        if class_name not in class_info:
-            return
-
-        base_classes = class_info[class_name]["base_classes"]
-
-        for base_class in base_classes:
-            if base_class in class_info:
-                # Добавляем методы родительского класса
-                for method_name, method_info in class_info[base_class][
-                    "methods"
-                ].items():
-                    if method_name not in self.all_class_methods[class_name]:
-                        self.all_class_methods[class_name][method_name] = {
-                            **method_info,
-                            "origin": base_class,
-                            "is_inherited": True,
-                        }
-                        print(
-                            f"DEBUG: Класс {class_name} наследует метод {method_name} от {base_class}"
-                        )
-
-                # Рекурсивно добавляем методы от родительских классов родителя
-                self._inherit_methods_from_parents(base_class, class_info)
-
-    def _inherit_methods_recursive(
-        self, class_name: str, class_info: Dict, visited=None
-    ):
-        """Рекурсивно добавляет методы из родительских классов"""
-        if visited is None:
-            visited = set()
-
-        if class_name in visited:
-            return
-        visited.add(class_name)
-
-        if class_name not in class_info:
-            return
-
-        base_classes = class_info[class_name]["base_classes"]
-
-        for base_class in base_classes:
-            if base_class in class_info:
-                # Добавляем методы родительского класса, если их еще нет
-                for method_name, method_info in class_info[base_class][
-                    "methods"
-                ].items():
-                    if method_name not in self.all_class_methods[class_name]:
-                        self.all_class_methods[class_name][method_name] = {
-                            **method_info,
-                            "origin": base_class,
-                        }
-
-                # Рекурсивно обрабатываем родительские классы родителя
-                self._inherit_methods_recursive(base_class, class_info, visited)
-
     def generate_all_methods(self, json_data: List[Dict]):
         """Генерирует все методы всех классов, включая унаследованные"""
         print("DEBUG generate_all_methods: Начало")
@@ -6789,73 +5295,6 @@ class CCodeGenerator:
             for method_name, scope in methods.items():
                 if method_name != "__init__":
                     self.generate_class_method_implementation(class_name, scope)
-
-    def generate_method_call_expression(self, ast: Dict) -> str:
-        """Генерирует выражение вызова метода с учетом наследования"""
-        object_name = ast.get("object", "")
-        method_name = ast.get("method", "")
-        args = ast.get("arguments", [])
-
-        # Проверяем тип объекта
-        var_info = self.get_variable_info(object_name)
-        if not var_info:
-            return f"// ERROR: Объект '{object_name}' не найден"
-
-        obj_type = var_info.get("py_type", "")
-
-        # Определяем, какой класс на самом деле содержит метод
-        actual_class = self._find_method_class(obj_type, method_name)
-
-        if not actual_class:
-            return f"// ERROR: Метод '{method_name}' не найден для типа '{obj_type}'"
-
-        # Генерируем аргументы
-        arg_strings = []
-        for arg in args:
-            if isinstance(arg, dict):
-                arg_strings.append(self.generate_expression(arg))
-            else:
-                arg_strings.append(str(arg))
-
-        args_str = ", ".join(arg_strings) if arg_strings else ""
-
-        # Если это self (внутри метода класса), вызываем напрямую
-        if object_name == "self":
-            return f"{obj_type}_{method_name}({object_name}, {args_str})"
-        else:
-            # Внешний вызов - используем указатель на объект
-            full_args = f"{object_name}"
-            if args_str:
-                full_args = f"{object_name}, {args_str}"
-
-            return f"{actual_class}_{method_name}({full_args})"
-
-    def _find_method_class(self, class_name: str, method_name: str) -> str:
-        """Находит класс, в котором определен метод (с учетом наследования)"""
-        print(
-            f"DEBUG _find_method_class: ищем метод '{method_name}' в классе '{class_name}'"
-        )
-
-        # Проверяем текущий класс
-        if class_name in self.all_class_methods:
-            if method_name in self.all_class_methods[class_name]:
-                method_info = self.all_class_methods[class_name][method_name]
-                print(
-                    f"DEBUG: метод найден в классе {method_info.get('origin', class_name)}"
-                )
-                return method_info.get("origin", class_name)
-
-        # Рекурсивно проверяем родительские классы
-        if class_name in self.class_hierarchy:
-            for parent_class in self.class_hierarchy[class_name]:
-                result = self._find_method_class(parent_class, method_name)
-                if result:
-                    return result
-
-        print(
-            f"DEBUG: метод '{method_name}' не найден в иерархии класса '{class_name}'"
-        )
-        return None
 
     def _generate_inherited_method_stub(self, class_name: str, method_info: Dict):
         """Генерирует заглушку для унаследованного метода"""
@@ -7013,389 +5452,6 @@ class CCodeGenerator:
                 self.add_line(f"{temp_var} {operator} {value_expr};")
             # Устанавливаем новое значение
             self.add_line(f"set_{struct_name}({variable}, {index_expr}, {temp_var});")
-
-    def analyze_all_classes(self, json_data: List[Dict]):
-        """Анализирует все классы и их поля перед генерацией кода"""
-        print(f"DEBUG: Анализируем все классы из JSON")
-
-        # Сначала соберем все конструкторы
-        init_scopes = {}
-
-        for scope in json_data:
-            if scope.get("type") in ["constructor", "class_method"]:
-                if scope.get("method_name") == "__init__":
-                    class_name = scope.get("class_name", "")
-                    init_scopes[class_name] = scope
-                    print(f"DEBUG: Найден конструктор для {class_name}")
-
-        # Теперь обрабатываем каждый класс
-        for scope in json_data:
-            if scope.get("type") == "module":
-                for node in scope.get("graph", []):
-                    if node.get("node") == "class_declaration":
-                        class_name = node.get("class_name", "")
-                        print(f"DEBUG: Анализируем класс {class_name}")
-
-                        # Собираем поля из конструктора
-                        if class_name in init_scopes:
-                            init_scope = init_scopes[class_name]
-                            self._analyze_init_method_for_fields(class_name, init_scope)
-
-    def collect_class_fields_from_json(self, json_data: List[Dict]):
-        """Собирает поля всех классов из JSON"""
-        print("DEBUG: collect_class_fields_from_json: начинаем сбор полей классов")
-
-        # 1. Находим все конструкторы __init__
-        init_methods = {}
-
-        for scope in json_data:
-            if scope.get("type") in ["constructor", "class_method"]:
-                if scope.get("method_name") == "__init__":
-                    class_name = scope.get("class_name")
-                    init_methods[class_name] = scope
-                    print(f"DEBUG: Найден конструктор для класса {class_name}")
-
-        # 2. Анализируем каждый конструктор
-        for class_name, init_scope in init_methods.items():
-            if class_name not in self.class_fields:
-                self.class_fields[class_name] = {}
-
-            print(f"DEBUG: Анализируем конструктор {class_name}.__init__")
-
-            # Анализируем узлы графа
-            for node in init_scope.get("graph", []):
-                if node.get("node") == "attribute_assignment":
-                    obj = node.get("object", "")
-                    attr = node.get("attribute", "")
-
-                    if obj == "self":
-                        # Определяем тип поля
-                        # Пока просто ставим int для всех полей
-                        # Позже можно улучшить определение типов
-                        self.class_fields[class_name][attr] = "int"
-                        print(f"DEBUG: Добавлено поле {class_name}.{attr} = int")
-
-        print(f"DEBUG: Всего классов с полями: {len(self.class_fields)}")
-        for class_name, fields in self.class_fields.items():
-            print(f"DEBUG:   {class_name}: {fields}")
-
-    def collect_class_fields_from_init_parameters(self, json_data: List[Dict]):
-        """Собирает типы полей классов из параметров конструктора"""
-        print("DEBUG: collect_class_fields_from_init_parameters")
-
-        # 1. Собираем все методы __init__
-        init_scopes = {}
-
-        for scope in json_data:
-            if scope.get("type") in ["constructor", "class_method"]:
-                if scope.get("method_name") == "__init__":
-                    class_name = scope.get("class_name")
-                    init_scopes[class_name] = scope
-                    print(f"DEBUG: Найден конструктор для {class_name}")
-
-        # 2. Анализируем каждый конструктор
-        for class_name, init_scope in init_scopes.items():
-            if class_name not in self.class_fields:
-                self.class_fields[class_name] = {}
-
-            print(f"DEBUG: Анализируем конструктор {class_name}.__init__")
-
-            # Получаем параметры конструктора
-            parameters = init_scope.get("parameters", [])
-
-            # Собираем типы параметров (пропускаем self)
-            param_types = {}
-            for param in parameters:
-                param_name = param.get("name", "")
-                if param_name != "self":
-                    param_type = param.get("type", "int")
-                    param_types[param_name] = param_type
-                    print(f"DEBUG: Параметр {param_name}: {param_type}")
-
-            # Анализируем узлы графа
-            for node in init_scope.get("graph", []):
-                if node.get("node") == "attribute_assignment":
-                    obj = node.get("object", "")
-                    attr = node.get("attribute", "")
-                    value_ast = node.get("value", {})
-
-                    if obj == "self":
-                        # 1. Проверяем, является ли значение параметром конструктора
-                        if value_ast.get("type") == "variable":
-                            var_name = value_ast.get("value", "")
-
-                            if var_name in param_types:
-                                # Используем тип параметра
-                                field_type = param_types[var_name]
-                                self.class_fields[class_name][attr] = field_type
-                                print(
-                                    f"DEBUG: Поле {attr} <- тип параметра {var_name}: {field_type}"
-                                )
-                            else:
-                                # Иначе определяем тип по AST
-                                field_type = self._infer_field_type_from_ast(value_ast)
-                                if field_type:
-                                    self.class_fields[class_name][attr] = field_type
-                                    print(
-                                        f"DEBUG: Поле {attr} <- вычисленный тип: {field_type}"
-                                    )
-
-                        # 2. Проверяем литералы
-                        elif value_ast.get("type") == "literal":
-                            data_type = value_ast.get("data_type", "int")
-                            self.class_fields[class_name][attr] = data_type
-                            print(f"DEBUG: Поле {attr} <- литерал типа: {data_type}")
-
-                        # 3. Для выражений пытаемся определить тип
-                        else:
-                            field_type = self._infer_field_type_from_ast(value_ast)
-                            if field_type:
-                                self.class_fields[class_name][attr] = field_type
-                                print(f"DEBUG: Поле {attr} <- тип из AST: {field_type}")
-
-    def _infer_field_type_from_ast(self, ast: Dict, context_vars: Dict = None) -> str:
-        """Определяет тип поля по AST выражению (без хардкода)"""
-        if not ast:
-            return "int"  # По умолчанию
-
-        node_type = ast.get("type", "")
-
-        # Литералы
-        if node_type == "literal":
-            data_type = ast.get("data_type", "int")
-            return data_type
-
-        # Переменные - проверяем в контексте
-        elif node_type == "variable":
-            var_name = ast.get("value", "")
-
-            # Сначала проверяем переданный контекст (параметры конструктора)
-            if context_vars and var_name in context_vars:
-                return context_vars[var_name]
-
-            # Затем проверяем объявленные переменные
-            var_info = self.get_variable_info(var_name)
-            if var_info:
-                return var_info.get("py_type", "int")
-
-            # Если переменная не найдена, возвращаем "int" по умолчанию
-            return "int"
-
-        # Атрибуты объектов
-        elif node_type == "attribute_access":
-            obj_name = ast.get("object", "")
-            attr_name = ast.get("attribute", "")
-
-            # Если обращаемся к self.атрибут, нужно анализировать граф конструктора
-            # чтобы найти тип этого атрибута
-            if obj_name == "self":
-                # Пока возвращаем "int" по умолчанию
-                # TODO: рекурсивный анализ для определения типа атрибута
-                return "int"
-
-            return "int"
-
-        # Бинарные операции
-        elif node_type == "binary_operation":
-            left = ast.get("left", {})
-            right = ast.get("right", {})
-            operator = ast.get("operator_symbol", "")
-
-            left_type = self._infer_field_type_from_ast(left, context_vars)
-            right_type = self._infer_field_type_from_ast(right, context_vars)
-
-            # Для арифметических операций определяем результирующий тип
-            if operator in ["+", "-", "*", "/", "//", "%", "**"]:
-                # Если один из операндов float/double, результат float
-                if "float" in left_type or "double" in left_type:
-                    return "float"
-                if "float" in right_type or "double" in right_type:
-                    return "float"
-                # Если оба int, результат int
-                if left_type == "int" and right_type == "int":
-                    return "int"
-
-            # Для сравнений и логических операций результат bool
-            elif operator in ["<", ">", "<=", ">=", "==", "!=", "and", "or", "not"]:
-                return "bool"
-
-            return "int"
-
-        # Вызовы функций/методов
-        elif node_type == "function_call":
-            # Пока возвращаем "int" по умолчанию
-            # TODO: анализировать возвращаемый тип функции
-            return "int"
-
-        # Списки и кортежи
-        elif node_type == "list_literal":
-            items = ast.get("items", [])
-            if items:
-                # Определяем тип первого элемента
-                first_item_type = self._infer_field_type_from_ast(
-                    items[0], context_vars
-                )
-                return f"list[{first_item_type}]"
-            return "list[int]"
-
-        elif node_type == "tuple_literal":
-            items = ast.get("items", [])
-            if items:
-                # Определяем типы всех элементов
-                element_types = []
-                for item in items:
-                    element_types.append(
-                        self._infer_field_type_from_ast(item, context_vars)
-                    )
-
-                # Если все элементы одного типа
-                if len(set(element_types)) == 1:
-                    return f"tuple[{element_types[0]}]"
-                else:
-                    return f"tuple[{', '.join(element_types)}]"
-            return "tuple[int]"
-
-        # Доступ по индексу
-        elif node_type == "index_access":
-            variable = ast.get("variable", "")
-            var_info = self.get_variable_info(variable)
-            if var_info:
-                py_type = var_info.get("py_type", "")
-                if py_type.startswith("list["):
-                    # Извлекаем тип элемента списка
-                    match = re.match(r"list\[([^\]]+)\]", py_type)
-                    if match:
-                        return match.group(1)
-                elif py_type.startswith("tuple["):
-                    # Для кортежей возвращаем тип элемента
-                    match = re.match(r"tuple\[([^\]]+)\]", py_type)
-                    if match:
-                        inner = match.group(1)
-                        # Если это один тип (tuple[int])
-                        if "," not in inner:
-                            return inner
-                        # Если это несколько типов (tuple[int, float]), возвращаем первый
-                        return inner.split(",")[0].strip()
-            return "int"
-
-        # По умолчанию
-        return "int"
-
-    def generate_static_method_call(self, node: Dict):
-        """Генерирует вызов метода объекта (ошибочно назван static_method_call)"""
-        # Получаем имя объекта и метода
-        object_name = node.get("class_name", "")  # На самом деле это имя объекта!
-        method_name = node.get("method", "")
-        args = node.get("arguments", [])
-
-        # 1. Определяем тип объекта
-        var_info = self.get_variable_info(object_name)
-        if not var_info:
-            print(f"ERROR: Object '{object_name}' not found")
-            self.add_line(f"// ERROR: Object '{object_name}' not found for method call")
-            return
-
-        object_type = var_info.get("py_type", "")
-        if not object_type:
-            print(f"ERROR: No type for object '{object_name}'")
-            self.add_line(f"// ERROR: No type for object '{object_name}'")
-            return
-
-        print(
-            f"DEBUG: Generating method call: {object_name}.{method_name}() where {object_name} has type {object_type}"
-        )
-
-        # 2. Генерируем аргументы
-        arg_strings = []
-        for arg in args:
-            if isinstance(arg, dict):
-                arg_str = self.generate_expression(arg)
-                if arg_str is None:
-                    arg_str = "0"
-                arg_strings.append(arg_str)
-            else:
-                arg_strings.append(str(arg))
-
-        # 3. Определяем, как генерировать вызов в зависимости от типа объекта
-
-        # 3.1. Если это класс
-        if self._is_class_type(object_type):
-            # Формат: ClassName_methodName(self, args...)
-            if arg_strings:
-                self.add_line(
-                    f"{object_type}_{method_name}({object_name}, {', '.join(arg_strings)});"
-                )
-            else:
-                self.add_line(f"{object_type}_{method_name}({object_name});")
-
-        # 3.2. Если это список
-        elif object_type.startswith("list["):
-            struct_name = self.generate_list_struct_name(object_type)
-            # Методы списка имеют префикс append_, get_, set_ и т.д.
-            if method_name in ["append", "get", "set", "len", "free"]:
-                if arg_strings:
-                    self.add_line(
-                        f"{method_name}_{struct_name}({object_name}, {', '.join(arg_strings)});"
-                    )
-                else:
-                    self.add_line(f"{method_name}_{struct_name}({object_name});")
-            else:
-                # Универсальный вызов
-                if arg_strings:
-                    self.add_line(
-                        f"{struct_name}_{method_name}({object_name}, {', '.join(arg_strings)});"
-                    )
-                else:
-                    self.add_line(f"{struct_name}_{method_name}({object_name});")
-
-        # 3.3. Если это кортеж
-        elif object_type.startswith("tuple["):
-            struct_name = self.generate_tuple_struct_name(object_type)
-            # Методы кортежа имеют префикс get_, len_, free_ и т.д.
-            if method_name in ["get", "len", "free"]:
-                if arg_strings:
-                    self.add_line(
-                        f"{method_name}_{struct_name}({object_name}, {', '.join(arg_strings)});"
-                    )
-                else:
-                    self.add_line(f"{method_name}_{struct_name}({object_name});")
-            else:
-                # Универсальный вызов
-                if arg_strings:
-                    self.add_line(
-                        f"{struct_name}_{method_name}({object_name}, {', '.join(arg_strings)});"
-                    )
-                else:
-                    self.add_line(f"{struct_name}_{method_name}({object_name});")
-
-        # 3.4. Если это строка
-        elif object_type == "str":
-            # Методы строк имеют префикс string_
-            if method_name in ["upper", "lower", "capitalize", "strip", "format"]:
-                if arg_strings:
-                    self.add_line(
-                        f"string_{method_name}({object_name}, {', '.join(arg_strings)});"
-                    )
-                else:
-                    self.add_line(f"string_{method_name}({object_name});")
-            else:
-                # Универсальный вызов
-                if arg_strings:
-                    self.add_line(
-                        f"string_{method_name}({object_name}, {', '.join(arg_strings)});"
-                    )
-                else:
-                    self.add_line(f"string_{method_name}({object_name});")
-
-        # 3.5. Другие типы
-        else:
-            # Универсальный формат: object_type_method_name(object, args...)
-            if arg_strings:
-                self.add_line(
-                    f"{object_type}_{method_name}({object_name}, {', '.join(arg_strings)});"
-                )
-            else:
-                self.add_line(f"{object_type}_{method_name}({object_name});")
 
     def generate_object_method_call(self, node: Dict):
         """Генерирует вызов метода объекта (obj.method())"""
@@ -7589,3 +5645,433 @@ class CCodeGenerator:
             # Копируем строки
             self.add_line(f"strcpy({target_var}, {left_expr});")
             self.add_line(f"strcat({target_var}, {right_expr});")
+
+    # OTHER
+
+    def collect_imports_and_declarations(self, json_data: List[Dict]):
+        """Собирает импорты и объявления функций из JSON"""
+        self.c_imports = []
+        self.function_declarations = []
+
+        # Собираем импорты из module scope
+        for scope in json_data:
+            if scope.get("type") == "module":
+                for node in scope.get("graph", []):
+                    if node.get("node") == "c_import":
+                        self.c_imports.append(node)
+
+        # Собираем информацию о классах и их методах
+        for scope in json_data:
+            if scope.get("type") == "module":
+                for node in scope.get("graph", []):
+                    if node.get("node") == "class_declaration":
+                        class_name = node.get("class_name", "")
+                        methods = node.get("methods", [])
+
+                        # Генерируем объявления методов
+                        for method in methods:
+                            if method.get("name") != "__init__":
+                                method_name = method.get("name", "")
+                                return_type = method.get("return_type", "void")
+
+                                # Определяем C тип возвращаемого значения
+                                if return_type.startswith("list["):
+                                    self.generate_list_struct(return_type)
+                                    struct_name = self.generate_list_struct_name(
+                                        return_type
+                                    )
+                                    c_return_type = f"{struct_name}*"
+                                elif return_type.startswith("tuple["):
+                                    self.generate_tuple_struct(return_type)
+                                    struct_name = self.generate_tuple_struct_name(
+                                        return_type
+                                    )
+                                    c_return_type = f"{struct_name}*"
+                                else:
+                                    c_return_type = self.map_type_to_c(return_type)
+
+                                params = method.get("parameters", [])
+
+                                # Формируем параметры метода
+                                param_decls = []
+                                for i, param in enumerate(params):
+                                    param_name = param.get("name", "")
+                                    param_type = param.get("type", "int")
+
+                                    if i == 0 and param_name == "self":
+                                        param_decls.append(f"{class_name}* self")
+                                    else:
+                                        c_param_type = self.map_type_to_c(param_type)
+                                        param_decls.append(
+                                            f"{c_param_type} {param_name}"
+                                        )
+
+                                params_str = (
+                                    ", ".join(param_decls) if param_decls else "void"
+                                )
+                                declaration = f"{c_return_type} {class_name}_{method_name}({params_str});"
+                                self.function_declarations.append(declaration)
+
+        # Добавляем объявление main
+        self.function_declarations.append("int main(void);")
+
+    def clean_type_name_for_c(self, type_name: str) -> str:
+        """Очищает имя типа для использования в C идентификаторах"""
+        if not isinstance(type_name, str):
+            return "unknown"
+
+        # Удаляем все небуквенно-цифровые символы и заменяем на _
+        cleaned = re.sub(r"[^a-zA-Z0-9]", "_", type_name)
+        # Убираем множественные подчеркивания
+        cleaned = re.sub(r"_+", "_", cleaned)
+        # Убираем подчеркивания в начале и конце
+        cleaned = cleaned.strip("_")
+
+        # Если после очистки строка пустая, используем дефолтное имя
+        if not cleaned:
+            return "unknown"
+
+        # Делаем первую букву строчной для согласованности
+        if cleaned[0].isupper():
+            cleaned = cleaned[0].lower() + cleaned[1:]
+
+        return cleaned
+
+    def collect_types_from_ast(self, json_data: List[Dict]):
+        """Собирает все типы из AST для генерации структур"""
+        all_types = set()
+
+        def process_node(node):
+            if not isinstance(node, dict):
+                return
+
+            # Обрабатываем declaration узлы
+            if node.get("node") == "declaration":
+                var_type = node.get("var_type", "")
+                if var_type:
+                    if var_type.startswith("list["):
+                        all_types.add(var_type)
+                        # Также добавляем все вложенные типы
+                        self._collect_all_nested_list_types(var_type, all_types)
+                    elif var_type.startswith("tuple["):
+                        all_types.add(var_type)
+
+        # Проходим по всем scope и узлам
+        for scope in json_data:
+            if scope.get("type") in ["module", "function"]:
+                # Обрабатываем graph узлы
+                for node in scope.get("graph", []):
+                    process_node(node)
+
+        # Генерируем структуры для всех найденных типов
+        # Сортируем по глубине вложенности (от простых к сложным)
+        sorted_types = sorted(all_types, key=lambda x: (x.count("["), x))
+        for py_type in sorted_types:
+            if py_type.startswith("list["):
+                self.generate_list_struct(py_type)
+            elif py_type.startswith("tuple["):
+                self.generate_tuple_struct(py_type)
+
+    def _infer_field_type_from_ast(self, ast: Dict, context_vars: Dict = None) -> str:
+        """Определяет тип поля по AST выражению (без хардкода)"""
+        if not ast:
+            return "int"  # По умолчанию
+
+        node_type = ast.get("type", "")
+
+        # Литералы
+        if node_type == "literal":
+            data_type = ast.get("data_type", "int")
+            return data_type
+
+        # Переменные - проверяем в контексте
+        elif node_type == "variable":
+            var_name = ast.get("value", "")
+
+            # Сначала проверяем переданный контекст (параметры конструктора)
+            if context_vars and var_name in context_vars:
+                return context_vars[var_name]
+
+            # Затем проверяем объявленные переменные
+            var_info = self.get_variable_info(var_name)
+            if var_info:
+                return var_info.get("py_type", "int")
+
+            # Если переменная не найдена, возвращаем "int" по умолчанию
+            return "int"
+
+        # Атрибуты объектов
+        elif node_type == "attribute_access":
+            obj_name = ast.get("object", "")
+            attr_name = ast.get("attribute", "")
+
+            # Если обращаемся к self.атрибут, нужно анализировать граф конструктора
+            # чтобы найти тип этого атрибута
+            if obj_name == "self":
+                # Пока возвращаем "int" по умолчанию
+                # TODO: рекурсивный анализ для определения типа атрибута
+                return "int"
+
+            return "int"
+
+        # Бинарные операции
+        elif node_type == "binary_operation":
+            left = ast.get("left", {})
+            right = ast.get("right", {})
+            operator = ast.get("operator_symbol", "")
+
+            left_type = self._infer_field_type_from_ast(left, context_vars)
+            right_type = self._infer_field_type_from_ast(right, context_vars)
+
+            # Для арифметических операций определяем результирующий тип
+            if operator in ["+", "-", "*", "/", "//", "%", "**"]:
+                # Если один из операндов float/double, результат float
+                if "float" in left_type or "double" in left_type:
+                    return "float"
+                if "float" in right_type or "double" in right_type:
+                    return "float"
+                # Если оба int, результат int
+                if left_type == "int" and right_type == "int":
+                    return "int"
+
+            # Для сравнений и логических операций результат bool
+            elif operator in ["<", ">", "<=", ">=", "==", "!=", "and", "or", "not"]:
+                return "bool"
+
+            return "int"
+
+        # Вызовы функций/методов
+        elif node_type == "function_call":
+            # Пока возвращаем "int" по умолчанию
+            # TODO: анализировать возвращаемый тип функции
+            return "int"
+
+        # Списки и кортежи
+        elif node_type == "list_literal":
+            items = ast.get("items", [])
+            if items:
+                # Определяем тип первого элемента
+                first_item_type = self._infer_field_type_from_ast(
+                    items[0], context_vars
+                )
+                return f"list[{first_item_type}]"
+            return "list[int]"
+
+        elif node_type == "tuple_literal":
+            items = ast.get("items", [])
+            if items:
+                # Определяем типы всех элементов
+                element_types = []
+                for item in items:
+                    element_types.append(
+                        self._infer_field_type_from_ast(item, context_vars)
+                    )
+
+                # Если все элементы одного типа
+                if len(set(element_types)) == 1:
+                    return f"tuple[{element_types[0]}]"
+                else:
+                    return f"tuple[{', '.join(element_types)}]"
+            return "tuple[int]"
+
+        # Доступ по индексу
+        elif node_type == "index_access":
+            variable = ast.get("variable", "")
+            var_info = self.get_variable_info(variable)
+            if var_info:
+                py_type = var_info.get("py_type", "")
+                if py_type.startswith("list["):
+                    # Извлекаем тип элемента списка
+                    match = re.match(r"list\[([^\]]+)\]", py_type)
+                    if match:
+                        return match.group(1)
+                elif py_type.startswith("tuple["):
+                    # Для кортежей возвращаем тип элемента
+                    match = re.match(r"tuple\[([^\]]+)\]", py_type)
+                    if match:
+                        inner = match.group(1)
+                        # Если это один тип (tuple[int])
+                        if "," not in inner:
+                            return inner
+                        # Если это несколько типов (tuple[int, float]), возвращаем первый
+                        return inner.split(",")[0].strip()
+            return "int"
+
+        # По умолчанию
+        return "int"
+
+    def collect_class_fields_from_init_parameters(self, json_data: List[Dict]):
+        """Собирает типы полей классов из параметров конструктора"""
+        print("DEBUG: collect_class_fields_from_init_parameters")
+
+        # 1. Собираем все методы __init__
+        init_scopes = {}
+
+        for scope in json_data:
+            if scope.get("type") in ["constructor", "class_method"]:
+                if scope.get("method_name") == "__init__":
+                    class_name = scope.get("class_name")
+                    init_scopes[class_name] = scope
+                    print(f"DEBUG: Найден конструктор для {class_name}")
+
+        # 2. Анализируем каждый конструктор
+        for class_name, init_scope in init_scopes.items():
+            if class_name not in self.class_fields:
+                self.class_fields[class_name] = {}
+
+            print(f"DEBUG: Анализируем конструктор {class_name}.__init__")
+
+            # Получаем параметры конструктора
+            parameters = init_scope.get("parameters", [])
+
+            # Собираем типы параметров (пропускаем self)
+            param_types = {}
+            for param in parameters:
+                param_name = param.get("name", "")
+                if param_name != "self":
+                    param_type = param.get("type", "int")
+                    param_types[param_name] = param_type
+                    print(f"DEBUG: Параметр {param_name}: {param_type}")
+
+            # Анализируем узлы графа
+            for node in init_scope.get("graph", []):
+                if node.get("node") == "attribute_assignment":
+                    obj = node.get("object", "")
+                    attr = node.get("attribute", "")
+                    value_ast = node.get("value", {})
+
+                    if obj == "self":
+                        # 1. Проверяем, является ли значение параметром конструктора
+                        if value_ast.get("type") == "variable":
+                            var_name = value_ast.get("value", "")
+
+                            if var_name in param_types:
+                                # Используем тип параметра
+                                field_type = param_types[var_name]
+                                self.class_fields[class_name][attr] = field_type
+                                print(
+                                    f"DEBUG: Поле {attr} <- тип параметра {var_name}: {field_type}"
+                                )
+                            else:
+                                # Иначе определяем тип по AST
+                                field_type = self._infer_field_type_from_ast(value_ast)
+                                if field_type:
+                                    self.class_fields[class_name][attr] = field_type
+                                    print(
+                                        f"DEBUG: Поле {attr} <- вычисленный тип: {field_type}"
+                                    )
+
+                        # 2. Проверяем литералы
+                        elif value_ast.get("type") == "literal":
+                            data_type = value_ast.get("data_type", "int")
+                            self.class_fields[class_name][attr] = data_type
+                            print(f"DEBUG: Поле {attr} <- литерал типа: {data_type}")
+
+                        # 3. Для выражений пытаемся определить тип
+                        else:
+                            field_type = self._infer_field_type_from_ast(value_ast)
+                            if field_type:
+                                self.class_fields[class_name][attr] = field_type
+                                print(f"DEBUG: Поле {attr} <- тип из AST: {field_type}")
+
+    def collect_class_fields_from_json(self, json_data: List[Dict]):
+        """Собирает поля всех классов из JSON"""
+        print("DEBUG: collect_class_fields_from_json: начинаем сбор полей классов")
+
+        # 1. Находим все конструкторы __init__
+        init_methods = {}
+
+        for scope in json_data:
+            if scope.get("type") in ["constructor", "class_method"]:
+                if scope.get("method_name") == "__init__":
+                    class_name = scope.get("class_name")
+                    init_methods[class_name] = scope
+                    print(f"DEBUG: Найден конструктор для класса {class_name}")
+
+        # 2. Анализируем каждый конструктор
+        for class_name, init_scope in init_methods.items():
+            if class_name not in self.class_fields:
+                self.class_fields[class_name] = {}
+
+            print(f"DEBUG: Анализируем конструктор {class_name}.__init__")
+
+            # Анализируем узлы графа
+            for node in init_scope.get("graph", []):
+                if node.get("node") == "attribute_assignment":
+                    obj = node.get("object", "")
+                    attr = node.get("attribute", "")
+
+                    if obj == "self":
+                        # Определяем тип поля
+                        # Пока просто ставим int для всех полей
+                        # Позже можно улучшить определение типов
+                        self.class_fields[class_name][attr] = "int"
+                        print(f"DEBUG: Добавлено поле {class_name}.{attr} = int")
+
+        print(f"DEBUG: Всего классов с полями: {len(self.class_fields)}")
+        for class_name, fields in self.class_fields.items():
+            print(f"DEBUG:   {class_name}: {fields}")
+
+    def analyze_class_inheritance(self, json_data: List[Dict]):
+        """Анализирует иерархию наследования классов"""
+        print("DEBUG analyze_class_inheritance: Начинаем анализ классов")
+
+        # Сначала собираем информацию о всех классах
+        class_info = {}
+
+        for scope in json_data:
+            if scope.get("type") == "module":
+                for node in scope.get("graph", []):
+                    if node.get("node") == "class_declaration":
+                        class_name = node.get("class_name", "")
+                        base_classes = node.get("base_classes", [])
+                        methods = node.get("methods", [])
+
+                        class_info[class_name] = {
+                            "base_classes": base_classes,
+                            "methods": {method["name"]: method for method in methods},
+                        }
+                        print(f"DEBUG: Класс {class_name} наследует от {base_classes}")
+
+        # Строим иерархию наследования
+        for class_name, info in class_info.items():
+            self.class_hierarchy[class_name] = info["base_classes"]
+            self.all_class_methods[class_name] = {}
+
+            # Начинаем с методов текущего класса
+            for method_name, method_info in info["methods"].items():
+                self.all_class_methods[class_name][method_name] = {
+                    **method_info,
+                    "origin": class_name,
+                    "is_inherited": False,
+                }
+
+            # Добавляем методы из родительских классов
+            if info["base_classes"]:
+                self._inherit_methods_from_parents(class_name, class_info)
+
+    def _inherit_methods_from_parents(self, class_name: str, class_info: Dict):
+        """Добавляет унаследованные методы из родительских классов"""
+        if class_name not in class_info:
+            return
+
+        base_classes = class_info[class_name]["base_classes"]
+
+        for base_class in base_classes:
+            if base_class in class_info:
+                # Добавляем методы родительского класса
+                for method_name, method_info in class_info[base_class][
+                    "methods"
+                ].items():
+                    if method_name not in self.all_class_methods[class_name]:
+                        self.all_class_methods[class_name][method_name] = {
+                            **method_info,
+                            "origin": base_class,
+                            "is_inherited": True,
+                        }
+                        print(
+                            f"DEBUG: Класс {class_name} наследует метод {method_name} от {base_class}"
+                        )
+
+                # Рекурсивно добавляем методы от родительских классов родителя
+                self._inherit_methods_from_parents(base_class, class_info)
