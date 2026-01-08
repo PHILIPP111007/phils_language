@@ -2,6 +2,7 @@ import re
 from typing import Dict, List, Optional
 
 from src.modules.constants import DATA_TYPES
+from src.modules.logger import logger
 
 
 class JSONValidator:
@@ -377,7 +378,7 @@ class JSONValidator:
                 mro = self.check_method_resolution_order(class_name)
                 # Можно сохранить MRO для использования в других проверках
                 if mro and len(mro) > 1:
-                    print(f"  MRO для класса '{class_name}': {mro}")
+                    logger.debug(f"  MRO для класса '{class_name}': {mro}")
 
         elif scope_type == "function":
             # Проверяем функции для потоков
@@ -620,7 +621,9 @@ class JSONValidator:
                         else:
                             # Помечаем как удаленную
                             variable_states[symbol] = "deleted"
-                            print(f"    Переменная '{symbol}' помечена как удаленная")
+                            logger.debug(
+                                f"    Переменная '{symbol}' помечена как удаленная"
+                            )
                     else:
                         # Переменная не была объявлена в этом scope
                         self.add_error(
@@ -645,7 +648,7 @@ class JSONValidator:
                         else:
                             # Помечаем как удаленный указатель
                             variable_states[symbol] = "pointer_deleted"
-                            print(
+                            logger.debug(
                                 f"    Указатель '{symbol}' помечен как удаленный (данные сохранены)"
                             )
                     else:
@@ -1253,7 +1256,9 @@ class JSONValidator:
         for func_name in func_calls:
             # Игнорируем функции, начинающиеся с @
             if func_name.startswith("@"):
-                print(f"    Пропускаем проверку функции '{func_name}' (игнорируемая)")
+                logger.debug(
+                    f"    Пропускаем проверку функции '{func_name}' (игнорируемая)"
+                )
                 continue
 
             if (
@@ -1289,7 +1294,7 @@ class JSONValidator:
                 continue
 
             # Это переменная - проверяем ее существование
-            print(f"      Проверка переменной '{identifier}' в выражении")
+            logger.debug(f"      Проверка переменной '{identifier}' в выражении")
             if not self.find_symbol_in_scope(identifier, level):
                 self.add_error(
                     f"переменная '{identifier}' в выражении не объявлена",
@@ -1315,7 +1320,7 @@ class JSONValidator:
         # 1. Проверяем левую часть (целевую переменную)
         for symbol in symbols:
             symbol_info = self.get_symbol_info(symbol, level)
-            print(
+            logger.debug(
                 f"  Проверка переменной '{symbol}': symbol_info={symbol_info is not None}"
             )
 
@@ -1327,18 +1332,20 @@ class JSONValidator:
                 )
             else:
                 # Проверяем, не была ли переменная удалена
-                print(
+                logger.debug(
                     f"    Состояние переменной '{symbol}': {self.get_variable_state(symbol, level)}"
                 )
-                print(f"    Удалена ли: {self.is_variable_deleted(symbol, level)}")
+                logger.debug(
+                    f"    Удалена ли: {self.is_variable_deleted(symbol, level)}"
+                )
 
                 if self.is_variable_deleted(symbol, level):
                     # Получаем историю переменной
                     key = (level, symbol)
                     if key in self.variable_history:
-                        print(f"    История переменной {symbol}:")
+                        logger.debug(f"    История переменной {symbol}:")
                         for action in self.variable_history[key]:
-                            print(
+                            logger.debug(
                                 f"      Действие: {action['action']}, content: {action.get('content', '')}"
                             )
 
@@ -1375,7 +1382,7 @@ class JSONValidator:
             # Вырезаем правую часть после "="
             if "=" in content:
                 expression = content.split("=", 1)[1].strip()
-                print(f"  Выражение в правой части: '{expression}'")
+                logger.debug(f"  Выражение в правой части: '{expression}'")
 
                 # Проверяем вызовы функций в правой части
                 self.validate_expression(expression, scope_idx, node_idx, level)
@@ -1387,16 +1394,16 @@ class JSONValidator:
 
         # 3. Проверяем зависимости (используемые переменные)
         for dep in dependencies:
-            print(f"  Проверка зависимости '{dep}'")
+            logger.debug(f"  Проверка зависимости '{dep}'")
             found = self.find_symbol_in_scope(dep, level)
-            print(f"    Найдена в scope: {found}")
+            logger.debug(f"    Найдена в scope: {found}")
 
             if not found:
                 self.add_error(
                     f"используемая переменная '{dep}' не объявлена", scope_idx, node_idx
                 )
             elif self.is_variable_deleted(dep, level):
-                print(
+                logger.debug(
                     f"    Переменная '{dep}' удалена: {self.is_variable_deleted(dep, level)}"
                 )
                 self.add_error(
@@ -1436,7 +1443,7 @@ class JSONValidator:
             else:
                 # Помечаем как удаленную
                 self.variable_states[key] = "deleted"
-                print(f"    Переменная '{symbol}' помечена как удаленная")
+                logger.debug(f"    Переменная '{symbol}' помечена как удаленная")
 
     def validate_del_pointer(
         self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
@@ -1566,7 +1573,7 @@ class JSONValidator:
 
         # ИГНОРИРОВАНИЕ: если функция начинается с @ - пропускаем стандартные проверки
         if func_name and func_name.startswith("@"):
-            print(
+            logger.debug(
                 f"✓ Вызов функции '{func_name}' - пропускаем стандартную проверку (C-code/игнорируемая функция)"
             )
 
@@ -2033,17 +2040,19 @@ class JSONValidator:
         # Парсим return выражение
         if content.startswith("return "):
             return_expr = content[7:].strip()  # Убираем "return "
-            print(f"  Проверка return: '{return_expr}'")
+            logger.debug(f"  Проверка return: '{return_expr}'")
 
             # Получаем текущий scope (функцию) - КОРРЕКТНО
             current_scope = self.get_scope_for_node(scope_idx, level)
 
             if not current_scope or current_scope.get("type") != "function":
-                print(f"    Return не в функции, пропускаем проверку типа")
+                logger.debug(f"    Return не в функции, пропускаем проверку типа")
                 return
 
             declared_return_type = current_scope.get("return_type", "None")
-            print(f"    Функция объявлена как возвращающая: {declared_return_type}")
+            logger.debug(
+                f"    Функция объявлена как возвращающая: {declared_return_type}"
+            )
 
             # Получаем тип возвращаемого значения
             actual_return_type = "unknown"
@@ -2056,7 +2065,7 @@ class JSONValidator:
                         actual_return_type = self.get_type_from_ast(
                             value_ast, scope_idx, node_idx, level
                         )
-                        print(
+                        logger.debug(
                             f"    Тип возвращаемого значения из AST: {actual_return_type}"
                         )
                         break
@@ -2064,7 +2073,7 @@ class JSONValidator:
             # Если не нашли в AST, пытаемся определить из выражения
             if actual_return_type == "unknown":
                 actual_return_type = self.guess_type_from_value(return_expr)
-                print(
+                logger.debug(
                     f"    Тип возвращаемого значения из выражения: {actual_return_type}"
                 )
 
@@ -2521,7 +2530,7 @@ class JSONValidator:
 
                         # Игнорируем функции с @
                         if func_name.startswith("@"):
-                            print(
+                            logger.debug(
                                 f"    Функция '{func_name}' игнорируется при определении типа возврата"
                             )
                             return "unknown"
@@ -2575,7 +2584,7 @@ class JSONValidator:
 
                 # Игнорируем функции с @
                 if func_name.startswith("@"):
-                    print(
+                    logger.debug(
                         f"    Функция '{func_name}' игнорируется при проверке совместимости типов"
                     )
                     return

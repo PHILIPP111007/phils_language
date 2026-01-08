@@ -5,6 +5,7 @@ import json
 from src.modules.imports import CImportProcessor, ImportProcessor
 from src.modules.constants import KEYS, DATA_TYPES, METHOD_DECORATORS
 from src.modules.symbol_table import SymbolTable
+from src.modules.logger import logger
 
 
 class Parser:
@@ -216,7 +217,7 @@ class Parser:
                     ],
                 }
             )
-            print(
+            logger.debug(
                 f"Добавлен C импорт: {import_info['header']} (системный: {import_info['is_system']})"
             )
 
@@ -697,7 +698,7 @@ class Parser:
         # ========== НЕРАСПОЗНАННАЯ СТРОКА ==========
 
         # Если строка не распознана, создаем узел с ошибкой
-        print(f"Warning: Не удалось распарсить строку: {line}")
+        logger.debug(f"Warning: Не удалось распарсить строку: {line}")
         current_scope["graph"].append(
             {
                 "node": "unparsed",
@@ -719,7 +720,7 @@ class Parser:
         # Проверяем существование переменной
         symbol = scope["symbol_table"].get_symbol(var_name)
         if not symbol:
-            print(f"Error: Переменная '{var_name}' не определена")
+            logger.debug(f"Error: Переменная '{var_name}' не определена")
             return False
 
         operations = [
@@ -862,7 +863,7 @@ class Parser:
         # Проверяем существование переменной
         symbol = scope["symbol_table"].get_symbol(var_name)
         if not symbol:
-            print(f"Error: Переменная '{var_name}' не определена")
+            logger.debug(f"Error: Переменная '{var_name}' не определена")
             return False
 
         # Определяем тип операции
@@ -935,7 +936,7 @@ class Parser:
         # Проверяем существование переменной
         symbol = scope["symbol_table"].get_symbol(var_name)
         if not symbol:
-            print(f"Error: Переменная '{var_name}' не определена")
+            logger.debug(f"Error: Переменная '{var_name}' не определена")
             return False
 
         # Определяем тип операции
@@ -991,7 +992,7 @@ class Parser:
         # Проверяем существование объекта
         obj_symbol = scope["symbol_table"].get_symbol(obj_name)
         if not obj_symbol:
-            print(f"Error: Объект '{obj_name}' не определен")
+            logger.debug(f"Error: Объект '{obj_name}' не определен")
             return False
 
         operations = [
@@ -1035,11 +1036,11 @@ class Parser:
         # Проверяем существование указателя
         pointer_symbol = scope["symbol_table"].get_symbol(pointer_name)
         if not pointer_symbol:
-            print(f"Error: Указатель '{pointer_name}' не определен")
+            logger.debug(f"Error: Указатель '{pointer_name}' не определен")
             return False
 
         if not pointer_symbol["type"].startswith("*"):
-            print(f"Error: '{pointer_name}' не является указателем")
+            logger.debug(f"Error: '{pointer_name}' не является указателем")
             return False
 
         operations = [
@@ -1079,17 +1080,17 @@ class Parser:
         # Проверяем существование указателя
         pointer_symbol = scope["symbol_table"].get_symbol(pointer_name)
         if not pointer_symbol:
-            print(f"Error: Указатель '{pointer_name}' не определен")
+            logger.debug(f"Error: Указатель '{pointer_name}' не определен")
             return False
 
         if not pointer_symbol["type"].startswith("*"):
-            print(f"Error: '{pointer_name}' не является указателем")
+            logger.debug(f"Error: '{pointer_name}' не является указателем")
             return False
 
         # Проверяем существование переменной
         var_symbol = scope["symbol_table"].get_symbol(var_name)
         if not var_symbol:
-            print(f"Error: Переменная '{var_name}' не определена")
+            logger.debug(f"Error: Переменная '{var_name}' не определена")
             return False
 
         # Создаем AST для разыменования
@@ -1313,7 +1314,9 @@ class Parser:
 
         # Особый случай: кортеж из одного элемента должен иметь запятую
         if len(items) == 1 and not inner.endswith(","):
-            print(f"Warning: кортеж из одного элемента должен иметь запятую: {value}")
+            logger.debug(
+                f"Warning: кортеж из одного элемента должен иметь запятую: {value}"
+            )
 
         return {
             "type": "tuple_literal",
@@ -1357,7 +1360,7 @@ class Parser:
         func_name, params_str, return_type = match.groups()
         return_type = return_type if return_type else "None"
 
-        print(f"DEBUG: Найдена функция {func_name}() -> {return_type}")
+        logger.debug(f"DEBUG: Найдена функция {func_name}() -> {return_type}")
 
         # Парсим параметры
         parameters = []
@@ -1413,7 +1416,9 @@ class Parser:
 
             # Если следующая строка - это 'pass' с правильным отступом
             if next_line_content == "pass" and next_line_indent == indent + 1:
-                print(f"  Функция {func_name} имеет только 'pass' - создаем заглушку")
+                logger.debug(
+                    f"  Функция {func_name} имеет только 'pass' - создаем заглушку"
+                )
 
                 # Помечаем функцию как заглушку
                 func_decl_node["is_stub"] = True
@@ -1523,7 +1528,7 @@ class Parser:
                 return body_end
         else:
             # Нет следующей строки - пустая функция
-            print(f"  Функция {func_name} без тела")
+            logger.debug(f"  Функция {func_name} без тела")
             func_decl_node["is_stub"] = True
 
             # Создаем пустую область видимости для функции
@@ -1646,7 +1651,7 @@ class Parser:
         if tuple_uniform_match:
             is_tuple_uniform = True
             element_type = tuple_uniform_match.group(1)
-            print(f"DEBUG: Обнаружен tuple[{element_type}]")
+            logger.debug(f"DEBUG: Обнаружен tuple[{element_type}]")
 
         # Проверяем tuple[T1, T2, ...]
         elif var_type_str.startswith("tuple["):
@@ -1677,7 +1682,7 @@ class Parser:
                 if current_type:
                     tuple_element_types.append(current_type.strip())
 
-                print(
+                logger.debug(
                     f"DEBUG: Обнаружен tuple с фиксированными типами: {tuple_element_types}"
                 )
 
@@ -1692,7 +1697,7 @@ class Parser:
             was_deleted = existing_symbol.get("is_deleted", False)
 
             if not was_deleted:
-                print(f"Error: переменная '{name}' уже объявлена")
+                logger.debug(f"Error: переменная '{name}' уже объявлена")
                 return False
 
             # Восстанавливаем удаленную переменную
@@ -1749,11 +1754,11 @@ class Parser:
                     if item.get("type") == "literal":
                         item_type = item.get("data_type", "")
                         if element_type == "int" and item_type not in ["int", "float"]:
-                            print(
+                            logger.debug(
                                 f"Warning: элемент {i} кортежа '{name}' должен быть {element_type}, а не {item_type}"
                             )
                         elif element_type == "str" and item_type != "str":
-                            print(
+                            logger.debug(
                                 f"Warning: элемент {i} кортежа '{name}' должен быть {element_type}, а не {item_type}"
                             )
 
@@ -1780,7 +1785,7 @@ class Parser:
 
                 # Проверяем соответствие количества элементов
                 if len(items) != len(tuple_element_types):
-                    print(
+                    logger.debug(
                         f"Error: кортеж '{name}' должен содержать {len(tuple_element_types)} элементов, а не {len(items)}"
                     )
                     return False
@@ -2459,7 +2464,7 @@ class Parser:
         return {"type": "unknown", "value": expression, "original": expression}
 
     def parse_assignment(self, line: str, scope: dict):
-        print(
+        logger.debug(
             f"      parse_assignment: парсим '{line}' в scope {scope.get('type', 'unknown')}"
         )
 
@@ -2470,21 +2475,23 @@ class Parser:
         if deref_match:
             # Это запись через указатель: *p = значение
             pointer_name, value = deref_match.groups()
-            print(
+            logger.debug(
                 f"      parse_assignment: запись через указатель '{pointer_name}' = '{value}'"
             )
 
             # Ищем указатель в scope'ах
             result = self.find_symbol_recursive(scope, pointer_name)
             if not result:
-                print(f"      parse_assignment: указатель '{pointer_name}' не найден")
+                logger.debug(
+                    f"      parse_assignment: указатель '{pointer_name}' не найден"
+                )
                 return False
 
             pointer_symbol, found_scope = result
 
             # Проверяем, что это действительно указатель
             if not pointer_symbol["type"].startswith("*"):
-                print(
+                logger.debug(
                     f"      parse_assignment: '{pointer_name}' не является указателем"
                 )
                 return False
@@ -2521,30 +2528,36 @@ class Parser:
         match = re.match(pattern, line)
 
         if not match:
-            print(f"      parse_assignment: не удалось распарсить")
+            logger.debug(f"      parse_assignment: не удалось распарсить")
             return False
 
         name, expression = match.groups()
 
-        print(f"      parse_assignment: name='{name}', expression='{expression}'")
+        logger.debug(
+            f"      parse_assignment: name='{name}', expression='{expression}'"
+        )
 
         # Проверяем, является ли выражение разыменованием указателя (*p)
         if expression.strip().startswith("*"):
             # Это чтение через указатель: x = *p
             pointer_name = expression.strip()[1:].strip()
-            print(f"      parse_assignment: чтение через указатель '{pointer_name}'")
+            logger.debug(
+                f"      parse_assignment: чтение через указатель '{pointer_name}'"
+            )
 
             # Ищем указатель в scope'ах
             result = self.find_symbol_recursive(scope, pointer_name)
             if not result:
-                print(f"      parse_assignment: указатель '{pointer_name}' не найден")
+                logger.debug(
+                    f"      parse_assignment: указатель '{pointer_name}' не найден"
+                )
                 return False
 
             pointer_symbol, found_scope = result
 
             # Проверяем, что это действительно указатель
             if not pointer_symbol["type"].startswith("*"):
-                print(
+                logger.debug(
                     f"      parse_assignment: '{pointer_name}' не является указателем"
                 )
                 return False
@@ -2552,7 +2565,9 @@ class Parser:
             # Ищем целевую переменную
             target_result = self.find_symbol_recursive(scope, name)
             if not target_result:
-                print(f"      parse_assignment: целевая переменная '{name}' не найдена")
+                logger.debug(
+                    f"      parse_assignment: целевая переменная '{name}' не найдена"
+                )
                 return False
 
             target_symbol, target_scope = target_result
@@ -2629,11 +2644,13 @@ class Parser:
         result = find_symbol_recursive(scope, name)
         if result:
             symbol, found_scope = result
-            print(
+            logger.debug(
                 f"      parse_assignment: нашли символ '{name}' типа {symbol['type']} в scope {found_scope.get('type', 'unknown')}"
             )
         else:
-            print(f"      parse_assignment: символ '{name}' не найден ни в одном scope")
+            logger.debug(
+                f"      parse_assignment: символ '{name}' не найден ни в одном scope"
+            )
             return False
 
         # Парсим выражение в AST
@@ -2671,7 +2688,7 @@ class Parser:
             }
         )
 
-        print(
+        logger.debug(
             f"      parse_assignment: добавлен узел в граф scope {scope.get('type', 'unknown')}"
         )
 
@@ -3255,94 +3272,6 @@ class Parser:
         self.current_indent = saved_indent
 
         return body_end
-
-    def parse_print(self, line: str, scope: dict):
-        """Парсит вызов функции print"""
-        pattern = r"print\s*\((.*?)\)"
-        match = re.match(pattern, line)
-
-        if not match:
-            return False
-
-        args_str = match.group(1)
-
-        # Разбираем аргументы
-        args = []
-        if args_str.strip():
-            # Разделяем аргументы по запятым, но учитываем строки и вложенные вызовы
-            current_arg = ""
-            in_string = False
-            string_char = None
-            paren_depth = 0
-
-            for char in args_str:
-                if not in_string and char in ['"', "'"]:
-                    in_string = True
-                    string_char = char
-                    current_arg += char
-                elif in_string and char == string_char and current_arg[-1] != "\\":
-                    in_string = False
-                    current_arg += char
-                elif not in_string and char == "(":
-                    paren_depth += 1
-                    current_arg += char
-                elif not in_string and char == ")":
-                    paren_depth -= 1
-                    current_arg += char
-                elif not in_string and paren_depth == 0 and char == ",":
-                    args.append(current_arg.strip())
-                    current_arg = ""
-                else:
-                    current_arg += char
-
-            if current_arg.strip():
-                args.append(current_arg.strip())
-
-        # Очищаем аргументы от лишних пробелов
-        args = [arg.strip() for arg in args]
-
-        operations = [{"type": "PRINT", "arguments": args}]
-
-        # Собираем зависимости для валидации
-        dependencies = []
-        for arg in args:
-            # Проверяем, является ли аргумент переменной (а не строкой или числом)
-            if (
-                arg
-                and not arg.startswith('"')
-                and not arg.endswith('"')
-                and not arg.startswith("'")
-                and not arg.endswith("'")
-                and not arg.isdigit()
-                and arg not in ["True", "False", "None"]
-            ):
-                # Извлекаем имя переменной (может быть сложным выражением)
-                # Простая проверка: если аргумент - просто имя переменной
-                if arg.isalpha():
-                    dependencies.append(arg)
-                else:
-                    # Для сложных выражений извлекаем все переменные
-                    var_pattern = r"([a-zA-Z_][a-zA-Z0-9_]*)"
-                    vars_in_arg = re.findall(var_pattern, arg)
-                    for var in vars_in_arg:
-                        if (
-                            var not in KEYS
-                            and var not in DATA_TYPES
-                            and var not in dependencies
-                        ):
-                            dependencies.append(var)
-
-        scope["graph"].append(
-            {
-                "node": "print",
-                "content": line,
-                "arguments": args,
-                "operations": operations,
-                "dependencies": dependencies,
-            }
-        )
-
-        return True
 
     def parse_function_arguments_to_ast(self, args_str: str) -> list:
         """Парсит аргументы функции в список AST"""
@@ -4111,7 +4040,7 @@ class Parser:
         if base_classes_str:
             base_classes = [bc.strip() for bc in base_classes_str.split(",")]
 
-        print(f"DEBUG: Класс '{class_name}' наследует от: {base_classes}")
+        logger.debug(f"DEBUG: Класс '{class_name}' наследует от: {base_classes}")
 
         # Добавляем класс в таблицу символов с информацией о наследовании
         symbol_id = scope["symbol_table"].add_class(
@@ -4364,7 +4293,7 @@ class Parser:
                             break
 
         if method_exists:
-            print(f"DEBUG: Метод '{method_name}' уже существует, пропускаем")
+            logger.debug(f"DEBUG: Метод '{method_name}' уже существует, пропускаем")
             # Находим и пропускаем тело метода
             body_start = current_index + 1
             body_end = self.find_indented_block_end(all_lines, body_start, indent)
@@ -4386,7 +4315,7 @@ class Parser:
             class_node.setdefault("class_methods", []).append(method_info)
         else:
             class_node.setdefault("methods", []).append(method_info)
-            print(f"DEBUG: Добавлен метод '{method_name}' в класс")
+            logger.debug(f"DEBUG: Добавлен метод '{method_name}' в класс")
 
         # Для обычных методов добавляем self как первый параметр
         if not is_static and not is_classmethod and method_name != "__init__":
@@ -4532,7 +4461,7 @@ class Parser:
                             value_ast = self.parse_expression_to_ast(value)
                             attr_type = self._infer_type_from_ast(value_ast)
 
-                        print(
+                        logger.debug(
                             f"DEBUG: Найден атрибут в конструкторе: {attr_name}, тип: {attr_type}"
                         )
 
@@ -4558,7 +4487,7 @@ class Parser:
                                                 "access": "public",
                                             }
                                         )
-                                        print(
+                                        logger.debug(
                                             f"DEBUG: Добавлен атрибут {attr_name} в класс {class_name}"
                                         )
 
@@ -4579,7 +4508,7 @@ class Parser:
                                                             "access": "public",
                                                         }
                                                     )
-                                                    print(
+                                                    logger.debug(
                                                         f"DEBUG: Обновлен узел класса с атрибутом {attr_name}"
                                                     )
                                                 break
@@ -4607,8 +4536,8 @@ class Parser:
                         }
 
                         method_scope["graph"].append(attr_node)
-                        print(
-                            f"DEBUG: Добавлен узел attribute_assignment в граф конструктора"
+                        logger.debug(
+                            "DEBUG: Добавлен узел attribute_assignment в граф конструктора"
                         )
 
                         i += 1
@@ -4745,7 +4674,7 @@ class Parser:
         # Находим объект и его тип
         obj_symbol, found_scope = self.find_symbol_recursive(scope, obj_name)
         if not obj_symbol:
-            print(f"Error: Object '{obj_name}' not found")
+            logger.debug(f"Error: Object '{obj_name}' not found")
             return False
 
         # ИНИЦИАЛИЗИРУЕМ ПЕРЕМЕННЫЕ ПО УМОЛЧАНИЮ
@@ -4781,7 +4710,7 @@ class Parser:
                             break
 
         if not method_found:
-            print(
+            logger.debug(
                 f"Warning: Method '{method_name}' not found in class '{obj_type}' or its parents"
             )
             # Можно продолжить выполнение, но пометить как неизвестный метод
@@ -4903,7 +4832,7 @@ class Parser:
 
     def parse_class_attribute_initialization(self, line: str, scope: dict) -> bool:
         """Парсит инициализацию атрибута класса в конструкторе"""
-        print(f"DEBUG: Парсим инициализацию атрибута: {line}")
+        logger.debug(f"DEBUG: Парсим инициализацию атрибута: {line}")
 
         # Паттерн 1: self.attr = value
         pattern_simple = r"self\.([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)"
@@ -4911,21 +4840,23 @@ class Parser:
 
         if match_simple:
             attr_name, value = match_simple.groups()
-            print(f"DEBUG: Найден атрибут простой: {attr_name}, значение: {value}")
+            logger.debug(
+                f"DEBUG: Найден атрибут простой: {attr_name}, значение: {value}"
+            )
 
             # Парсим значение
             value_ast = self.parse_expression_to_ast(value)
-            print(f"DEBUG: Значение как AST: {value_ast}")
+            logger.debug(f"DEBUG: Значение как AST: {value_ast}")
 
             container_info = self._extract_container_info(value_ast)
 
             # Получаем имя класса из scope
             class_name = scope.get("class_name", "")
-            print(f"DEBUG: Имя класса: {class_name}")
+            logger.debug(f"DEBUG: Имя класса: {class_name}")
 
             # Определяем тип атрибута из AST значения
             attr_type = self._infer_type_from_ast(value_ast)
-            print(f"DEBUG: Выведенный тип: {attr_type}")
+            logger.debug(f"DEBUG: Выведенный тип: {attr_type}")
 
             if container_info:
                 attr_type = container_info["type"]
@@ -4948,7 +4879,7 @@ class Parser:
 
                         class_symbol["attributes"].append(attribute_data)
 
-                        print(
+                        logger.debug(
                             f"DEBUG: Добавлен атрибут {attr_name} в класс {class_name}"
                         )
 
@@ -4971,7 +4902,7 @@ class Parser:
                                             container_info
                                         )
                                     node["attributes"].append(node_attr_data)
-                                    print(
+                                    logger.debug(
                                         f"DEBUG: Обновлен узел класса с атрибутом {attr_name}"
                                     )
                                 break
@@ -4998,7 +4929,7 @@ class Parser:
                 "dependencies": self.extract_dependencies_from_ast(value_ast),
             }
             scope["graph"].append(attr_node)
-            print(f"DEBUG: Добавлен узел attribute_assignment в граф scope")
+            logger.debug(f"DEBUG: Добавлен узел attribute_assignment в граф scope")
             return True
 
         # Паттерн 2: var self.attr: type = value
@@ -5009,17 +4940,17 @@ class Parser:
 
         if match_with_type:
             attr_name, attr_type, value = match_with_type.groups()
-            print(
+            logger.debug(
                 f"DEBUG: Найден атрибут с типом: {attr_name}, тип: {attr_type}, значение: {value}"
             )
 
             # Парсим значение
             value_ast = self.parse_expression_to_ast(value)
-            print(f"DEBUG: Значение как AST: {value_ast}")
+            logger.debug(f"DEBUG: Значение как AST: {value_ast}")
 
             # Получаем имя класса из scope
             class_name = scope.get("class_name", "")
-            print(f"DEBUG: Имя класса: {class_name}")
+            logger.debug(f"DEBUG: Имя класса: {class_name}")
 
             # Находим глобальную область и обновляем информацию о классе
             for global_scope in self.scopes:
@@ -5030,7 +4961,7 @@ class Parser:
                         class_symbol["attributes"].append(
                             {"name": attr_name, "type": attr_type, "access": "public"}
                         )
-                        print(
+                        logger.debug(
                             f"DEBUG: Добавлен атрибут {attr_name} в класс {class_name}"
                         )
 
@@ -5050,7 +4981,7 @@ class Parser:
                                             "access": "public",
                                         }
                                     )
-                                    print(
+                                    logger.debug(
                                         f"DEBUG: Обновлен узел класса с атрибутом {attr_name}"
                                     )
                                 break
@@ -5075,10 +5006,12 @@ class Parser:
             }
 
             scope["graph"].append(attr_node)
-            print(f"DEBUG: Добавлен узел attribute_assignment в граф scope")
+            logger.debug(f"DEBUG: Добавлен узел attribute_assignment в граф scope")
             return True
 
-        print(f"DEBUG: Не удалось распарсить строку как инициализацию атрибута: {line}")
+        logger.debug(
+            f"DEBUG: Не удалось распарсить строку как инициализацию атрибута: {line}"
+        )
         return False
 
     ###############################################################################################

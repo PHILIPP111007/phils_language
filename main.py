@@ -5,6 +5,7 @@ import json
 from src.parser import Parser
 from src.debug import JSONValidator
 from src.compiler import CCodeGenerator
+from src.modules.logger import logger
 
 
 def main(base_path: str, p_path: str, json_path: str, c_path: str):
@@ -35,15 +36,15 @@ def main(base_path: str, p_path: str, json_path: str, c_path: str):
     print(f"Ошибок: {result['error_count']}")
     print(f"Предупреждений: {result['warning_count']}")
 
-    if result["errors"]:
-        print("\nОшибки:")
-        for error in result["errors"]:
-            print("Строка", error["line_number"], ": ", error["message"])
-
     if result["warnings"]:
         print("\nПредупреждения:")
         for warning in result["warnings"]:
-            print("Строка", warning["line_number"], ": ", warning["message"])
+            logger.warning(f"Строка {warning['line_number']}: {warning['message']}")
+
+    if result["errors"]:
+        print("\nОшибки:")
+        for error in result["errors"]:
+            logger.error(f"Строка {error['line_number']}: {error['message']}")
 
     if not result["errors"]:
         print("\nOK")
@@ -68,6 +69,6 @@ if __name__ == "__main__":
 
     command = f"gcc {c_path} -o {output_path}"
 
-    # os.system(command)
+    os.system(command)
 
     sys.exit(0)

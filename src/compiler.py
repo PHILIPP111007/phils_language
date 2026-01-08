@@ -1,6 +1,8 @@
 import re
 from typing import Dict, List, Optional
+
 from src.modules.constants import KNOWN_C_TYPES
+from src.modules.logger import logger
 
 
 class CCodeGenerator:
@@ -80,7 +82,7 @@ class CCodeGenerator:
 
     def reset(self):
         """Сброс состояния генератора"""
-        print(
+        logger.debug(
             f"DEBUG reset: Очищаем generated_helpers (было {len(self.generated_helpers)})"
         )
         self.output = []
@@ -94,7 +96,7 @@ class CCodeGenerator:
         self.class_fields.clear()  # Очищаем поля классов
         self.generated_functions.clear()  # Очищаем кэш функций
         self.generated_structures.clear()  # Очищаем кэш структур
-        print(f"DEBUG reset: generated_helpers очищен")
+        logger.debug(f"reset: generated_helpers очищен")
 
     # INDENT
 
@@ -137,7 +139,7 @@ class CCodeGenerator:
         return_type = scope.get("return_type", "int")
         parameters = scope.get("parameters", [])
 
-        print(f"DEBUG generate_function_scope: {func_name}() -> {return_type}")
+        logger.debug(f"generate_function_scope: {func_name}() -> {return_type}")
 
         # Входим в новый scope
         self.enter_scope()
@@ -155,7 +157,7 @@ class CCodeGenerator:
         c_return_type = self.map_type_to_c(return_type)
         params_str = ", ".join(param_decls) if param_decls else "void"
 
-        print(f"DEBUG: C return type for {return_type} is {c_return_type}")
+        logger.debug(f"C return type for {return_type} is {c_return_type}")
 
         self.add_line(f"{c_return_type} {func_name}({params_str}) {{")
         self.indent_level += 1
@@ -277,7 +279,7 @@ class CCodeGenerator:
             "delete_type": None,
         }
 
-        print(f"DEBUG: Обновлена переменная '{name}': {var_type} -> {c_type}")
+        logger.debug(f"Обновлена переменная '{name}': {var_type} -> {c_type}")
 
     def mark_variable_deleted(self, name: str, delete_type: str = "full") -> bool:
         """Помечает переменную как удаленную"""
@@ -288,11 +290,11 @@ class CCodeGenerator:
                 if name in scope:
                     scope[name]["is_deleted"] = True
                     scope[name]["delete_type"] = delete_type
-                    print(
+                    logger.debug(
                         f"DEBUG: Переменная '{name}' помечена как удаленная ({delete_type})"
                     )
                     return True
-        print(f"WARNING: Переменная '{name}' не найдена для удаления")
+        logger.warning(f"Переменная '{name}' не найдена для удаления")
         return False
 
     def is_variable_declared(self, name: str) -> bool:
@@ -430,7 +432,7 @@ class CCodeGenerator:
             # Объявления функций уже обработаны
             pass
         else:
-            print(f"WARNING: Неизвестный тип узла: {node_type}")
+            logger.warning(f"Неизвестный тип узла: {node_type}")
             self.add_line(f"// Неизвестный узел: {node_type}")
 
     def generate_builtin_function_call(self, node: Dict):
@@ -672,7 +674,7 @@ class CCodeGenerator:
         var_type = node.get("var_type", "")
         expression_ast = node.get("expression_ast", {})
 
-        print(f"DEBUG: Генерация объявления для {var_name}: {var_type}")
+        logger.debug(f"Генерация объявления для {var_name}: {var_type}")
 
         # Проверяем, объявлена ли уже переменная
         var_info = self.get_variable_info(var_name)
@@ -681,7 +683,7 @@ class CCodeGenerator:
         )
 
         if is_redeclaration:
-            print(f"DEBUG: Переменная '{var_name}' уже объявлена, переобъявляем")
+            logger.debug(f"Переменная '{var_name}' уже объявлена, переобъявляем")
 
             # Освобождаем старую память
             old_py_type = var_info.get("py_type", "")
@@ -761,23 +763,23 @@ class CCodeGenerator:
 
         struct_name = type_info.get("struct_name", "")
         if not struct_name:
-            print(f"ERROR: Нет struct_name на уровне {level}")
+            logger.error(f"Нет struct_name на уровне {level}")
             return
 
-        print(f"DEBUG generate_elements уровень {level}:")
-        print(f"  parent_var: {parent_var}")
-        print(f"  struct_name: {struct_name}")
-        print(f"  is_leaf: {type_info.get('is_leaf')}")
-        print(f"  element_type: {type_info.get('element_type')}")
-        print(f"  items count: {len(items)}")
+        logger.debug(f"generate_elements уровень {level}:")
+        logger.debug(f"  parent_var: {parent_var}")
+        logger.debug(f"  struct_name: {struct_name}")
+        logger.debug(f"  is_leaf: {type_info.get('is_leaf')}")
+        logger.debug(f"  element_type: {type_info.get('element_type')}")
+        logger.debug(f"  items count: {len(items)}")
 
         # Проверяем, является ли текущий уровень листовым
         # is_leaf=True означает list[int] (элементы int)
         # is_leaf=False означает list[list[...]] (элементы указатели на списки)
         if type_info.get("is_leaf", True):
-            print("  ЛИСТОВОЙ УРОВЕНЬ - добавляем простые элементы")
+            logger.debug("  ЛИСТОВОЙ УРОВЕНЬ - добавляем простые элементы")
             for i, item_ast in enumerate(items):
-                print(f"    элемент {i}: {item_ast.get('type')}")
+                logger.debug(f"    элемент {i}: {item_ast.get('type')}")
 
                 # Для кортежей используем специальную обработку
                 if item_ast.get("type") == "tuple_literal":
@@ -795,28 +797,28 @@ class CCodeGenerator:
         # Есть вложенность - элементы это указатели на списки
         inner_info = type_info.get("inner_info")
         if not inner_info:
-            print(f"ERROR: Нет информации о внутреннем типе на уровне {level}")
+            logger.error(f"Нет информации о внутреннем типе на уровне {level}")
             return
 
         inner_struct_name = inner_info.get("struct_name", "")
         if not inner_struct_name:
-            print(f"ERROR: Нет имени структуры для внутреннего типа на уровне {level}")
+            logger.error(f"Нет имени структуры для внутреннего типа на уровне {level}")
             return
 
-        print(f"  ВЛОЖЕННЫЙ УРОВЕНЬ - создаем внутренние списки")
-        print(f"  inner_struct_name: {inner_struct_name}")
-        print(f"  inner_is_leaf: {inner_info.get('is_leaf')}")
+        logger.debug(f"  ВЛОЖЕННЫЙ УРОВЕНЬ - создаем внутренние списки")
+        logger.debug(f"  inner_struct_name: {inner_struct_name}")
+        logger.debug(f"  inner_is_leaf: {inner_info.get('is_leaf')}")
 
         # Обрабатываем каждый элемент
         for i, item_ast in enumerate(items):
-            print(f"  обработка элемента {i}: {item_ast.get('type')}")
+            logger.debug(f"  обработка элемента {i}: {item_ast.get('type')}")
 
             if item_ast.get("type") == "list_literal":
                 # Создаем внутренний список
                 inner_items = item_ast.get("items", [])
                 temp_name = f"{parent_var}_l{level}_{i}"
 
-                print(
+                logger.debug(
                     f"    создаем {inner_struct_name}* {temp_name} с {len(inner_items)} элементами"
                 )
 
@@ -826,7 +828,7 @@ class CCodeGenerator:
                 )
 
                 # Рекурсивно обрабатываем элементы внутреннего списка
-                print(f"    рекурсивный вызов для {temp_name}")
+                logger.debug(f"    рекурсивный вызов для {temp_name}")
                 self._generate_nested_list_elements_correctly(
                     temp_name, inner_items, inner_info, level + 1
                 )
@@ -834,7 +836,7 @@ class CCodeGenerator:
                 # Добавляем внутренний список в родительский
                 self.add_line(f"append_{struct_name}({parent_var}, {temp_name});")
             else:
-                print(f"    WARNING: Не list_literal: {item_ast.get('type')}")
+                logger.warning(f"Не list_literal: {item_ast.get('type')}")
                 # Если это уже созданная переменная, просто добавляем ее
                 item_expr = self.generate_expression(item_ast)
                 self.add_line(f"append_{struct_name}({parent_var}, {item_expr});")
@@ -908,7 +910,7 @@ class CCodeGenerator:
                 inner_info = type_info["inner_info"]
 
                 if not inner_info or not inner_info["struct_name"]:
-                    print(f"ERROR: Нет информации о внутреннем типе на уровне {level}")
+                    logger.error(f"Нет информации о внутреннем типе на уровне {level}")
                     continue
 
                 # Генерируем структуру для внутреннего типа
@@ -934,7 +936,7 @@ class CCodeGenerator:
                 )
             else:
                 # Листовой элемент в промежуточном списке (должен быть list_literal)
-                print(
+                logger.error(
                     f"ERROR: Ожидался list_literal на уровне {level}, получено {item_ast.get('type')}"
                 )
 
@@ -1085,7 +1087,7 @@ class CCodeGenerator:
                     self.indent_level += 1
                     self.add_line(f"free({target});")
                     self.indent_level -= 1
-                    self.add_line(f"}}")
+                    self.add_line("}}")
                     self.add_line(f"{target} = malloc(strlen({expr}) + 1);")
                     self.add_line(f"strcpy({target}, {expr});")
                     return
@@ -1607,16 +1609,16 @@ class CCodeGenerator:
         type_info = self.extract_nested_type_info(py_type)
 
         if not type_info:
-            print(f"ERROR: Не удалось получить информацию о типе {py_type}")
+            logger.error(f"Не удалось получить информацию о типе {py_type}")
             return
 
         struct_name = type_info.get("struct_name")
         if not struct_name:
-            print(f"ERROR: Нет struct_name для типа {py_type}")
+            logger.error(f"Нет struct_name для типа {py_type}")
             return
 
-        print(f"DEBUG generate_list_struct: {py_type}")
-        print(f"  struct_name: {struct_name}")
+        logger.debug(f"generate_list_struct: {py_type}")
+        logger.debug(f"  struct_name: {struct_name}")
 
         # Генерируем структуру только если еще не генерировали
         if struct_name not in self.generated_structures:
@@ -1627,7 +1629,9 @@ class CCodeGenerator:
             element_py_type = type_info.get("element_py_type")
             is_c_type = type_info.get("is_c_type", False)
 
-            print(f"  Генерация структуры {struct_name} с element_type={element_type}")
+            logger.debug(
+                f"  Генерация структуры {struct_name} с element_type={element_type}"
+            )
 
             # Создаем правильную структуру
             struct_code = f"typedef struct {{\n"
@@ -1643,7 +1647,7 @@ class CCodeGenerator:
                 struct_name, element_type, element_py_type, is_c_type
             )
         else:
-            print(f"DEBUG: Структура {struct_name} уже сгенерирована")
+            logger.debug(f"Структура {struct_name} уже сгенерирована")
 
     def _generate_list_functions(
         self,
@@ -1654,17 +1658,17 @@ class CCodeGenerator:
     ):
         """Генерирует функции для работы со списком (без дублирования)"""
 
-        print(f"DEBUG _generate_list_functions: struct_name={struct_name}")
+        logger.debug(f"_generate_list_functions: struct_name={struct_name}")
 
         # Проверяем, не генерировали ли мы уже функции для этой структуры
         if struct_name in self.generated_functions:
-            print(f"DEBUG: Функции для {struct_name} уже сгенерированы, пропускаем")
+            logger.debug(f"Функции для {struct_name} уже сгенерированы, пропускаем")
             return
 
         # Помечаем как сгенерированные
         self.generated_functions.add(struct_name)
 
-        print(
+        logger.debug(
             f"DEBUG _generate_list_functions: struct_name={struct_name}, element_type={element_type}, is_c_type={is_c_type}"
         )
 
@@ -1952,7 +1956,7 @@ class CCodeGenerator:
     ):
         """Генерирует функции для работы со списком"""
 
-        print(
+        logger.debug(
             f"DEBUG generate_list_functions: struct_name={struct_name}, element_type={element_type}"
         )
 
@@ -2358,7 +2362,7 @@ class CCodeGenerator:
             var_name = ast.get("value", "")
 
             if not self.is_variable_declared(var_name):
-                print(f"WARNING: Использование необъявленной переменной '{var_name}'")
+                logger.warning(f"Использование необъявленной переменной '{var_name}'")
 
             return var_name
 
@@ -2387,7 +2391,7 @@ class CCodeGenerator:
             var_name = ast.get("value", "")
 
             if not self.is_variable_declared(var_name):
-                print(f"WARNING: Использование необъявленной переменной '{var_name}'")
+                logger.warning(f"Использование необъявленной переменной '{var_name}'")
 
             return var_name
 
@@ -2684,7 +2688,7 @@ class CCodeGenerator:
             return self._create_default_type_info()
 
         # Для отладки
-        print(f"DEBUG extract_nested_type_info: {py_type}")
+        logger.debug(f"extract_nested_type_info: {py_type}")
 
         # Базовый случай: не список
         if not py_type.startswith("list["):
@@ -2693,7 +2697,7 @@ class CCodeGenerator:
             c_type = py_type if is_c_type else self.map_type_to_c(py_type)
             struct_name = f"list_{self.clean_type_name_for_c(py_type)}"
 
-            print(
+            logger.debug(
                 f"DEBUG: Базовый тип - is_c_type={is_c_type}, c_type={c_type}, struct_name={struct_name}"
             )
 
@@ -2712,14 +2716,14 @@ class CCodeGenerator:
             # Извлекаем внутренний тип
             inner_type = self._parse_list_type(py_type)
             if not inner_type:
-                print(f"DEBUG: Не удалось извлечь внутренний тип из {py_type}")
+                logger.debug(f"Не удалось извлечь внутренний тип из {py_type}")
                 return self._create_default_type_info()
 
-            print(f"DEBUG: Внутренний тип: {inner_type}")
+            logger.debug(f"Внутренний тип: {inner_type}")
 
             # Генерируем имя структуры
             struct_name = self._generate_struct_name_recursive(py_type)
-            print(f"DEBUG: Сгенерированное имя структуры: {struct_name}")
+            logger.debug(f"Сгенерированное имя структуры: {struct_name}")
 
             # Рекурсивно анализируем внутренний тип
             inner_info = self.extract_nested_type_info(inner_type)
@@ -2752,14 +2756,14 @@ class CCodeGenerator:
                 "inner_info": inner_info,
             }
 
-            print(
+            logger.debug(
                 f"DEBUG результат: struct_name={struct_name}, element_type={element_type}, is_c_type={result['is_c_type']}"
             )
 
             return result
 
         except Exception as e:
-            print(f"ERROR в extract_nested_type_info для {py_type}: {e}")
+            logger.debug(f"ERROR в extract_nested_type_info для {py_type}: {e}")
             return self._create_default_type_info()
 
     def _parse_list_type(self, list_type: str) -> Optional[str]:
@@ -2881,7 +2885,7 @@ class CCodeGenerator:
                     if var_name in param_types:
                         field_type = param_types[var_name]
                         fields[attr_name] = field_type
-                        print(
+                        logger.debug(
                             f"DEBUG: Поле {attr_name} получает тип параметра {var_name}: {field_type}"
                         )
                     else:
@@ -2894,7 +2898,7 @@ class CCodeGenerator:
                     field_type = self._infer_field_type(value)
                     if field_type:
                         fields[attr_name] = field_type
-                        print(
+                        logger.debug(
                             f"DEBUG: Поле {attr_name} получает тип из значения: {field_type}"
                         )
 
@@ -3639,10 +3643,10 @@ class CCodeGenerator:
             ) and scope.get("method_name") == "__init__":
                 class_name = scope.get("class_name", "")
                 init_scopes[class_name] = scope
-                print(
+                logger.debug(
                     f"DEBUG: Found init_scope for {class_name} (type: {scope.get('type')})"
                 )
-                print(f"DEBUG: Graph length: {len(scope.get('graph', []))}")
+                logger.debug(f"Graph length: {len(scope.get('graph', []))}")
 
         # Затем находим объявления классов
         for scope in json_data:
@@ -3657,22 +3661,22 @@ class CCodeGenerator:
                         for method in methods:
                             if method.get("name") == "__init__":
                                 init_method = method
-                                print(f"DEBUG: Found init_method for {class_name}")
+                                logger.debug(f"Found init_method for {class_name}")
                                 break
 
                         # Получаем scope для этого метода
                         init_scope = init_scopes.get(class_name)
 
                         if init_scope:
-                            print(f"DEBUG: Will generate constructor for {class_name}")
+                            logger.debug(f"Will generate constructor for {class_name}")
                             # Выводим для отладки структуру init_scope
-                            print(f"DEBUG init_scope keys: {init_scope.keys()}")
-                            print(
+                            logger.debug(f"init_scope keys: {init_scope.keys()}")
+                            logger.debug(
                                 f"DEBUG init_scope graph: {init_scope.get('graph', [])}"
                             )
                         else:
-                            print(f"DEBUG: No init_scope found for {class_name}")
-                            print(
+                            logger.debug(f"No init_scope found for {class_name}")
+                            logger.debug(
                                 f"DEBUG: Available scopes: {list(init_scopes.keys())}"
                             )
 
@@ -3684,7 +3688,7 @@ class CCodeGenerator:
         method_name = scope.get("method_name", "")
         return_type = scope.get("return_type", "void")
 
-        print(
+        logger.debug(
             f"DEBUG generate_class_method_implementation: {class_name}.{method_name}() -> {return_type}"
         )
 
@@ -3695,7 +3699,7 @@ class CCodeGenerator:
         # Проверяем, не генерировали ли уже этот метод
         func_name = f"{class_name}_{method_name}"
         if func_name in self.generated_functions:
-            print(f"DEBUG: метод {func_name} уже сгенерирован, пропускаем")
+            logger.debug(f"метод {func_name} уже сгенерирован, пропускаем")
             return
 
         # Регистрируем метод как сгенерированный
@@ -3777,7 +3781,7 @@ class CCodeGenerator:
 
     def analyze_classes(self, json_data: List[Dict]):
         """Анализирует все классы и их методы для определения полей"""
-        print("DEBUG analyze_classes: Начинаем анализ классов")
+        logger.debug("DEBUG analyze_classes: Начинаем анализ классов")
 
         # Собираем все конструкторы
         for scope in json_data:
@@ -3786,7 +3790,7 @@ class CCodeGenerator:
                 and scope.get("method_name") == "__init__"
             ):
                 class_name = scope.get("class_name", "")
-                print(f"DEBUG: Найден конструктор для класса {class_name}")
+                logger.debug(f"Найден конструктор для класса {class_name}")
 
                 if class_name not in self.class_fields:
                     self.class_fields[class_name] = {}
@@ -3800,7 +3804,7 @@ class CCodeGenerator:
                     param_type = param.get("type", "int")
                     if param_name != "self":
                         param_types[param_name] = param_type
-                        print(f"DEBUG: Параметр {param_name}: {param_type}")
+                        logger.debug(f"Параметр {param_name}: {param_type}")
 
                 # Анализируем присваивания атрибутов
                 for node in scope.get("graph", []):
@@ -3816,7 +3820,7 @@ class CCodeGenerator:
                             )
                             if field_type:
                                 self.class_fields[class_name][attr_name] = field_type
-                                print(
+                                logger.debug(
                                     f"DEBUG: Поле {class_name}.{attr_name} = {field_type}"
                                 )
 
@@ -3896,7 +3900,7 @@ class CCodeGenerator:
         # Если это конструктор, метод уже обрабатывается в _process_attribute_assignment_in_init
         # Так что пропускаем здесь
         if object_name == "self":
-            print(
+            logger.debug(
                 f"DEBUG generate_attribute_assignment: Skipping self.{attribute} assignment in constructor"
             )
             return
@@ -3912,7 +3916,7 @@ class CCodeGenerator:
         attribute = node.get("attribute", "")
         value_ast = node.get("value", {})
 
-        print(
+        logger.debug(
             f"DEBUG _process_attribute_assignment_in_init: {object_name}.{attribute} = {value_ast}"
         )
 
@@ -3922,13 +3926,13 @@ class CCodeGenerator:
                 value_ast, param_names
             )
             if value_expr:
-                print(f"DEBUG: Generated expression: obj->{attribute} = {value_expr}")
+                logger.debug(f"Generated expression: obj->{attribute} = {value_expr}")
                 self.add_line(f"obj->{attribute} = {value_expr};")
             else:
-                print(f"DEBUG: Could not generate expression for {attribute}")
+                logger.debug(f"Could not generate expression for {attribute}")
                 self.add_line(f"obj->{attribute} = 0; // default value")
         else:
-            print(f"DEBUG: Skipping non-self assignment or empty value")
+            logger.debug(f"Skipping non-self assignment or empty value")
 
     def _generate_expression_from_ast_for_init(
         self, ast: Dict, param_names: List[str]
@@ -3938,14 +3942,14 @@ class CCodeGenerator:
             return ""
 
         node_type = ast.get("type", "")
-        print(
+        logger.debug(
             f"DEBUG _generate_expression_from_ast_for_init: type={node_type}, ast={ast}"
         )
 
         if node_type == "literal":
             value = ast.get("value", "")
             data_type = ast.get("data_type", "")
-            print(f"DEBUG: Found literal: {value} (type: {data_type})")
+            logger.debug(f"Found literal: {value} (type: {data_type})")
             if data_type == "str":
                 return f'"{value}"'
             else:
@@ -3954,13 +3958,13 @@ class CCodeGenerator:
         elif node_type == "variable":
             # Поддерживаем оба формата: 'value' и 'name'
             var_name = ast.get("value") or ast.get("name", "")
-            print(f"DEBUG: Found variable: {var_name}")
+            logger.debug(f"Found variable: {var_name}")
             # Если это параметр конструктора, используем как есть
             if var_name in param_names:
-                print(f"DEBUG: Is a constructor parameter")
+                logger.debug(f"Is a constructor parameter")
                 return var_name
             # Если это не параметр, возможно это атрибут self
-            print(f"DEBUG: Not a constructor parameter")
+            logger.debug(f"Not a constructor parameter")
             return var_name
 
         elif node_type == "binary_operation":
@@ -3968,7 +3972,7 @@ class CCodeGenerator:
             right_ast = ast.get("right", {})
             operator = ast.get("operator_symbol") or ast.get("operator", "")
 
-            print(f"DEBUG: Binary operation: {operator}")
+            logger.debug(f"Binary operation: {operator}")
 
             left = self._generate_expression_from_ast_for_init(left_ast, param_names)
             right = self._generate_expression_from_ast_for_init(right_ast, param_names)
@@ -4002,10 +4006,10 @@ class CCodeGenerator:
                         right = f"({right})"
 
             result = f"{left} {c_operator} {right}"
-            print(f"DEBUG: Generated binary expression: {result}")
+            logger.debug(f"Generated binary expression: {result}")
             return result
 
-        print(
+        logger.debug(
             f"DEBUG _generate_expression_from_ast_for_init: Unknown AST type: {node_type}"
         )
         return ""
@@ -4016,22 +4020,22 @@ class CCodeGenerator:
             return ""
 
         node_type = ast.get("type", "")
-        print(f"DEBUG _generate_expression_from_ast: type={node_type}, ast={ast}")
+        logger.debug(f"_generate_expression_from_ast: type={node_type}, ast={ast}")
 
         if node_type == "variable":
             # Поддерживаем оба формата: 'value' и 'name'
             var_name = ast.get("value") or ast.get("name", "")
             # Если это параметр конструктора, используем как есть
             if var_name in param_names:
-                print(f"DEBUG: Found parameter: {var_name}")
+                logger.debug(f"Found parameter: {var_name}")
                 return var_name
-            print(f"DEBUG: Variable not a parameter: {var_name}")
+            logger.debug(f"Variable not a parameter: {var_name}")
             return var_name
 
         elif node_type == "literal":
             value = ast.get("value", "")
             data_type = ast.get("data_type", "")
-            print(f"DEBUG: Found literal: {value} (type: {data_type})")
+            logger.debug(f"Found literal: {value} (type: {data_type})")
             if data_type == "str":
                 return f'"{value}"'
             else:
@@ -4042,7 +4046,7 @@ class CCodeGenerator:
             right_ast = ast.get("right", {})
             operator = ast.get("operator_symbol") or ast.get("operator", "")
 
-            print(f"DEBUG: Binary operation: {operator}")
+            logger.debug(f"Binary operation: {operator}")
 
             left = self._generate_expression_from_ast(left_ast, param_names)
             right = self._generate_expression_from_ast(right_ast, param_names)
@@ -4076,14 +4080,14 @@ class CCodeGenerator:
                         right = f"({right})"
 
             result = f"{left} {c_operator} {right}"
-            print(f"DEBUG: Generated binary expression: {result}")
+            logger.debug(f"Generated binary expression: {result}")
             return result
 
         elif node_type == "attribute_access":
             obj_name = ast.get("object", "")
             attr_name = ast.get("attribute", "")
 
-            print(f"DEBUG: Attribute access: {obj_name}.{attr_name}")
+            logger.debug(f"Attribute access: {obj_name}.{attr_name}")
 
             # В конструкторе атрибуты объекта еще не инициализированы
             # Это не должно случиться при правильном анализе
@@ -4092,7 +4096,7 @@ class CCodeGenerator:
             )
             return f"obj->{attr_name}"
 
-        print(f"DEBUG: Unknown AST type: {node_type}")
+        logger.debug(f"Unknown AST type: {node_type}")
         return ""
 
     def _generate_init_logic(
@@ -4284,7 +4288,7 @@ class CCodeGenerator:
         if tuple_type and tuple_type.startswith("tuple_"):
             # Это уже имя структуры, а не тип
             struct_name = tuple_type
-            print(
+            logger.debug(
                 f"DEBUG generate_tuple_creation: struct_name={struct_name} (уже задано)"
             )
         else:
@@ -4318,7 +4322,7 @@ class CCodeGenerator:
                     tuple_type = "tuple[int]"
 
             struct_name = self.generate_tuple_struct_name(tuple_type)
-            print(
+            logger.debug(
                 f"DEBUG generate_tuple_creation: tuple_type={tuple_type}, struct_name={struct_name}"
             )
 
@@ -5246,7 +5250,7 @@ class CCodeGenerator:
 
     def generate_all_methods(self, json_data: List[Dict]):
         """Генерирует все методы всех классов, включая унаследованные"""
-        print("DEBUG generate_all_methods: Начало")
+        logger.debug("DEBUG generate_all_methods: Начало")
 
         # Сначала анализируем наследование
         self.analyze_class_inheritance(json_data)
@@ -5266,7 +5270,7 @@ class CCodeGenerator:
 
         # Генерируем унаследованные методы
         for class_name, methods in self.all_class_methods.items():
-            print(f"DEBUG: Проверка методов для класса {class_name}")
+            logger.debug(f"Проверка методов для класса {class_name}")
 
             for method_name, method_info in methods.items():
                 # Пропускаем конструктор
@@ -5285,7 +5289,7 @@ class CCodeGenerator:
                     and not has_implementation
                     and method_info.get("origin") != class_name
                 ):
-                    print(
+                    logger.debug(
                         f"DEBUG: Генерация унаследованного метода {class_name}.{method_name} из {method_info['origin']}"
                     )
                     self._generate_inherited_method_stub(class_name, method_info)
@@ -5461,7 +5465,7 @@ class CCodeGenerator:
         method_name = node.get("method", "")
         args = node.get("arguments", [])
 
-        print(f"DEBUG generate_object_method_call: {object_name}.{method_name}()")
+        logger.debug(f"generate_object_method_call: {object_name}.{method_name}()")
 
         # Универсальная реализация
         var_info = self.get_variable_info(object_name)
@@ -5498,7 +5502,7 @@ class CCodeGenerator:
         var_type = node.get("var_type", "")
         expression_ast = node.get("expression_ast", {})
 
-        print(f"DEBUG generate_redeclaration: {var_name}: {var_type}")
+        logger.debug(f"generate_redeclaration: {var_name}: {var_type}")
 
         # Получаем информацию о старой переменной
         old_var_info = self.get_variable_info(var_name)
@@ -5902,7 +5906,7 @@ class CCodeGenerator:
 
     def collect_class_fields_from_init_parameters(self, json_data: List[Dict]):
         """Собирает типы полей классов из параметров конструктора"""
-        print("DEBUG: collect_class_fields_from_init_parameters")
+        logger.debug("DEBUG: collect_class_fields_from_init_parameters")
 
         # 1. Собираем все методы __init__
         init_scopes = {}
@@ -5912,14 +5916,14 @@ class CCodeGenerator:
                 if scope.get("method_name") == "__init__":
                     class_name = scope.get("class_name")
                     init_scopes[class_name] = scope
-                    print(f"DEBUG: Найден конструктор для {class_name}")
+                    logger.debug(f"Найден конструктор для {class_name}")
 
         # 2. Анализируем каждый конструктор
         for class_name, init_scope in init_scopes.items():
             if class_name not in self.class_fields:
                 self.class_fields[class_name] = {}
 
-            print(f"DEBUG: Анализируем конструктор {class_name}.__init__")
+            logger.debug(f"Анализируем конструктор {class_name}.__init__")
 
             # Получаем параметры конструктора
             parameters = init_scope.get("parameters", [])
@@ -5931,7 +5935,7 @@ class CCodeGenerator:
                 if param_name != "self":
                     param_type = param.get("type", "int")
                     param_types[param_name] = param_type
-                    print(f"DEBUG: Параметр {param_name}: {param_type}")
+                    logger.debug(f"Параметр {param_name}: {param_type}")
 
             # Анализируем узлы графа
             for node in init_scope.get("graph", []):
@@ -5949,7 +5953,7 @@ class CCodeGenerator:
                                 # Используем тип параметра
                                 field_type = param_types[var_name]
                                 self.class_fields[class_name][attr] = field_type
-                                print(
+                                logger.debug(
                                     f"DEBUG: Поле {attr} <- тип параметра {var_name}: {field_type}"
                                 )
                             else:
@@ -5957,7 +5961,7 @@ class CCodeGenerator:
                                 field_type = self._infer_field_type_from_ast(value_ast)
                                 if field_type:
                                     self.class_fields[class_name][attr] = field_type
-                                    print(
+                                    logger.debug(
                                         f"DEBUG: Поле {attr} <- вычисленный тип: {field_type}"
                                     )
 
@@ -5965,18 +5969,20 @@ class CCodeGenerator:
                         elif value_ast.get("type") == "literal":
                             data_type = value_ast.get("data_type", "int")
                             self.class_fields[class_name][attr] = data_type
-                            print(f"DEBUG: Поле {attr} <- литерал типа: {data_type}")
+                            logger.debug(f"Поле {attr} <- литерал типа: {data_type}")
 
                         # 3. Для выражений пытаемся определить тип
                         else:
                             field_type = self._infer_field_type_from_ast(value_ast)
                             if field_type:
                                 self.class_fields[class_name][attr] = field_type
-                                print(f"DEBUG: Поле {attr} <- тип из AST: {field_type}")
+                                logger.debug(f"Поле {attr} <- тип из AST: {field_type}")
 
     def collect_class_fields_from_json(self, json_data: List[Dict]):
         """Собирает поля всех классов из JSON"""
-        print("DEBUG: collect_class_fields_from_json: начинаем сбор полей классов")
+        logger.debug(
+            "DEBUG: collect_class_fields_from_json: начинаем сбор полей классов"
+        )
 
         # 1. Находим все конструкторы __init__
         init_methods = {}
@@ -5986,14 +5992,14 @@ class CCodeGenerator:
                 if scope.get("method_name") == "__init__":
                     class_name = scope.get("class_name")
                     init_methods[class_name] = scope
-                    print(f"DEBUG: Найден конструктор для класса {class_name}")
+                    logger.debug(f"Найден конструктор для класса {class_name}")
 
         # 2. Анализируем каждый конструктор
         for class_name, init_scope in init_methods.items():
             if class_name not in self.class_fields:
                 self.class_fields[class_name] = {}
 
-            print(f"DEBUG: Анализируем конструктор {class_name}.__init__")
+            logger.debug(f"Анализируем конструктор {class_name}.__init__")
 
             # Анализируем узлы графа
             for node in init_scope.get("graph", []):
@@ -6006,15 +6012,15 @@ class CCodeGenerator:
                         # Пока просто ставим int для всех полей
                         # Позже можно улучшить определение типов
                         self.class_fields[class_name][attr] = "int"
-                        print(f"DEBUG: Добавлено поле {class_name}.{attr} = int")
+                        logger.debug(f"Добавлено поле {class_name}.{attr} = int")
 
-        print(f"DEBUG: Всего классов с полями: {len(self.class_fields)}")
+        logger.debug(f"Всего классов с полями: {len(self.class_fields)}")
         for class_name, fields in self.class_fields.items():
-            print(f"DEBUG:   {class_name}: {fields}")
+            logger.debug(f"  {class_name}: {fields}")
 
     def analyze_class_inheritance(self, json_data: List[Dict]):
         """Анализирует иерархию наследования классов"""
-        print("DEBUG analyze_class_inheritance: Начинаем анализ классов")
+        logger.debug("DEBUG analyze_class_inheritance: Начинаем анализ классов")
 
         # Сначала собираем информацию о всех классах
         class_info = {}
@@ -6031,7 +6037,7 @@ class CCodeGenerator:
                             "base_classes": base_classes,
                             "methods": {method["name"]: method for method in methods},
                         }
-                        print(f"DEBUG: Класс {class_name} наследует от {base_classes}")
+                        logger.debug(f"Класс {class_name} наследует от {base_classes}")
 
         # Строим иерархию наследования
         for class_name, info in class_info.items():
@@ -6069,7 +6075,7 @@ class CCodeGenerator:
                             "origin": base_class,
                             "is_inherited": True,
                         }
-                        print(
+                        logger.debug(
                             f"DEBUG: Класс {class_name} наследует метод {method_name} от {base_class}"
                         )
 
