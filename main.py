@@ -16,37 +16,34 @@ def main(base_path: str, p_path: str, json_path: str, c_path: str):
     print("\n=========== PARSER ===========\n")
 
     parser = Parser(base_path=base_path)
-    result = parser.parse_code(code)
+    data = parser.parse_code(code)
 
-    json_output = json.dumps(result, indent=2, default=str)
+    json_output = json.dumps(data, indent=2, default=str)
     with open(json_path, "w") as f:
         f.write(json_output)
 
     # DEBUGGER
     print("\n=========== DEBUGGER ===========\n")
 
-    with open(json_path, "r") as file:
-        data = json.load(file)
-
     validator = JSONValidator()
-    result = validator.validate(data)
+    result_validation = validator.validate(data)
 
     print("\nРезультат валидации:")
-    print(f"Валидный: {result['is_valid']}")
-    print(f"Ошибок: {result['error_count']}")
-    print(f"Предупреждений: {result['warning_count']}")
+    print(f"Валидный: {result_validation['is_valid']}")
+    print(f"Ошибок: {result_validation['error_count']}")
+    print(f"Предупреждений: {result_validation['warning_count']}")
 
-    if result["warnings"]:
+    if result_validation["warnings"]:
         print("\nПредупреждения:")
-        for warning in result["warnings"]:
+        for warning in result_validation["warnings"]:
             logger.warning(f"Строка {warning['line_number']}: {warning['message']}")
 
-    if result["errors"]:
+    if result_validation["errors"]:
         print("\nОшибки:")
-        for error in result["errors"]:
+        for error in result_validation["errors"]:
             logger.error(f"Строка {error['line_number']}: {error['message']}")
 
-    if not result["errors"]:
+    if not result_validation["errors"]:
         print("\nOK")
 
     print("\n=========== CCodeGenerator ===========\n")
