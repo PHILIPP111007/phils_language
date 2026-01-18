@@ -40,10 +40,6 @@ int main(void) {
     with open(c_path, "r") as file:
         output = file.read()
 
-    print(C)
-    print("\n\n\n\n\n\n\n\n\n")
-    print(output)
-
     assert C in output
 
     os.remove(c_path)
