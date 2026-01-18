@@ -431,6 +431,8 @@ class CCodeGenerator:
             self.generate_index_assignment(node)
         elif node_type == "slice_assignment":  # НОВОЕ: присваивание среза
             self.generate_slice_assignment(node)
+        elif node_type == "nested_index_assignment":
+            self.generate_nested_index_assignment(node)
         elif (
             node_type == "augmented_index_assignment"
         ):  # НОВОЕ: составное присваивание по индексу
@@ -444,6 +446,82 @@ class CCodeGenerator:
         else:
             logger.warning(f"Неизвестный тип узла: {node_type}")
             self.add_line(f"// Неизвестный узел: {node_type}")
+
+    def generate_nested_index_assignment(self, node: Dict):
+        """Генерирует код для многомерного индексного присваивания: A_data[0][0] = 10"""
+        variable = node.get("variable", "")
+        indices = node.get("indices", [])
+        value_ast = node.get("value", {})
+        var_type = node.get("var_type", "")
+
+        # Генерируем выражение для значения
+        value_expr = self.generate_expression(value_ast)
+
+        # Получаем информацию о переменной
+        var_info = self.get_variable_info(variable)
+        if not var_info:
+            self.add_line(f"// ERROR: Variable '{variable}' not found")
+            return
+
+        # Определяем тип переменной
+        py_type = var_info.get("py_type", "")
+
+        # Проверяем, является ли это вложенным списком
+        if py_type.startswith("list[list["):
+            # Это многомерный массив
+            match = re.match(r"list\[list\[([^\]]+)\]\]", py_type)
+            if not match:
+                self.add_line(f"// ERROR: Invalid nested list type: {py_type}")
+                return
+
+            inner_type = match.group(1)  # "int"
+
+            # Генерируем структуры для обоих уровней
+            outer_struct_name = self.generate_list_struct_name(
+                f"list[list[{inner_type}]]"
+            )
+            inner_struct_name = self.generate_list_struct_name(f"list[{inner_type}]")
+
+            # Убедимся, что структуры сгенерированы
+            self.generate_list_struct(f"list[{inner_type}]")
+            self.generate_list_struct(f"list[list[{inner_type}]]")
+
+            # Генерируем индексы
+            if len(indices) == 2:
+                index1_expr = self.generate_expression(indices[0])
+                index2_expr = self.generate_expression(indices[1])
+
+                # Получаем внутренний список
+                temp_var = f"{variable}_inner_{self.temp_var_counter}"
+                self.temp_var_counter += 1
+
+                self.add_line(
+                    f"// Доступ к элементу {variable}[{index1_expr}][{index2_expr}]"
+                )
+                self.add_line(
+                    f"{inner_struct_name}* {temp_var} = get_{outer_struct_name}({variable}, {index1_expr});"
+                )
+
+                # Устанавливаем значение во внутреннем списке
+                self.add_line(
+                    f"set_{inner_struct_name}({temp_var}, {index2_expr}, {value_expr});"
+                )
+            else:
+                self.add_line(f"// ERROR: Unsupported nesting depth {len(indices)}")
+        elif py_type.startswith("list["):
+            # Это одномерный список (но с вложенной индексацией - ошибка)
+            if len(indices) == 1:
+                # Это фактически обычное индексное присваивание
+                index_expr = self.generate_expression(indices[0])
+                struct_name = self.generate_list_struct_name(py_type)
+                self.add_line(
+                    f"set_{struct_name}({variable}, {index_expr}, {value_expr});"
+                )
+            else:
+                self.add_line(f"// ERROR: Too many indices for type {py_type}")
+        else:
+            # Неизвестный тип
+            self.add_line(f"// ERROR: Cannot assign to nested index of type {py_type}")
 
     def generate_builtin_function_call(self, node: Dict):
         """Генерирует вызов встроенной функции"""
@@ -1614,7 +1692,6 @@ class CCodeGenerator:
 
     def generate_list_struct(self, py_type: str):
         """Генерирует структуру C для списка любой вложенности"""
-
         # Получаем полную информацию о типе
         type_info = self.extract_nested_type_info(py_type)
 
@@ -1639,9 +1716,7 @@ class CCodeGenerator:
             element_py_type = type_info.get("element_py_type")
             is_c_type = type_info.get("is_c_type", False)
 
-            logger.debug(
-                f"  Генерация структуры {struct_name} с element_type={element_type}"
-            )
+            logger.debug(f"  element_type={element_type}, is_c_type={is_c_type}")
 
             # Создаем правильную структуру
             struct_code = f"typedef struct {{\n"
@@ -1652,7 +1727,7 @@ class CCodeGenerator:
 
             self.generated_helpers.append(struct_code)
 
-            # Генерируем функции (они сами проверяют дублирование)
+            # ВСЕГДА вызываем _generate_list_functions, она сама решит как генерировать
             self._generate_list_functions(
                 struct_name, element_type, element_py_type, is_c_type
             )
@@ -1677,6 +1752,11 @@ class CCodeGenerator:
 
         # Помечаем как сгенерированные
         self.generated_functions.add(struct_name)
+
+        # Генерируем ВСЕ функции независимо от типа
+        self._generate_standard_list_functions(
+            struct_name, element_type, element_py_type
+        )
 
         logger.debug(
             f"DEBUG _generate_list_functions: struct_name={struct_name}, element_type={element_type}, is_c_type={is_c_type}"
@@ -1845,6 +1925,119 @@ class CCodeGenerator:
     }}\n\n"""
             self.generated_helpers.append(slice_func)
             self.generated_functions.add(slice_func_name)
+
+    def _generate_standard_list_functions(
+        self, struct_name: str, element_type: str, element_py_type: str = None
+    ):
+        """Генерирует стандартные функции для списка (всегда включает set)"""
+
+        # 1. Функция создания
+        create_func_name = f"create_{struct_name}"
+        if create_func_name not in self.generated_functions:
+            create_func = (
+                f"{struct_name}* {create_func_name}(int initial_capacity) {{\n"
+            )
+            create_func += f"    {struct_name}* list = malloc(sizeof({struct_name}));\n"
+            create_func += f"    if (!list) {{\n"
+            create_func += (
+                f'        fprintf(stderr, "Memory allocation failed for list\\n");\n'
+            )
+            create_func += f"        exit(1);\n"
+            create_func += f"    }}\n"
+            create_func += (
+                f"    list->data = malloc(initial_capacity * sizeof({element_type}));\n"
+            )
+            create_func += f"    if (!list->data) {{\n"
+            create_func += f'        fprintf(stderr, "Memory allocation failed for list data\\n");\n'
+            create_func += f"        free(list);\n"
+            create_func += f"        exit(1);\n"
+            create_func += f"    }}\n"
+            create_func += f"    list->size = 0;\n"
+            create_func += f"    list->capacity = initial_capacity;\n"
+            create_func += f"    return list;\n"
+            create_func += f"}}\n\n"
+            self.generated_helpers.append(create_func)
+            self.generated_functions.add(create_func_name)
+
+        # 2. Функция добавления
+        append_func_name = f"append_{struct_name}"
+        if append_func_name not in self.generated_functions:
+            append_func = f"void {append_func_name}({struct_name}* list, {element_type} value) {{\n"
+            append_func += f"    if (list->size >= list->capacity) {{\n"
+            append_func += f"        list->capacity = list->capacity == 0 ? 4 : list->capacity * 2;\n"
+            append_func += f"        list->data = realloc(list->data, list->capacity * sizeof({element_type}));\n"
+            append_func += f"        if (!list->data) {{\n"
+            append_func += f'            fprintf(stderr, "Memory reallocation failed for list\\n");\n'
+            append_func += f"            exit(1);\n"
+            append_func += f"        }}\n"
+            append_func += f"    }}\n"
+            append_func += f"    list->data[list->size] = value;\n"
+            append_func += f"    list->size++;\n"
+            append_func += f"}}\n\n"
+            self.generated_helpers.append(append_func)
+            self.generated_functions.add(append_func_name)
+
+        # 3. Функция len()
+        len_func_name = f"builtin_len_{struct_name}"
+        if len_func_name not in self.generated_functions:
+            len_func = f"int {len_func_name}({struct_name}* list) {{\n"
+            len_func += f"    if (!list) return 0;\n"
+            len_func += f"    return list->size;\n"
+            len_func += f"}}\n\n"
+            self.generated_helpers.append(len_func)
+            self.generated_functions.add(len_func_name)
+
+        # 4. Функция очистки
+        free_func_name = f"free_{struct_name}"
+        if free_func_name not in self.generated_functions:
+            free_func = f"void {free_func_name}({struct_name}* list) {{\n"
+            free_func += f"    if (list) {{\n"
+
+            # Если элементы - указатели на списки, освобождаем их
+            if element_py_type and element_py_type.startswith("list["):
+                inner_struct_name = self.generate_list_struct_name(element_py_type)
+                free_func += f"        for (int i = 0; i < list->size; i++) {{\n"
+                free_func += f"            if (list->data[i]) {{\n"
+                free_func += (
+                    f"                free_{inner_struct_name}(list->data[i]);\n"
+                )
+                free_func += f"            }}\n"
+                free_func += f"        }}\n"
+
+            free_func += f"        free(list->data);\n"
+            free_func += f"        free(list);\n"
+            free_func += f"    }}\n"
+            free_func += f"}}\n\n"
+            self.generated_helpers.append(free_func)
+            self.generated_functions.add(free_func_name)
+
+        # 5. Функция доступа к элементу (get)
+        get_func_name = f"get_{struct_name}"
+        if get_func_name not in self.generated_functions:
+            get_func = (
+                f"{element_type} {get_func_name}({struct_name}* list, int index) {{\n"
+            )
+            get_func += f"    if (!list || index < 0 || index >= list->size) {{\n"
+            get_func += f'        fprintf(stderr, "Index out of bounds in list\\n");\n'
+            get_func += f"        exit(1);\n"
+            get_func += f"    }}\n"
+            get_func += f"    return list->data[index];\n"
+            get_func += f"}}\n\n"
+            self.generated_helpers.append(get_func)
+            self.generated_functions.add(get_func_name)
+
+        # 6. Функция установки элемента (set) - ВАЖНО!
+        set_func_name = f"set_{struct_name}"
+        if set_func_name not in self.generated_functions:
+            set_func = f"void {set_func_name}({struct_name}* list, int index, {element_type} value) {{\n"
+            set_func += f"    if (!list || index < 0 || index >= list->size) {{\n"
+            set_func += f'        fprintf(stderr, "Index out of bounds in list\\n");\n'
+            set_func += f"        exit(1);\n"
+            set_func += f"    }}\n"
+            set_func += f"    list->data[index] = value;\n"
+            set_func += f"}}\n\n"
+            self.generated_helpers.append(set_func)
+            self.generated_functions.add(set_func_name)
 
     def _generate_generic_c_list_functions(
         self, struct_name: str, element_type: str, element_py_type: str
@@ -2648,7 +2841,6 @@ class CCodeGenerator:
         logger.debug(f"nested_index_access: {full_expression}, depth={depth}")
 
         # Парсим полное выражение для получения переменной и индексов
-
         match = re.match(r"(\w+)((?:\[\d+\])+)", full_expression)
 
         if not match:
@@ -2676,6 +2868,9 @@ class CCodeGenerator:
             current_var = var_name
             current_type = py_type
 
+            # Создаем уникальное имя для временной переменной
+            temp_prefix = f"temp_{var_name}"
+
             for i, idx in enumerate(indices):
                 if i == len(indices) - 1:
                     # Последний индекс - возвращаем значение
@@ -2692,8 +2887,9 @@ class CCodeGenerator:
                     # Генерируем имя структуры для текущего уровня
                     current_struct = self.generate_list_struct_name(current_type)
 
-                    # Создаем временную переменную для следующего уровня
-                    temp_var = f"temp_{var_name}_{i}"
+                    # Создаем УНИКАЛЬНУЮ временную переменную для следующего уровня
+                    temp_var = f"{temp_prefix}_{i}_{self.temp_var_counter}"
+                    self.temp_var_counter += 1  # Увеличиваем счетчик
 
                     # Добавляем код для получения вложенного списка
                     self.add_line(f"// Доступ к {current_var}[{idx}]")
@@ -2711,10 +2907,14 @@ class CCodeGenerator:
                     current_var = temp_var
                     current_type = inner_type
 
-        # Если не удалось обработать, используем общий подход
-        base_expr = self.generate_expression(base)
+            # Если не удалось обработать, используем общий подход
+            base_expr = self.generate_expression(base)
+            index_expr = self.generate_expression(index)
+            return f"{base_expr}[{index_expr}]"
+
+        # Если не список, используем прямой доступ
         index_expr = self.generate_expression(index)
-        return f"{base_expr}[{index_expr}]"
+        return f"{var_name}[{index_expr}]"
 
     def _generate_complex_attribute_access(self, ast: Dict) -> str:
         """Генерирует доступ к элементу сложного атрибута (self.data[index])"""
@@ -2810,7 +3010,6 @@ class CCodeGenerator:
         if not py_type or not isinstance(py_type, str):
             return self._create_default_type_info()
 
-        # Для отладки
         logger.debug(f"extract_nested_type_info: {py_type}")
 
         # Базовый случай: не список
@@ -2824,6 +3023,7 @@ class CCodeGenerator:
                 f"DEBUG: Базовый тип - is_c_type={is_c_type}, c_type={c_type}, struct_name={struct_name}"
             )
 
+            # НЕ ГЕНЕРИРУЕМ здесь - структура будет сгенерирована позже
             return {
                 "py_type": py_type,
                 "c_type": f"{struct_name}*",
@@ -2880,7 +3080,7 @@ class CCodeGenerator:
             }
 
             logger.debug(
-                f"DEBUG результат: struct_name={struct_name}, element_type={element_type}, is_c_type={result['is_c_type']}"
+                f"DEBUG результат: struct_name={struct_name}, element_type={element_type}"
             )
 
             return result
@@ -5914,7 +6114,7 @@ class CCodeGenerator:
                 if var_type:
                     if var_type.startswith("list["):
                         all_types.add(var_type)
-                        # Также добавляем все вложенные типы
+                        # Также добавляем ВСЕ ВЛОЖЕННЫЕ ТИПЫ
                         self._collect_all_nested_list_types(var_type, all_types)
                     elif var_type.startswith("tuple["):
                         all_types.add(var_type)
@@ -5929,11 +6129,78 @@ class CCodeGenerator:
         # Генерируем структуры для всех найденных типов
         # Сортируем по глубине вложенности (от простых к сложным)
         sorted_types = sorted(all_types, key=lambda x: (x.count("["), x))
+
+        # ВАЖНО: Сначала генерируем ВСЕ структуры
         for py_type in sorted_types:
             if py_type.startswith("list["):
+                logger.debug(
+                    f"collect_types_from_ast: Генерация структуры для {py_type}"
+                )
                 self.generate_list_struct(py_type)
             elif py_type.startswith("tuple["):
                 self.generate_tuple_struct(py_type)
+
+        # Затем генерируем ВСЕ функции для ВСЕХ структур
+        self._generate_all_list_functions()
+
+    def _generate_all_list_functions(self):
+        """Генерирует все функции для всех зарегистрированных структур списков"""
+        # Собираем все структуры списков
+        list_structures = []
+
+        for helper in self.generated_helpers:
+            if "typedef struct" in helper:
+                # Извлекаем имя структуры
+                lines = helper.split("\n")
+                for line in lines:
+                    if "} " in line and ";" in line and "list_" in line:
+                        # Находим имя структуры
+                        parts = line.strip().split()
+                        for part in parts:
+                            if part.endswith(";"):
+                                struct_name = part[:-1]
+                                if struct_name.startswith("list_"):
+                                    list_structures.append(struct_name)
+                                break
+
+        # Удаляем дубликаты
+        list_structures = list(set(list_structures))
+
+        logger.debug(
+            f"_generate_all_list_functions: Найдено структур: {list_structures}"
+        )
+
+        # Генерируем функции для каждой структуры
+        for struct_name in list_structures:
+            # Находим соответствующий helper чтобы определить element_type
+            element_type = None
+            for helper in self.generated_helpers:
+                if f"}} {struct_name};" in helper:
+                    # Парсим element_type из структуры
+                    lines = helper.split("\n")
+                    for line in lines:
+                        if "* data;" in line and "//" in line:
+                            # Пример: "    int* data;  // Указатель на массив элементов типа int"
+                            parts = line.split("*")[0].strip()
+                            element_type = parts
+                            break
+                    if element_type:
+                        break
+
+            if element_type:
+                logger.debug(
+                    f"Генерация функций для {struct_name} с element_type={element_type}"
+                )
+                # Определяем, является ли это C-типом
+                is_c_type = self._is_c_type(element_type)
+
+                # Генерируем ВСЕ функции
+                self._generate_list_functions(
+                    struct_name,
+                    element_type,
+                    element_type,  # element_py_type
+                    is_c_type,
+                )
 
     def _infer_field_type_from_ast(self, ast: Dict, context_vars: Dict = None) -> str:
         """Определяет тип поля по AST выражению (без хардкода)"""

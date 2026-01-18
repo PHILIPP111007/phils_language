@@ -312,6 +312,30 @@ class Parser:
         if not line:
             return current_index + 1
 
+        # ========== ПЕРВОЕ: проверяем многомерное индексное присваивание ==========
+        # Паттерн: var_name[0][0] = value (любое количество индексов)
+        nested_index_pattern = r"^([a-zA-Z_][a-zA-Z0-9_]*)((?:\[[^\]]*\])+)\s*=\s*(.+)$"
+        nested_index_match = re.match(nested_index_pattern, line_content)
+
+        if nested_index_match:
+            var_name, indices_str, value = nested_index_match.groups()
+            parsed = self.parse_nested_index_assignment(
+                line_content, scope, var_name, indices_str, value
+            )
+            return current_index + 1
+
+        # ========== ВТОРОЕ: обычное индексное присваивание ==========
+        # Паттерн: var_name[0] = value (один индекс)
+        simple_index_pattern = r"^([a-zA-Z_][a-zA-Z0-9_]*)\[([^\]]+)\]\s*=\s*(.+)$"
+        simple_index_match = re.match(simple_index_pattern, line_content)
+
+        if simple_index_match:
+            var_name, index_expr, value = simple_index_match.groups()
+            parsed = self.parse_index_assignment(
+                line_content, scope, var_name, index_expr, value
+            )
+            return current_index + 1
+
         # Определяем реальный отступ текущей строки
         actual_indent = (
             self.calculate_indent_level(all_lines[current_index])
@@ -338,10 +362,6 @@ class Parser:
                 # Это инициализация атрибута
                 result = self.parse_class_attribute_initialization(line, current_scope)
                 return current_index + 1 if result else current_index + 1
-
-            # result = self.parse_class_attribute_initialization(line, current_scope)
-            # if result:
-            #     return current_index + 1
 
         # ========== ОБРАБОТКА ПРИСВАИВАНИЯ СРЕЗАМ ==========
 
@@ -396,11 +416,15 @@ class Parser:
         # ========== ОБРАБОТКА ИНДЕКСАЦИИ ==========
 
         # Проверяем присваивание по индексу: my_list[0] = value
-        index_assignment_pattern = r"^([a-zA-Z_][a-zA-Z0-9_]*)\[(.+?)\]\s*=\s*(.+)$"
+        index_assignment_pattern = (
+            r"^([a-zA-Z_][a-zA-Z0-9_]*)((?:\[[^\]]*\])+)\s*=\s*(.+)$"
+        )
         index_assignment_match = re.match(index_assignment_pattern, line)
 
         if index_assignment_match:
             var_name, index_expr, value = index_assignment_match.groups()
+            # Убираем возможные пробелы вокруг индексов
+            index_expr = index_expr.strip()
             parsed = self.parse_index_assignment(
                 line, current_scope, var_name, index_expr, value
             )
@@ -710,6 +734,124 @@ class Parser:
 
         return current_index + 1
 
+    def parse_nested_index_assignment(
+        self, line: str, scope: dict, var_name: str, indices_str: str, value: str
+    ) -> bool:
+        """Парсит многомерное присваивание по индексу: A_data[0][0] = 10"""
+        # Извлекаем индексы из строки типа "[0][0]"
+        indices = []
+        current_index = ""
+        depth = 0
+
+        for char in indices_str:
+            if char == "[":
+                if depth == 0:
+                    current_index = ""
+                depth += 1
+            elif char == "]":
+                depth -= 1
+                if depth == 0:
+                    indices.append(current_index)
+            else:
+                if depth > 0:
+                    current_index += char
+
+        if not indices:
+            logger.debug(f"Error: Некорректное индексное выражение: {indices_str}")
+            return False
+
+        # Парсим значение
+        value_ast = self.parse_expression_to_ast(value)
+
+        # Парсим каждый индекс
+        index_asts = []
+        for idx in indices:
+            idx_ast = self.parse_expression_to_ast(idx)
+            index_asts.append(idx_ast)
+
+        # Проверяем существование переменной
+        symbol = scope["symbol_table"].get_symbol(var_name)
+        if not symbol:
+            logger.debug(f"Error: Переменная '{var_name}' не определена")
+            return False
+
+        # Определяем тип переменной
+        var_type = symbol.get("type", "")
+
+        # Важное исправление: правильно определяем вложенность списка
+        is_nested_list = "list[list" in var_type
+
+        # Определяем глубину вложенности
+        depth_level = len(indices)
+
+        # Для одномерных списков используем другой тип операции
+        if depth_level == 1:
+            # Простое индексное присваивание: list[0] = value
+            operations = [
+                {
+                    "type": "SIMPLE_INDEX_ASSIGN",  # Новый тип операции
+                    "variable": var_name,
+                    "index": index_asts[0],
+                    "value": value_ast,
+                    "var_type": var_type,
+                }
+            ]
+
+            # Создаем узел для простого присваивания
+            scope["graph"].append(
+                {
+                    "node": "index_assignment",
+                    "content": line,
+                    "variable": var_name,
+                    "index": index_asts[0],
+                    "value": value_ast,
+                    "operations": operations,
+                    "dependencies": [var_name]
+                    + self.extract_dependencies_from_ast(index_asts[0])
+                    + self.extract_dependencies_from_ast(value_ast),
+                    "var_type": var_type,
+                }
+            )
+        else:
+            # Многомерное присваивание
+            operations = [
+                {
+                    "type": "NESTED_INDEX_ASSIGN",
+                    "variable": var_name,
+                    "indices": index_asts,
+                    "value": value_ast,
+                    "depth": depth_level,
+                    "is_nested_list": is_nested_list,
+                }
+            ]
+
+            # Собираем зависимости
+            dependencies = [var_name]
+            for idx_ast in index_asts:
+                deps = self.extract_dependencies_from_ast(idx_ast)
+                dependencies.extend(deps)
+            deps = self.extract_dependencies_from_ast(value_ast)
+            dependencies.extend(deps)
+
+            # Создаем узел
+            scope["graph"].append(
+                {
+                    "node": "nested_index_assignment",
+                    "content": line,
+                    "variable": var_name,
+                    "indices": index_asts,
+                    "value": value_ast,
+                    "operations": operations,
+                    "dependencies": list(set(dependencies)),
+                    "var_type": var_type,
+                }
+            )
+
+        logger.debug(
+            f"DEBUG: Добавлено индексное присваивание: {line} (глубина: {len(indices)})"
+        )
+        return True
+
     def parse_slice_assignment(
         self, line: str, scope: dict, var_name: str, start: int, stop: int, value: str
     ) -> bool:
@@ -853,9 +995,28 @@ class Parser:
     def parse_index_assignment(
         self, line: str, scope: dict, var_name: str, index_expr: str, value: str
     ) -> bool:
-        """Парсит присваивание по индексу: my_list[0] = value"""
-        # Парсим индекс
-        index_ast = self.parse_expression_to_ast(index_expr)
+        """Парсит присваивание по индексу с поддержкой многомерных массивов"""
+        # index_expr может быть "[0]" или "[0][0]" или "[0][1][2]" и т.д.
+        # Убираем внешние скобки, если есть
+        index_expr = index_expr.strip()
+
+        # Извлекаем все индексы из выражения типа "[0][0]"
+        indices = []
+        current_index = ""
+        depth = 0
+
+        for char in index_expr:
+            if char == "[":
+                if depth == 0:
+                    current_index = ""
+                depth += 1
+            elif char == "]":
+                depth -= 1
+                if depth == 0:
+                    indices.append(current_index)
+            else:
+                if depth > 0:
+                    current_index += char
 
         # Парсим значение
         value_ast = self.parse_expression_to_ast(value)
@@ -866,31 +1027,12 @@ class Parser:
             logger.debug(f"Error: Переменная '{var_name}' не определена")
             return False
 
-        # Определяем тип операции
+        # Определяем тип операции в зависимости от количества индексов
         operations = []
 
-        # Проверяем, является ли это срезом
-        if ":" in index_expr:
-            # Срез: list[1:3] = [10, 20]
-            slice_parts = index_expr.split(":")
-            operations.append(
-                {
-                    "type": "SLICE_ASSIGN",
-                    "variable": var_name,
-                    "slice_start": slice_parts[0].strip()
-                    if slice_parts[0].strip()
-                    else None,
-                    "slice_stop": slice_parts[1].strip()
-                    if len(slice_parts) > 1 and slice_parts[1].strip()
-                    else None,
-                    "slice_step": slice_parts[2].strip()
-                    if len(slice_parts) > 2 and slice_parts[2].strip()
-                    else None,
-                    "value": value_ast,
-                }
-            )
-        else:
-            # Обычная индексация: list[0] = value
+        if len(indices) == 1:
+            # Одиночная индексация: a[0] = value
+            index_ast = self.parse_expression_to_ast(indices[0])
             operations.append(
                 {
                     "type": "INDEX_ASSIGN",
@@ -900,23 +1042,55 @@ class Parser:
                 }
             )
 
-        # Собираем зависимости
-        dependencies = [var_name]
-        dependencies.extend(self.extract_dependencies_from_ast(index_ast))
-        dependencies.extend(self.extract_dependencies_from_ast(value_ast))
+            # Создаем узел
+            scope["graph"].append(
+                {
+                    "node": "index_assignment",
+                    "content": line,
+                    "variable": var_name,
+                    "index": index_ast,
+                    "value": value_ast,
+                    "operations": operations,
+                    "dependencies": [var_name]
+                    + self.extract_dependencies_from_ast(index_ast)
+                    + self.extract_dependencies_from_ast(value_ast),
+                }
+            )
 
-        # Создаем узел
-        scope["graph"].append(
-            {
-                "node": "index_assignment",
-                "content": line,
-                "variable": var_name,
-                "index": index_ast,
-                "value": value_ast,
-                "operations": operations,
-                "dependencies": list(set(dependencies)),
-            }
-        )
+        elif len(indices) > 1:
+            # Многомерная индексация: a[0][0] = value
+            index_asts = []
+            for idx in indices:
+                idx_ast = self.parse_expression_to_ast(idx)
+                index_asts.append(idx_ast)
+
+            operations.append(
+                {
+                    "type": "NESTED_INDEX_ASSIGN",
+                    "variable": var_name,
+                    "indices": index_asts,
+                    "value": value_ast,
+                    "depth": len(indices),
+                }
+            )
+
+            # Создаем узел для многомерного присваивания
+            scope["graph"].append(
+                {
+                    "node": "nested_index_assignment",
+                    "content": line,
+                    "variable": var_name,
+                    "indices": index_asts,
+                    "value": value_ast,
+                    "operations": operations,
+                    "dependencies": [var_name]
+                    + self.extract_dependencies_from_ast(value_ast),
+                }
+            )
+        else:
+            # Нет индексов - ошибка
+            logger.debug(f"Error: Некорректное индексное выражение: {index_expr}")
+            return False
 
         return True
 
@@ -5538,7 +5712,17 @@ class Parser:
 
             node_type = node.get("type")
 
-            if node_type == "index_access":
+            if node_type == "chained_index_access":
+                # Для цепочек индексации: a[0][1]
+                var_name = node.get("variable")
+                if var_name and var_name not in dependencies:
+                    dependencies.append(var_name)
+
+                # Обходим индексы
+                for idx in node.get("indices", []):
+                    traverse(idx)
+
+            elif node_type == "index_access":
                 var_or_expr = node.get("variable") or node.get("expression")
                 if isinstance(var_or_expr, dict):
                     traverse(var_or_expr)
@@ -5547,9 +5731,14 @@ class Parser:
                 traverse(node.get("index"))
 
             elif node_type == "nested_index_access":
-                # Для вложенной индексации (a[0][0])
-                traverse(node.get("base"))
-                traverse(node.get("index"))
+                # Для вложенных индексаций
+                var_name = node.get("variable")
+                if var_name and var_name not in dependencies:
+                    dependencies.append(var_name)
+
+                # Обходим индексы
+                for idx in node.get("indices", []):
+                    traverse(idx)
 
             elif node_type == "slice_access":
                 var_or_expr = node.get("variable") or node.get("expression")
