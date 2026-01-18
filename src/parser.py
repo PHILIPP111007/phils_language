@@ -2050,6 +2050,419 @@ class Parser:
 
         return True
 
+    # def parse_expression_to_ast(self, expression: str) -> dict:
+    #     """Парсит выражение в AST (Abstract Syntax Tree) с поддержкой всех конструкций"""
+    #     expression = expression.strip()
+
+    #     if not expression:
+    #         return {"type": "empty", "value": ""}
+
+    #     # ========== 1. ОСОБЫЕ СЛУЧАИ (в первую очередь!) ==========
+
+    #     # 1.1 Выражения типа self.data[index] - это ОЧЕНЬ ВАЖНО!
+    #     # Проверяем паттерн obj.attr[index] перед другими проверками
+    #     complex_attr_pattern = (
+    #         r"^([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\[(.+)\]$"
+    #     )
+    #     complex_attr_match = re.match(complex_attr_pattern, expression)
+
+    #     if complex_attr_match:
+    #         obj_name, attr_name, index_expr = complex_attr_match.groups()
+
+    #         # Парсим индексное выражение
+    #         index_ast = self.parse_expression_to_ast(index_expr)
+
+    #         # ДОБАВЛЯЕМ: Определяем тип контейнера из таблицы символов
+    #         container_type = None
+    #         element_type = None
+
+    #         # Если это доступ к атрибуту self
+    #         if obj_name == "self":
+    #             # Ищем текущий scope (метод класса)
+    #             current_scope = self.scope_stack[-1] if self.scope_stack else None
+    #             if current_scope and "class_name" in current_scope:
+    #                 class_name = current_scope["class_name"]
+
+    #                 # Ищем атрибут в глобальной таблице символов
+    #                 for scope in self.scopes:
+    #                     if scope.get("level") == 0:  # Глобальная область
+    #                         class_symbol = scope["symbol_table"].get_symbol(class_name)
+    #                         if class_symbol:
+    #                             for attr in class_symbol.get("attributes", []):
+    #                                 if attr["name"] == attr_name:
+    #                                     attr_type = attr.get("type", "")
+    #                                     # Проверяем, является ли это списком
+    #                                     if attr_type.startswith("list["):
+    #                                         container_type = "list"
+    #                                         element_type = attr_type[
+    #                                             5:-1
+    #                                         ]  # list[float] -> float
+    #                                     break
+    #                         break
+
+    #         return {
+    #             "type": "complex_attribute_access",
+    #             "object": obj_name,
+    #             "attribute": attr_name,
+    #             "index": index_ast,
+    #             "container_type": container_type,  # "list" или None
+    #             "element_type": element_type,  # "float" или None
+    #         }
+
+    #     # ========== 2. ЛИТЕРАЛЫ (простые типы) ==========
+
+    #     # 2.1 Строковые литералы
+    #     if (expression.startswith('"') and expression.endswith('"')) or (
+    #         expression.startswith("'") and expression.endswith("'")
+    #     ):
+    #         content = expression[1:-1]
+    #         content = content.replace('\\"', '"').replace("\\'", "'")
+    #         return {"type": "literal", "value": content, "data_type": "str"}
+
+    #     # 2.2 Числовые литералы
+    #     # Целые числа
+    #     if re.match(r"^-?\d+$", expression):
+    #         return {"type": "literal", "value": int(expression), "data_type": "int"}
+
+    #     # Числа с плавающей точкой
+    #     if (
+    #         re.match(r"^-?\d+\.\d+$", expression)
+    #         or re.match(r"^-?\d+\.\d+[eE][+-]?\d+$", expression)
+    #         or re.match(r"^-?\d+[eE][+-]?\d+$", expression)
+    #     ):
+    #         try:
+    #             return {
+    #                 "type": "literal",
+    #                 "value": float(expression),
+    #                 "data_type": "float",
+    #             }
+    #         except ValueError:
+    #             pass
+
+    #     # 2.3 Булевы значения и None
+    #     if expression == "True":
+    #         return {"type": "literal", "value": True, "data_type": "bool"}
+    #     if expression == "False":
+    #         return {"type": "literal", "value": False, "data_type": "bool"}
+    #     if expression == "None":
+    #         return {"type": "literal", "value": None, "data_type": "None"}
+    #     if expression == "null":
+    #         return {"type": "literal", "value": "null", "data_type": "null"}
+
+    #     # ========== 3. КОМПЛЕКСНЫЕ ЛИТЕРАЛЫ ==========
+
+    #     # 3.1 Литералы списков
+    #     if expression.startswith("[") and expression.endswith("]"):
+    #         return self.parse_list_literal(expression)
+
+    #     # 3.2 Литералы кортежей
+    #     if expression.startswith("(") and expression.endswith(")"):
+    #         inner = expression[1:-1].strip()
+    #         # Проверяем, действительно ли это кортеж (есть запятая или заканчивается на запятую)
+    #         if "," in inner or (inner and inner.endswith(",")):
+    #             return self.parse_tuple_literal(expression)
+    #         else:
+    #             # Это выражение в скобках - рекурсивно парсим
+    #             return self.parse_expression_to_ast(inner)
+
+    #     # 3.3 Литералы словарей/множеств
+    #     if expression.startswith("{") and expression.endswith("}"):
+    #         content = expression[1:-1].strip()
+    #         if self.is_dict_literal(content):
+    #             return self.parse_dict_literal(expression)
+    #         else:
+    #             return self.parse_set_literal(expression)
+
+    #     # ========== 4. ВЫЗОВЫ ФУНКЦИЙ И МЕТОДОВ ==========
+
+    #     # 4.1 Вызов метода объекта: obj.method(args)
+    #     obj_method_pattern = (
+    #         r"^([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*)\)$"
+    #     )
+    #     obj_method_match = re.match(obj_method_pattern, expression)
+
+    #     if obj_method_match:
+    #         obj_name, method_name, args_str = obj_method_match.groups()
+    #         args = []
+    #         if args_str.strip():
+    #             args = self.parse_function_arguments_to_ast(args_str)
+
+    #         return {
+    #             "type": "method_call",
+    #             "object": obj_name,
+    #             "method": method_name,
+    #             "arguments": args,
+    #             "is_standalone": False,  # Это выражение, а не отдельный statement
+    #         }
+
+    #     # 4.2 Вызов конструктора: ClassName(args)
+    #     constructor_pattern = r"^([A-Z][a-zA-Z0-9_]*)\s*\((.*)\)$"
+    #     constructor_match = re.match(constructor_pattern, expression)
+
+    #     if constructor_match:
+    #         class_name, args_str = constructor_match.groups()
+    #         args = []
+    #         if args_str.strip():
+    #             args = self.parse_function_arguments_to_ast(args_str)
+
+    #         return {
+    #             "type": "constructor_call",
+    #             "class_name": class_name,
+    #             "arguments": args,
+    #         }
+
+    #     # 4.3 Вызов обычной функции: func(args)
+    #     func_pattern = r"^([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*)\)$"
+    #     func_match = re.match(func_pattern, expression)
+
+    #     if func_match:
+    #         func_name, args_str = func_match.groups()
+    #         args = []
+    #         if args_str.strip():
+    #             args = self.parse_function_arguments_to_ast(args_str)
+
+    #         return {"type": "function_call", "function": func_name, "arguments": args}
+
+    #     # ========== 5. ПРОСТОЙ ДОСТУП К АТРИБУТАМ ==========
+
+    #     # 5.1 Доступ к атрибуту: obj.attr (без индексации)
+    #     simple_attr_pattern = r"^([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)$"
+    #     simple_attr_match = re.match(simple_attr_pattern, expression)
+
+    #     if simple_attr_match:
+    #         obj_name, attr_name = simple_attr_match.groups()
+    #         return {
+    #             "type": "attribute_access",
+    #             "object": obj_name,
+    #             "attribute": attr_name,
+    #         }
+
+    #     # ========== 6. ИНДЕКСАЦИЯ ==========
+
+    #     # 6.1 Простая индексация: var[index]
+    #     simple_index_pattern = r"^([a-zA-Z_][a-zA-Z0-9_]*)\[(.+)\]$"
+    #     simple_index_match = re.match(simple_index_pattern, expression)
+
+    #     if simple_index_match:
+    #         var_name, index_expr = simple_index_match.groups()
+
+    #         # Проверяем, является ли это срезом
+    #         if ":" in index_expr:
+    #             # Это срез
+    #             slice_parts = index_expr.split(":")
+    #             if len(slice_parts) == 2:
+    #                 start, stop = slice_parts
+    #                 step = None
+    #             elif len(slice_parts) == 3:
+    #                 start, stop, step = slice_parts
+    #             else:
+    #                 # Некорректный срез
+    #                 return {
+    #                     "type": "index_access",
+    #                     "variable": var_name,
+    #                     "index": self.parse_expression_to_ast(index_expr),
+    #                 }
+
+    #             # Парсим части среза
+    #             start_ast = (
+    #                 self.parse_expression_to_ast(start.strip())
+    #                 if start.strip()
+    #                 else None
+    #             )
+    #             stop_ast = (
+    #                 self.parse_expression_to_ast(stop.strip()) if stop.strip() else None
+    #             )
+    #             step_ast = (
+    #                 self.parse_expression_to_ast(step.strip())
+    #                 if step and step.strip()
+    #                 else None
+    #             )
+
+    #             return {
+    #                 "type": "slice_access",
+    #                 "variable": var_name,
+    #                 "start": start_ast,
+    #                 "stop": stop_ast,
+    #                 "step": step_ast,
+    #             }
+    #         else:
+    #             # Обычная индексация
+    #             return {
+    #                 "type": "index_access",
+    #                 "variable": var_name,
+    #                 "index": self.parse_expression_to_ast(index_expr),
+    #             }
+
+    #     # ========== 7. ОПЕРАЦИИ С УКАЗАТЕЛЯМИ ==========
+
+    #     # 7.1 Адрес переменной: &var
+    #     if expression.startswith("&"):
+    #         rest = expression[1:].strip()
+    #         if re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", rest):
+    #             return {"type": "address_of", "variable": rest}
+    #         else:
+    #             inner_ast = self.parse_expression_to_ast(rest)
+    #             return {"type": "address_of", "expression": inner_ast}
+
+    #     # 7.2 Разыменование указателя: *ptr
+    #     if expression.startswith("*"):
+    #         rest = expression[1:].strip()
+    #         if re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", rest):
+    #             return {"type": "dereference", "pointer": rest}
+    #         else:
+    #             inner_ast = self.parse_expression_to_ast(rest)
+    #             return {"type": "dereference", "expression": inner_ast}
+
+    #     # ========== 8. БИНАРНЫЕ И УНАРНЫЕ ОПЕРАЦИИ ==========
+
+    #     # 8.1 Тернарный оператор: x if cond else y
+    #     if " if " in expression and " else " in expression:
+    #         # Находим позиции if и else
+    #         if_pos = expression.find(" if ")
+    #         else_pos = expression.find(" else ")
+
+    #         if if_pos < else_pos:
+    #             true_expr = expression[:if_pos].strip()
+    #             condition = expression[if_pos + 4 : else_pos].strip()
+    #             false_expr = expression[else_pos + 6 :].strip()
+
+    #             return {
+    #                 "type": "ternary_operator",
+    #                 "condition": self.parse_expression_to_ast(condition),
+    #                 "true_expr": self.parse_expression_to_ast(true_expr),
+    #                 "false_expr": self.parse_expression_to_ast(false_expr),
+    #             }
+
+    #     # 8.2 Определяем приоритеты операторов
+    #     OPERATOR_PRECEDENCE = [
+    #         # Логические OR
+    #         ("or", "LOGICAL_OR"),
+    #         # Логические AND
+    #         ("and", "LOGICAL_AND"),
+    #         # Сравнения
+    #         ("==", "EQUAL"),
+    #         ("!=", "NOT_EQUAL"),
+    #         ("<", "LESS_THAN"),
+    #         ("<=", "LESS_EQUAL"),
+    #         (">", "GREATER_THAN"),
+    #         (">=", "GREATER_EQUAL"),
+    #         ("is", "IS"),
+    #         ("is not", "IS_NOT"),
+    #         ("in", "IN"),
+    #         ("not in", "NOT_IN"),
+    #         # Битовая OR
+    #         ("|", "BITWISE_OR"),
+    #         # Битовая XOR
+    #         ("^", "BITWISE_XOR"),
+    #         # Битовая AND
+    #         ("&", "BITWISE_AND"),
+    #         # Сдвиги
+    #         ("<<", "LEFT_SHIFT"),
+    #         (">>", "RIGHT_SHIFT"),
+    #         # Сложение/вычитание
+    #         ("+", "ADD"),
+    #         ("-", "SUBTRACT"),
+    #         # Умножение/деление/остаток
+    #         ("*", "MULTIPLY"),
+    #         ("/", "DIVIDE"),
+    #         ("//", "INTEGER_DIVIDE"),
+    #         ("%", "MODULO"),
+    #         # Возведение в степень
+    #         ("**", "POWER"),
+    #     ]
+
+    #     # 8.3 Сначала проверяем выражения в скобках
+    #     if self.is_fully_parenthesized(expression):
+    #         inner = expression[1:-1].strip()
+    #         return self.parse_expression_to_ast(inner)
+
+    #     # 8.4 Ищем оператор с наименьшим приоритетом (начинаем с конца списка)
+    #     for op_symbol, op_type in reversed(OPERATOR_PRECEDENCE):
+    #         if " " in op_symbol:  # Многословные операторы
+    #             if op_symbol in expression:
+    #                 # Находим оператор вне скобок
+    #                 pos = self.find_operator_outside_parentheses(expression, op_symbol)
+    #                 if pos != -1:
+    #                     left = expression[:pos].strip()
+    #                     right = expression[pos + len(op_symbol) :].strip()
+
+    #                     return {
+    #                         "type": "binary_operation",
+    #                         "operator": op_type,
+    #                         "operator_symbol": op_symbol,
+    #                         "left": self.parse_expression_to_ast(left),
+    #                         "right": self.parse_expression_to_ast(right),
+    #                     }
+    #         else:  # Односимвольные операторы
+    #             pos = self.find_operator_outside_parentheses(expression, op_symbol)
+
+    #             if pos != -1:
+    #                 # Проверяем специальные случаи
+
+    #                 # Унарный минус/плюс в начале
+    #                 if pos == 0 and op_symbol in "+-":
+    #                     operand = expression[1:].strip()
+    #                     return {
+    #                         "type": "unary_operation",
+    #                         "operator": "NEGATIVE" if op_symbol == "-" else "POSITIVE",
+    #                         "operator_symbol": op_symbol,
+    #                         "operand": self.parse_expression_to_ast(operand),
+    #                     }
+
+    #                 # Проверяем, что оператор не часть другого оператора
+    #                 if op_symbol == "*":
+    #                     if pos + 1 < len(expression) and expression[pos + 1] == "*":
+    #                         continue  # Это часть **
+
+    #                 # Разделяем на левую и правую части
+    #                 left = expression[:pos].strip()
+    #                 right = expression[pos + 1 :].strip()
+
+    #                 if left and right:
+    #                     # Проверяем, что оператор не внутри имени или числа
+    #                     if (pos > 0 and expression[pos - 1].isalnum()) or (
+    #                         pos + 1 < len(expression) and expression[pos + 1].isalnum()
+    #                     ):
+    #                         continue
+
+    #                     return {
+    #                         "type": "binary_operation",
+    #                         "operator": op_type,
+    #                         "operator_symbol": op_symbol,
+    #                         "left": self.parse_expression_to_ast(left),
+    #                         "right": self.parse_expression_to_ast(right),
+    #                     }
+
+    #     # 8.5 Унарные операции: not, ~
+    #     if expression.startswith("not "):
+    #         operand = expression[4:].strip()
+    #         return {
+    #             "type": "unary_operation",
+    #             "operator": "NOT",
+    #             "operator_symbol": "not",
+    #             "operand": self.parse_expression_to_ast(operand),
+    #         }
+
+    #     if expression.startswith("~"):
+    #         operand = expression[1:].strip()
+    #         return {
+    #             "type": "unary_operation",
+    #             "operator": "BITWISE_NOT",
+    #             "operator_symbol": "~",
+    #             "operand": self.parse_expression_to_ast(operand),
+    #         }
+
+    #     # ========== 9. ПЕРЕМЕННЫЕ ==========
+
+    #     # Если это просто имя переменной
+    #     if re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", expression):
+    #         return {"type": "variable", "name": expression, "value": expression}
+
+    #     # ========== 10. НЕРАСПОЗНАННОЕ ВЫРАЖЕНИЕ ==========
+
+    #     # Если ничего не распознано
+    #     return {"type": "unknown", "value": expression, "original": expression}
+
     def parse_expression_to_ast(self, expression: str) -> dict:
         """Парсит выражение в AST (Abstract Syntax Tree) с поддержкой всех конструкций"""
         expression = expression.strip()
@@ -2057,9 +2470,73 @@ class Parser:
         if not expression:
             return {"type": "empty", "value": ""}
 
-        # ========== 1. ОСОБЫЕ СЛУЧАИ (в первую очередь!) ==========
+        # ========== 1. ЛИТЕРАЛЫ (простые типы) ==========
 
-        # 1.1 Выражения типа self.data[index] - это ОЧЕНЬ ВАЖНО!
+        # 1.1 Строковые литералы
+        if (expression.startswith('"') and expression.endswith('"')) or (
+            expression.startswith("'") and expression.endswith("'")
+        ):
+            content = expression[1:-1]
+            content = content.replace('\\"', '"').replace("\\'", "'")
+            return {"type": "literal", "value": content, "data_type": "str"}
+
+        # 1.2 Числовые литералы
+        # Целые числа
+        if re.match(r"^-?\d+$", expression):
+            return {"type": "literal", "value": int(expression), "data_type": "int"}
+
+        # Числа с плавающей точкой
+        if (
+            re.match(r"^-?\d+\.\d+$", expression)
+            or re.match(r"^-?\d+\.\d+[eE][+-]?\d+$", expression)
+            or re.match(r"^-?\d+[eE][+-]?\d+$", expression)
+        ):
+            try:
+                return {
+                    "type": "literal",
+                    "value": float(expression),
+                    "data_type": "float",
+                }
+            except ValueError:
+                pass
+
+        # 1.3 Булевы значения и None
+        if expression == "True":
+            return {"type": "literal", "value": True, "data_type": "bool"}
+        if expression == "False":
+            return {"type": "literal", "value": False, "data_type": "bool"}
+        if expression == "None":
+            return {"type": "literal", "value": None, "data_type": "None"}
+        if expression == "null":
+            return {"type": "literal", "value": "null", "data_type": "null"}
+
+        # ========== 2. КОМПЛЕКСНЫЕ ЛИТЕРАЛЫ ==========
+
+        # 2.1 Литералы списков
+        if expression.startswith("[") and expression.endswith("]"):
+            return self.parse_list_literal(expression)
+
+        # 2.2 Литералы кортежей
+        if expression.startswith("(") and expression.endswith(")"):
+            inner = expression[1:-1].strip()
+            # Проверяем, действительно ли это кортеж (есть запятая или заканчивается на запятую)
+            if "," in inner or (inner and inner.endswith(",")):
+                return self.parse_tuple_literal(expression)
+            else:
+                # Это выражение в скобках - рекурсивно парсим
+                return self.parse_expression_to_ast(inner)
+
+        # 2.3 Литералы словарей/множеств
+        if expression.startswith("{") and expression.endswith("}"):
+            content = expression[1:-1].strip()
+            if self.is_dict_literal(content):
+                return self.parse_dict_literal(expression)
+            else:
+                return self.parse_set_literal(expression)
+
+        # ========== 3. ОСОБЫЕ СЛУЧАИ ==========
+
+        # 3.1 Выражения типа self.data[index] - это ОЧЕНЬ ВАЖНО!
         # Проверяем паттерн obj.attr[index] перед другими проверками
         complex_attr_pattern = (
             r"^([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\[(.+)\]$"
@@ -2109,73 +2586,16 @@ class Parser:
                 "element_type": element_type,  # "float" или None
             }
 
-        # ========== 2. ЛИТЕРАЛЫ (простые типы) ==========
+        # ========== 4. ОБРАБОТКА ИНДЕКСАЦИИ С ВЛОЖЕННОСТЬЮ ==========
 
-        # 2.1 Строковые литералы
-        if (expression.startswith('"') and expression.endswith('"')) or (
-            expression.startswith("'") and expression.endswith("'")
-        ):
-            content = expression[1:-1]
-            content = content.replace('\\"', '"').replace("\\'", "'")
-            return {"type": "literal", "value": content, "data_type": "str"}
+        # Проверяем, содержит ли выражение индексацию
+        if "[" in expression and expression.endswith("]"):
+            # Рекурсивно парсим цепочку индексации
+            return self._parse_chained_index_access(expression)
 
-        # 2.2 Числовые литералы
-        # Целые числа
-        if re.match(r"^-?\d+$", expression):
-            return {"type": "literal", "value": int(expression), "data_type": "int"}
+        # ========== 5. ВЫЗОВЫ ФУНКЦИЙ И МЕТОДОВ ==========
 
-        # Числа с плавающей точкой
-        if (
-            re.match(r"^-?\d+\.\d+$", expression)
-            or re.match(r"^-?\d+\.\d+[eE][+-]?\d+$", expression)
-            or re.match(r"^-?\d+[eE][+-]?\d+$", expression)
-        ):
-            try:
-                return {
-                    "type": "literal",
-                    "value": float(expression),
-                    "data_type": "float",
-                }
-            except ValueError:
-                pass
-
-        # 2.3 Булевы значения и None
-        if expression == "True":
-            return {"type": "literal", "value": True, "data_type": "bool"}
-        if expression == "False":
-            return {"type": "literal", "value": False, "data_type": "bool"}
-        if expression == "None":
-            return {"type": "literal", "value": None, "data_type": "None"}
-        if expression == "null":
-            return {"type": "literal", "value": "null", "data_type": "null"}
-
-        # ========== 3. КОМПЛЕКСНЫЕ ЛИТЕРАЛЫ ==========
-
-        # 3.1 Литералы списков
-        if expression.startswith("[") and expression.endswith("]"):
-            return self.parse_list_literal(expression)
-
-        # 3.2 Литералы кортежей
-        if expression.startswith("(") and expression.endswith(")"):
-            inner = expression[1:-1].strip()
-            # Проверяем, действительно ли это кортеж (есть запятая или заканчивается на запятую)
-            if "," in inner or (inner and inner.endswith(",")):
-                return self.parse_tuple_literal(expression)
-            else:
-                # Это выражение в скобках - рекурсивно парсим
-                return self.parse_expression_to_ast(inner)
-
-        # 3.3 Литералы словарей/множеств
-        if expression.startswith("{") and expression.endswith("}"):
-            content = expression[1:-1].strip()
-            if self.is_dict_literal(content):
-                return self.parse_dict_literal(expression)
-            else:
-                return self.parse_set_literal(expression)
-
-        # ========== 4. ВЫЗОВЫ ФУНКЦИЙ И МЕТОДОВ ==========
-
-        # 4.1 Вызов метода объекта: obj.method(args)
+        # 5.1 Вызов метода объекта: obj.method(args)
         obj_method_pattern = (
             r"^([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*)\)$"
         )
@@ -2192,10 +2612,10 @@ class Parser:
                 "object": obj_name,
                 "method": method_name,
                 "arguments": args,
-                "is_standalone": False,  # Это выражение, а не отдельный statement
+                "is_standalone": False,
             }
 
-        # 4.2 Вызов конструктора: ClassName(args)
+        # 5.2 Вызов конструктора: ClassName(args)
         constructor_pattern = r"^([A-Z][a-zA-Z0-9_]*)\s*\((.*)\)$"
         constructor_match = re.match(constructor_pattern, expression)
 
@@ -2211,7 +2631,7 @@ class Parser:
                 "arguments": args,
             }
 
-        # 4.3 Вызов обычной функции: func(args)
+        # 5.3 Вызов обычной функции: func(args)
         func_pattern = r"^([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*)\)$"
         func_match = re.match(func_pattern, expression)
 
@@ -2223,9 +2643,9 @@ class Parser:
 
             return {"type": "function_call", "function": func_name, "arguments": args}
 
-        # ========== 5. ПРОСТОЙ ДОСТУП К АТРИБУТАМ ==========
+        # ========== 6. ПРОСТОЙ ДОСТУП К АТРИБУТАМ ==========
 
-        # 5.1 Доступ к атрибуту: obj.attr (без индексации)
+        # 6.1 Доступ к атрибуту: obj.attr (без индексации)
         simple_attr_pattern = r"^([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)$"
         simple_attr_match = re.match(simple_attr_pattern, expression)
 
@@ -2236,62 +2656,6 @@ class Parser:
                 "object": obj_name,
                 "attribute": attr_name,
             }
-
-        # ========== 6. ИНДЕКСАЦИЯ ==========
-
-        # 6.1 Простая индексация: var[index]
-        simple_index_pattern = r"^([a-zA-Z_][a-zA-Z0-9_]*)\[(.+)\]$"
-        simple_index_match = re.match(simple_index_pattern, expression)
-
-        if simple_index_match:
-            var_name, index_expr = simple_index_match.groups()
-
-            # Проверяем, является ли это срезом
-            if ":" in index_expr:
-                # Это срез
-                slice_parts = index_expr.split(":")
-                if len(slice_parts) == 2:
-                    start, stop = slice_parts
-                    step = None
-                elif len(slice_parts) == 3:
-                    start, stop, step = slice_parts
-                else:
-                    # Некорректный срез
-                    return {
-                        "type": "index_access",
-                        "variable": var_name,
-                        "index": self.parse_expression_to_ast(index_expr),
-                    }
-
-                # Парсим части среза
-                start_ast = (
-                    self.parse_expression_to_ast(start.strip())
-                    if start.strip()
-                    else None
-                )
-                stop_ast = (
-                    self.parse_expression_to_ast(stop.strip()) if stop.strip() else None
-                )
-                step_ast = (
-                    self.parse_expression_to_ast(step.strip())
-                    if step and step.strip()
-                    else None
-                )
-
-                return {
-                    "type": "slice_access",
-                    "variable": var_name,
-                    "start": start_ast,
-                    "stop": stop_ast,
-                    "step": step_ast,
-                }
-            else:
-                # Обычная индексация
-                return {
-                    "type": "index_access",
-                    "variable": var_name,
-                    "index": self.parse_expression_to_ast(index_expr),
-                }
 
         # ========== 7. ОПЕРАЦИИ С УКАЗАТЕЛЯМИ ==========
 
@@ -2461,6 +2825,126 @@ class Parser:
         # ========== 10. НЕРАСПОЗНАННОЕ ВЫРАЖЕНИЕ ==========
 
         # Если ничего не распознано
+        return {"type": "unknown", "value": expression, "original": expression}
+
+    def _parse_chained_index_access(self, expression: str) -> dict:
+        """Парсит цепочки индексации типа a[0][1][2]"""
+        # Основной паттерн для захвата всей индексации
+        pattern = r"^([^\[\]]+)((?:\[[^\]]*\])+)$"
+        match = re.match(pattern, expression)
+
+        if not match:
+            # Не соответствует паттерну, возвращаем как неизвестное
+            return {"type": "unknown", "value": expression, "original": expression}
+
+        base_name, indices_str = match.groups()
+
+        # Извлекаем все индексы
+        indices = []
+        current_index = ""
+        depth = 0
+
+        for char in indices_str:
+            if char == "[":
+                if depth == 0:
+                    current_index = ""
+                depth += 1
+                if depth > 1:
+                    current_index += char
+            elif char == "]":
+                depth -= 1
+                if depth == 0:
+                    indices.append(current_index)
+                elif depth > 0:
+                    current_index += char
+            else:
+                current_index += char
+
+        if not indices:
+            return {"type": "unknown", "value": expression, "original": expression}
+
+        # Если только один индекс, парсим как обычную индексацию
+        if len(indices) == 1:
+            index_expr = indices[0]
+
+            # Проверяем, является ли это срезом
+            if ":" in index_expr:
+                # Это срез
+                slice_parts = index_expr.split(":")
+                if len(slice_parts) == 2:
+                    start, stop = slice_parts
+                    step = None
+                elif len(slice_parts) == 3:
+                    start, stop, step = slice_parts
+                else:
+                    # Некорректный срез
+                    index_ast = self.parse_expression_to_ast(index_expr)
+                    return {
+                        "type": "index_access",
+                        "variable": base_name,
+                        "index": index_ast,
+                    }
+
+                # Парсим части среза
+                start_ast = (
+                    self.parse_expression_to_ast(start.strip())
+                    if start.strip()
+                    else None
+                )
+                stop_ast = (
+                    self.parse_expression_to_ast(stop.strip()) if stop.strip() else None
+                )
+                step_ast = (
+                    self.parse_expression_to_ast(step.strip())
+                    if step and step.strip()
+                    else None
+                )
+
+                return {
+                    "type": "slice_access",
+                    "variable": base_name,
+                    "start": start_ast,
+                    "stop": stop_ast,
+                    "step": step_ast,
+                }
+            else:
+                # Обычная индексация
+                index_ast = self.parse_expression_to_ast(index_expr)
+                return {
+                    "type": "index_access",
+                    "variable": base_name,
+                    "index": index_ast,
+                }
+
+        # Вложенная индексация - строим цепочку
+        # Сначала парсим базовое выражение
+        base_ast = {"type": "variable", "name": base_name, "value": base_name}
+
+        # Строим цепочку индексаций
+        current_ast = base_ast
+
+        for i, index_expr in enumerate(indices):
+            # Парсим индекс
+            index_ast = self.parse_expression_to_ast(index_expr)
+
+            if i == len(indices) - 1:
+                # Последний индекс в цепочке
+                return {
+                    "type": "nested_index_access",
+                    "base": current_ast,
+                    "index": index_ast,
+                    "depth": len(indices),
+                    "full_expression": expression,
+                }
+            else:
+                # Промежуточный индекс
+                current_ast = {
+                    "type": "index_access",
+                    "variable": current_ast,
+                    "index": index_ast,
+                }
+
+        # На всякий случай, если что-то пошло не так
         return {"type": "unknown", "value": expression, "original": expression}
 
     def parse_assignment(self, line: str, scope: dict):
@@ -5055,10 +5539,27 @@ class Parser:
             node_type = node.get("type")
 
             if node_type == "index_access":
-                var_name = node.get("variable")
-                if var_name and var_name not in dependencies:
-                    dependencies.append(var_name)
+                var_or_expr = node.get("variable") or node.get("expression")
+                if isinstance(var_or_expr, dict):
+                    traverse(var_or_expr)
+                elif var_or_expr and var_or_expr not in dependencies:
+                    dependencies.append(var_or_expr)
                 traverse(node.get("index"))
+
+            elif node_type == "nested_index_access":
+                # Для вложенной индексации (a[0][0])
+                traverse(node.get("base"))
+                traverse(node.get("index"))
+
+            elif node_type == "slice_access":
+                var_or_expr = node.get("variable") or node.get("expression")
+                if isinstance(var_or_expr, dict):
+                    traverse(var_or_expr)
+                elif var_or_expr and var_or_expr not in dependencies:
+                    dependencies.append(var_or_expr)
+                traverse(node.get("start"))
+                traverse(node.get("stop"))
+                traverse(node.get("step"))
 
             elif node_type == "variable":
                 var_name = node.get("name") or node.get("value")

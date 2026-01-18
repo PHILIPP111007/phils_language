@@ -98,7 +98,9 @@ class CCodeGenerator:
         self.generated_structures.clear()  # Очищаем кэш структур
         logger.debug(f"reset: generated_helpers очищен")
 
+    ###############################################################################################
     # INDENT
+    ###############################################################################################
 
     def indent(self) -> str:
         """Возвращает отступ для текущего уровня"""
@@ -112,7 +114,9 @@ class CCodeGenerator:
         """Добавляет пустую строку"""
         self.output.append("")
 
+    ###############################################################################################
     # SCOPE
+    ###############################################################################################
 
     def enter_scope(self):
         """Вход в новый scope (увеличение вложенности)"""
@@ -183,7 +187,9 @@ class CCodeGenerator:
         # Выходим из scope
         self.exit_scope()
 
+    ###############################################################################################
     # TYPES
+    ###############################################################################################
 
     def map_type_to_c(self, py_type: str, is_pointer: bool = False) -> str:
         """Преобразует тип Python в тип C с поддержкой автоматического распознавания C типов"""
@@ -262,7 +268,9 @@ class CCodeGenerator:
 
         return False
 
+    ###############################################################################################
     # VARIABLES
+    ###############################################################################################
 
     def declare_variable(self, name: str, var_type: str, is_pointer: bool = False):
         """Объявляет или обновляет переменную в текущем scope"""
@@ -316,7 +324,9 @@ class CCodeGenerator:
                     return self.variable_scopes[level][name]
         return None
 
+    ###############################################################################################
     # GENERATE
+    ###############################################################################################
 
     def generate_from_json(self, json_data: List[Dict]) -> str:
         """Генерирует C код из JSON AST"""
@@ -2283,26 +2293,39 @@ class CCodeGenerator:
 
         node_type = ast.get("type", "")
 
+        if node_type == "nested_index_access":
+            return self._generate_nested_index_access(ast)
+
         if node_type == "index_access":
             variable = ast.get("variable", "")
-            index_ast = ast.get("index", {})
-            index_expr = self.generate_expression(index_ast)
-            var_info = self.get_variable_info(variable)
 
-            if var_info:
-                py_type = var_info.get("py_type", "")
+            # Проверяем, является ли variable словарем (для вложенных случаев)
+            if isinstance(variable, dict):
+                # Это вложенная индексация, variable может быть индекс_доступом
+                var_expr = self.generate_expression(variable)
+                index_ast = ast.get("index", {})
+                index_expr = self.generate_expression(index_ast)
 
-                if py_type.startswith("list["):
-                    struct_name = self.generate_list_struct_name(py_type)
-                    return f"get_{struct_name}({variable}, {index_expr})"
-                elif py_type.startswith("tuple["):
-                    struct_name = self.generate_tuple_struct_name(py_type)
-                    # ИСПРАВЛЕНО: используем просто variable, так как это уже указатель
-                    return (
-                        f"get_{struct_name}({variable}, {index_expr})"  # ← ПРАВИЛЬНО!
-                    )
+                # Пытаемся определить тип выражения
+                # Для простоты возвращаем индексацию массива
+                return f"{var_expr}[{index_expr}]"
+            else:
+                # Обычная индексация переменной
+                index_ast = ast.get("index", {})
+                index_expr = self.generate_expression(index_ast)
+                var_info = self.get_variable_info(variable)
 
-            return f"{variable}[{index_expr}]"
+                if var_info:
+                    py_type = var_info.get("py_type", "")
+
+                    if py_type.startswith("list["):
+                        struct_name = self.generate_list_struct_name(py_type)
+                        return f"get_{struct_name}({variable}, {index_expr})"
+                    elif py_type.startswith("tuple["):
+                        struct_name = self.generate_tuple_struct_name(py_type)
+                        return f"get_{struct_name}({variable}, {index_expr})"
+
+                return f"{variable}[{index_expr}]"
 
         elif node_type == "complex_attribute_access":
             return self._generate_complex_attribute_access(ast)
@@ -2592,6 +2615,84 @@ class CCodeGenerator:
             ast_value = ast_value[1:]
 
         return ast_value
+
+    def _generate_nested_index_access(self, ast: Dict) -> str:
+        """Генерирует код для вложенной индексации типа a[i][j][k]"""
+        base = ast.get("base", {})
+        index = ast.get("index", {})
+        depth = ast.get("depth", 1)
+        full_expression = ast.get("full_expression", "")
+
+        logger.debug(f"nested_index_access: {full_expression}, depth={depth}")
+
+        # Парсим полное выражение для получения переменной и индексов
+
+        match = re.match(r"(\w+)((?:\[\d+\])+)", full_expression)
+
+        if not match:
+            # Fallback: пытаемся рекурсивно сгенерировать
+            base_expr = self.generate_expression(base)
+            index_expr = self.generate_expression(index)
+            return f"{base_expr}[{index_expr}]"
+
+        var_name = match.group(1)
+        indices_str = match.group(2)
+
+        # Извлекаем все индексы
+        indices = re.findall(r"\[(\d+)\]", indices_str)
+
+        var_info = self.get_variable_info(var_name)
+        if not var_info:
+            logger.warning(f"Переменная {var_name} не найдена")
+            return "0"
+
+        py_type = var_info.get("py_type", "")
+
+        # Проверяем, является ли тип вложенным списком
+        if py_type.startswith("list[") and len(indices) > 0:
+            # Рекурсивно строим цепочку вызовов get_функций
+            current_var = var_name
+            current_type = py_type
+
+            for i, idx in enumerate(indices):
+                if i == len(indices) - 1:
+                    # Последний индекс - возвращаем значение
+                    struct_name = self.generate_list_struct_name(current_type)
+                    return f"get_{struct_name}({current_var}, {idx})"
+                else:
+                    # Промежуточный индекс - получаем следующий список
+                    # Извлекаем внутренний тип
+                    inner_type = self._parse_list_type(current_type)
+                    if not inner_type or not inner_type.startswith("list["):
+                        # Если следующий уровень не список, прерываем цепочку
+                        break
+
+                    # Генерируем имя структуры для текущего уровня
+                    current_struct = self.generate_list_struct_name(current_type)
+
+                    # Создаем временную переменную для следующего уровня
+                    temp_var = f"temp_{var_name}_{i}"
+
+                    # Добавляем код для получения вложенного списка
+                    self.add_line(f"// Доступ к {current_var}[{idx}]")
+
+                    # Определяем тип следующего уровня
+                    inner_struct = self.generate_list_struct_name(inner_type)
+                    inner_c_type = f"{inner_struct}*"
+
+                    # Добавляем объявление временной переменной
+                    self.add_line(
+                        f"{inner_c_type} {temp_var} = get_{current_struct}({current_var}, {idx});"
+                    )
+
+                    # Обновляем переменные для следующей итерации
+                    current_var = temp_var
+                    current_type = inner_type
+
+        # Если не удалось обработать, используем общий подход
+        base_expr = self.generate_expression(base)
+        index_expr = self.generate_expression(index)
+        return f"{base_expr}[{index_expr}]"
 
     def _generate_complex_attribute_access(self, ast: Dict) -> str:
         """Генерирует доступ к элементу сложного атрибута (self.data[index])"""
@@ -5650,7 +5751,9 @@ class CCodeGenerator:
             self.add_line(f"strcpy({target_var}, {left_expr});")
             self.add_line(f"strcat({target_var}, {right_expr});")
 
+    ###############################################################################################
     # OTHER
+    ###############################################################################################
 
     def collect_imports_and_declarations(self, json_data: List[Dict]):
         """Собирает импорты и объявления функций из JSON"""
