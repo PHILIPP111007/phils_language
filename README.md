@@ -8,6 +8,12 @@ Because it's similar to Python, the entry barrier is low. My goal is to make it 
 
 I'm creating this language for specialists working primarily with neural networks. But it can be used anywhere, as it's almost a complete copy of C.
 
+## Tests
+
+```bash
+pytest  --verbose
+```
+
 ## Examples
 
 ### Imports

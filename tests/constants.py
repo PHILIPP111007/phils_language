@@ -1,0 +1,5 @@
+p_path = "/Users/phil/GitHub/phils_language/examples/test.p"
+base_path = "/Users/phil/GitHub/phils_language/examples/"
+json_path = "/Users/phil/GitHub/phils_language/examples/test_parsed_code.json"
+c_path = "/Users/phil/GitHub/phils_language/examples/test_generated_code.c"
+output_path = "/Users/phil/GitHub/phils_language/examples/test_generated_code"
