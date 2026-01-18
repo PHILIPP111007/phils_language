@@ -2297,35 +2297,7 @@ class CCodeGenerator:
             return self._generate_nested_index_access(ast)
 
         if node_type == "index_access":
-            variable = ast.get("variable", "")
-
-            # Проверяем, является ли variable словарем (для вложенных случаев)
-            if isinstance(variable, dict):
-                # Это вложенная индексация, variable может быть индекс_доступом
-                var_expr = self.generate_expression(variable)
-                index_ast = ast.get("index", {})
-                index_expr = self.generate_expression(index_ast)
-
-                # Пытаемся определить тип выражения
-                # Для простоты возвращаем индексацию массива
-                return f"{var_expr}[{index_expr}]"
-            else:
-                # Обычная индексация переменной
-                index_ast = ast.get("index", {})
-                index_expr = self.generate_expression(index_ast)
-                var_info = self.get_variable_info(variable)
-
-                if var_info:
-                    py_type = var_info.get("py_type", "")
-
-                    if py_type.startswith("list["):
-                        struct_name = self.generate_list_struct_name(py_type)
-                        return f"get_{struct_name}({variable}, {index_expr})"
-                    elif py_type.startswith("tuple["):
-                        struct_name = self.generate_tuple_struct_name(py_type)
-                        return f"get_{struct_name}({variable}, {index_expr})"
-
-                return f"{variable}[{index_expr}]"
+            return self._generate_index_access(ast)
 
         elif node_type == "complex_attribute_access":
             return self._generate_complex_attribute_access(ast)
@@ -2615,6 +2587,56 @@ class CCodeGenerator:
             ast_value = ast_value[1:]
 
         return ast_value
+
+    def _generate_index_access(self, ast: Dict) -> str:
+        """Генерирует код для доступа по индексу"""
+        variable = ast.get("variable", "")
+        index_ast = ast.get("index", {})
+        index_expr = self.generate_expression(index_ast)
+
+        # Если variable - это attribute_access (например, self.a)
+        if isinstance(variable, dict) and variable.get("type") == "attribute_access":
+            # Генерируем выражение для доступа к атрибуту
+            obj_name = variable.get("object", "")
+            attr_name = variable.get("attribute", "")
+
+            # Получаем тип атрибута
+            attr_type = self._get_attribute_type(obj_name, attr_name)
+
+            # Генерируем выражение для доступа к атрибуту
+            attr_expr = self.generate_attribute_access(variable)
+
+            if attr_type and attr_type.startswith("list["):
+                # Для списков используем get_функцию
+                struct_name = self.generate_list_struct_name(attr_type)
+                logger.debug(
+                    f"DEBUG: Использую get_{struct_name} для {attr_expr}[{index_expr}]"
+                )
+                return f"get_{struct_name}({attr_expr}, {index_expr})"
+            else:
+                # Для других типов - обычная индексация
+                logger.debug(f"DEBUG: Обычная индексация для {attr_expr}[{index_expr}]")
+                return f"{attr_expr}[{index_expr}]"
+
+        # Если variable - обычная строка
+        elif isinstance(variable, str):
+            var_info = self.get_variable_info(variable)
+
+            if var_info:
+                py_type = var_info.get("py_type", "")
+
+                if py_type.startswith("list["):
+                    struct_name = self.generate_list_struct_name(py_type)
+                    return f"get_{struct_name}({variable}, {index_expr})"
+                elif py_type.startswith("tuple["):
+                    struct_name = self.generate_tuple_struct_name(py_type)
+                    return f"get_{struct_name}({variable}, {index_expr})"
+
+            return f"{variable}[{index_expr}]"
+        else:
+            # Сложный случай
+            var_expr = self.generate_expression(variable)
+            return f"{var_expr}[{index_expr}]"
 
     def _generate_nested_index_access(self, ast: Dict) -> str:
         """Генерирует код для вложенной индексации типа a[i][j][k]"""
@@ -3841,8 +3863,12 @@ class CCodeGenerator:
         self.add_line(f"{c_return_type} {class_name}_{method_name}({params_str}) {{")
         self.indent_level += 1
 
-        # Входим в scope метода
+        # Входим в scope метода и добавляем информацию о классе
         self.enter_scope()
+
+        # ДОБАВЛЯЕМ ИНФОРМАЦИЮ О КЛАССЕ В ТЕКУЩИЙ SCOPE
+        current_scope = self.get_current_scope()
+        current_scope["class_name"] = class_name
 
         # Объявляем параметры в scope (кроме self)
         for param in parameters:
@@ -6061,7 +6087,9 @@ class CCodeGenerator:
                                 )
                             else:
                                 # Иначе определяем тип по AST
-                                field_type = self._infer_field_type_from_ast(value_ast)
+                                field_type = self._infer_field_type_from_ast(
+                                    value_ast, param_types
+                                )
                                 if field_type:
                                     self.class_fields[class_name][attr] = field_type
                                     logger.debug(
@@ -6076,7 +6104,9 @@ class CCodeGenerator:
 
                         # 3. Для выражений пытаемся определить тип
                         else:
-                            field_type = self._infer_field_type_from_ast(value_ast)
+                            field_type = self._infer_field_type_from_ast(
+                                value_ast, param_types
+                            )
                             if field_type:
                                 self.class_fields[class_name][attr] = field_type
                                 logger.debug(f"Поле {attr} <- тип из AST: {field_type}")
@@ -6184,3 +6214,29 @@ class CCodeGenerator:
 
                 # Рекурсивно добавляем методы от родительских классов родителя
                 self._inherit_methods_from_parents(base_class, class_info)
+
+    def _get_attribute_type(self, obj_name: str, attr_name: str) -> Optional[str]:
+        """Получает тип атрибута объекта"""
+        # Если это self, ищем в текущем классе
+        if obj_name == "self":
+            # Ищем текущий класс в scope
+            for scope in reversed(self.variable_scopes):
+                if "class_name" in scope:
+                    class_name = scope.get("class_name")
+                    if class_name in self.class_fields:
+                        return self.class_fields[class_name].get(attr_name)
+            return None
+
+        # Получаем информацию об объекте
+        var_info = self.get_variable_info(obj_name)
+        if not var_info:
+            return None
+
+        obj_type = var_info.get("py_type", "")
+
+        # Если это класс, ищем в его полях
+        if self._is_class_type(obj_type):
+            if obj_type in self.class_fields:
+                return self.class_fields[obj_type].get(attr_name)
+
+        return None
