@@ -5592,7 +5592,9 @@ class CCodeGenerator:
         method_name = node.get("method", "")
         args = node.get("arguments", [])
 
-        logger.debug(f"generate_object_method_call: {object_name}.{method_name}()")
+        logger.debug(
+            f"DEBUG generate_object_method_call: {object_name}.{method_name}()"
+        )
 
         # Универсальная реализация
         var_info = self.get_variable_info(object_name)
@@ -5605,6 +5607,33 @@ class CCodeGenerator:
             self.add_line(f"// ERROR: No type for '{object_name}'")
             return
 
+        # ПРОВЕРЯЕМ, ЯВЛЯЕТСЯ ЛИ ОБЪЕКТ СПИСКОМ
+        if object_type.startswith("list["):
+            # Для списков используем специальные функции
+            if method_name == "append" and args:
+                # Получаем правильное имя структуры
+                struct_name = self.generate_list_struct_name(object_type)
+                logger.debug(
+                    f"DEBUG: append для {object_name} типа {object_type}, struct_name={struct_name}"
+                )
+
+                # Генерируем аргумент
+                arg = args[0]
+                if isinstance(arg, dict):
+                    arg_expr = self.generate_expression(arg)
+                else:
+                    arg_expr = str(arg)
+
+                # Генерируем правильный вызов
+                self.add_line(f"append_{struct_name}({object_name}, {arg_expr});")
+                return
+
+            # Добавляем обработку других методов списков если нужно
+            else:
+                self.add_line(f"// Метод списка '{method_name}' для типа {object_type}")
+                return
+
+        # ДЛЯ КЛАССОВ (не списков) - оригинальная логика
         # Генерируем аргументы
         arg_exprs = []
         for arg in args:
@@ -5621,6 +5650,7 @@ class CCodeGenerator:
         args_str = ", ".join(all_args)
 
         # Формируем имя функции: TypeName_methodName
+        # Но для списков это не должно использоваться!
         self.add_line(f"{object_type}_{method_name}({args_str});")
 
     def generate_redeclaration(self, node: Dict):
