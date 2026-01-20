@@ -68,3 +68,26 @@ int main(void) {
 }
 """
     run(P, C)
+
+
+def test_for_loop_4():
+    P = r"""
+def main() -> int:
+    for i in range(0, 100, 10):
+        for j in range(0, 100):
+            print(i * j)
+
+    return 0
+"""
+
+    C = r"""
+int main(void) {
+    for (int i = 0; i < 100; i += 10) {
+        for (int j = 0; j < 100; j += 1) {
+            printf("%d\n", (i * j));
+        }
+    }
+    return 0;
+}
+"""
+    run(P, C)
