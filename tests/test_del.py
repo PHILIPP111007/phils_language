@@ -10,6 +10,7 @@ def main() -> int:
     var d: list[int] = [1, 2, 3]
     var e: tuple[int] = (1, 2, 3)
     var f: list[list[int]] = [d, d]
+    var g: list[tuple[int]] = [e, e, e]
 
     del a
     del b
@@ -17,6 +18,7 @@ def main() -> int:
     del d
     del e
     del f
+    del g
 
     return 0
 """
@@ -39,6 +41,10 @@ int main(void) {
     list_list_int* f = create_list_list_int(4);
     append_list_list_int(f, d);
     append_list_list_int(f, d);
+    list_tuple_int* g = create_list_tuple_int(4);
+    append_list_tuple_int(g, e);
+    append_list_tuple_int(g, e);
+    append_list_tuple_int(g, e);
     // del a
     a = 0;
     // del b
@@ -57,6 +63,11 @@ int main(void) {
         free_list_list_int(f);
     }
     f = NULL;
+    // del g
+    if (g) {
+        free_list_tuple_int(g);
+    }
+    g = NULL;
     return 0;
 }
 """
