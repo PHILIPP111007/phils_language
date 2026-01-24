@@ -19,6 +19,9 @@ def main() -> int:
 
     var f: None = None
 
+    var g: bool = 1 < 10
+    var g1: bool = 1 < 10 and 10 >= 100
+
     return 0
 """
 
@@ -50,6 +53,8 @@ int main(void) {
     append_list_tuple_int(d3, e);
     append_list_tuple_int(d3, e);
     void* f = NULL;
+    bool g = (1 < 10);
+    bool g1 = ((1 < 10) && (10 >= 100));
     return 0;
 }
 """
