@@ -41,7 +41,7 @@ int main(void) {
     run(P, C)
 
 
-def test_while_loop_3():  # TODO
+def test_while_loop_3():
     P = r"""
 def main() -> int:
     var i: int = 0
@@ -55,7 +55,7 @@ def main() -> int:
     C = r"""
 int main(void) {
     int i = 0;
-    while ((i >= = 10)) {
+    while ((i >= 10)) {
         printf("%d\n", i);
         i = (i + 1);
     }

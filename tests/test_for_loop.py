@@ -41,7 +41,7 @@ int main(void) {
     run(P, C)
 
 
-def test_for_loop_3():  # TODO
+def test_for_loop_3():
     P = r"""
 def main() -> int:
     for i in range(0, 100, 10):
@@ -56,7 +56,7 @@ def main() -> int:
     C = r"""
 int main(void) {
     for (int i = 0; i < 100; i += 10) {
-        if ((i % (10 == = 0))) {
+        if (((i % 10) == 0)) {
             main();
         }
         else {
