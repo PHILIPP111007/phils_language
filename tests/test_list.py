@@ -222,9 +222,9 @@ int main(void) {
     append_list_int(a, 1);
     append_list_int(a, 2);
     append_list_int(a, 3);
-    int temp_0 = get_list_int(a, 0);
+    int temp_0 = get_list_int(a, 1);
     temp_0 += 1;
-    set_list_int(a, 0, temp_0);
+    set_list_int(a, 1, temp_0);
     return 0;
 }
 """

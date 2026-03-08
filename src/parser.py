@@ -1536,7 +1536,7 @@ class Parser:
         # Парсим параметры
         parameters = []
         if params_str.strip():
-            param_pattern = r"([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([a-zA-Z_][a-zA-Z0-9_]*)"
+            param_pattern = r"([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([^,]+(?:\[[^]]+\])?)"
             params = re.findall(param_pattern, params_str)
             for param_name, param_type in params:
                 parameters.append({"name": param_name, "type": param_type})
