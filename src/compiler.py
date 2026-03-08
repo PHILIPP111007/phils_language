@@ -2799,86 +2799,111 @@ class CCodeGenerator:
         """Генерирует код для вложенной индексации типа a[i][j][k]"""
         base = ast.get("base", {})
         index = ast.get("index", {})
-        depth = ast.get("depth", 1)
-        full_expression = ast.get("full_expression", "")
 
-        logger.debug(f"nested_index_access: {full_expression}, depth={depth}")
+        # Получаем имя переменной и первый индекс
+        if base.get("type") == "index_access":
+            variable = base.get("variable", {})
+            var_name = variable.get("value", "")
+            first_index = base.get("index", {})
+            first_expr = self.generate_expression(first_index)
+        else:
+            var_name = str(base)
+            first_expr = self.generate_expression(index)
 
-        # Парсим полное выражение для получения переменной и индексов
-        match = re.match(r"(\w+)((?:\[\d+\])+)", full_expression)
+        # Получаем второй индекс
+        second_expr = self.generate_expression(index)
 
-        if not match:
-            # Fallback: пытаемся рекурсивно сгенерировать
-            base_expr = self.generate_expression(base)
-            index_expr = self.generate_expression(index)
-            return f"{base_expr}[{index_expr}]"
-
-        var_name = match.group(1)
-        indices_str = match.group(2)
-
-        # Извлекаем все индексы
-        indices = re.findall(r"\[(\d+)\]", indices_str)
-
+        # Проверяем тип переменной
         var_info = self.get_variable_info(var_name)
-        if not var_info:
-            logger.warning(f"Переменная {var_name} не найдена")
-            return "0"
+        if var_info and var_info.get("py_type", "").startswith("list[list["):
+            # Для list[list[int]] -> get_list_int(get_list_list_int(A, i), k)
+            return f"get_list_int(get_list_list_int({var_name}, {first_expr}), {second_expr})"
+        else:
+            # Для обычных массивов
+            return f"{var_name}[{first_expr}][{second_expr}]"
 
-        py_type = var_info.get("py_type", "")
+        # base = ast.get("base", {})
+        # index = ast.get("index", {})
+        # depth = ast.get("depth", 1)
+        # full_expression = ast.get("full_expression", "")
 
-        # Проверяем, является ли тип вложенным списком
-        if py_type.startswith("list[") and len(indices) > 0:
-            # Рекурсивно строим цепочку вызовов get_функций
-            current_var = var_name
-            current_type = py_type
+        # logger.debug(f"nested_index_access: {full_expression}, depth={depth}")
 
-            # Создаем уникальное имя для временной переменной
-            temp_prefix = f"temp_{var_name}"
+        # # Парсим полное выражение для получения переменной и индексов
+        # match = re.match(r"(\w+)((?:\[\d+\])+)", full_expression)
 
-            for i, idx in enumerate(indices):
-                if i == len(indices) - 1:
-                    # Последний индекс - возвращаем значение
-                    struct_name = self.generate_list_struct_name(current_type)
-                    return f"get_{struct_name}({current_var}, {idx})"
-                else:
-                    # Промежуточный индекс - получаем следующий список
-                    # Извлекаем внутренний тип
-                    inner_type = self._parse_list_type(current_type)
-                    if not inner_type or not inner_type.startswith("list["):
-                        # Если следующий уровень не список, прерываем цепочку
-                        break
+        # if not match:
+        #     # Fallback: пытаемся рекурсивно сгенерировать
+        #     base_expr = self.generate_expression(base)
+        #     index_expr = self.generate_expression(index)
+        #     return f"{base_expr}[{index_expr}]"
 
-                    # Генерируем имя структуры для текущего уровня
-                    current_struct = self.generate_list_struct_name(current_type)
+        # var_name = match.group(1)
+        # indices_str = match.group(2)
 
-                    # Создаем УНИКАЛЬНУЮ временную переменную для следующего уровня
-                    temp_var = f"{temp_prefix}_{i}_{self.temp_var_counter}"
-                    self.temp_var_counter += 1  # Увеличиваем счетчик
+        # # Извлекаем все индексы
+        # indices = re.findall(r"\[(\d+)\]", indices_str)
 
-                    # Добавляем код для получения вложенного списка
-                    self.add_line(f"// Доступ к {current_var}[{idx}]")
+        # var_info = self.get_variable_info(var_name)
+        # if not var_info:
+        #     logger.warning(f"Переменная {var_name} не найдена")
+        #     return "0"
 
-                    # Определяем тип следующего уровня
-                    inner_struct = self.generate_list_struct_name(inner_type)
-                    inner_c_type = f"{inner_struct}*"
+        # py_type = var_info.get("py_type", "")
 
-                    # Добавляем объявление временной переменной
-                    self.add_line(
-                        f"{inner_c_type} {temp_var} = get_{current_struct}({current_var}, {idx});"
-                    )
+        # # Проверяем, является ли тип вложенным списком
+        # if py_type.startswith("list[") and len(indices) > 0:
+        #     # Рекурсивно строим цепочку вызовов get_функций
+        #     current_var = var_name
+        #     current_type = py_type
 
-                    # Обновляем переменные для следующей итерации
-                    current_var = temp_var
-                    current_type = inner_type
+        #     # Создаем уникальное имя для временной переменной
+        #     temp_prefix = f"temp_{var_name}"
 
-            # Если не удалось обработать, используем общий подход
-            base_expr = self.generate_expression(base)
-            index_expr = self.generate_expression(index)
-            return f"{base_expr}[{index_expr}]"
+        #     for i, idx in enumerate(indices):
+        #         if i == len(indices) - 1:
+        #             # Последний индекс - возвращаем значение
+        #             struct_name = self.generate_list_struct_name(current_type)
+        #             return f"get_{struct_name}({current_var}, {idx})"
+        #         else:
+        #             # Промежуточный индекс - получаем следующий список
+        #             # Извлекаем внутренний тип
+        #             inner_type = self._parse_list_type(current_type)
+        #             if not inner_type or not inner_type.startswith("list["):
+        #                 # Если следующий уровень не список, прерываем цепочку
+        #                 break
 
-        # Если не список, используем прямой доступ
-        index_expr = self.generate_expression(index)
-        return f"{var_name}[{index_expr}]"
+        #             # Генерируем имя структуры для текущего уровня
+        #             current_struct = self.generate_list_struct_name(current_type)
+
+        #             # Создаем УНИКАЛЬНУЮ временную переменную для следующего уровня
+        #             temp_var = f"{temp_prefix}_{i}_{self.temp_var_counter}"
+        #             self.temp_var_counter += 1  # Увеличиваем счетчик
+
+        #             # Добавляем код для получения вложенного списка
+        #             self.add_line(f"// Доступ к {current_var}[{idx}]")
+
+        #             # Определяем тип следующего уровня
+        #             inner_struct = self.generate_list_struct_name(inner_type)
+        #             inner_c_type = f"{inner_struct}*"
+
+        #             # Добавляем объявление временной переменной
+        #             self.add_line(
+        #                 f"{inner_c_type} {temp_var} = get_{current_struct}({current_var}, {idx});"
+        #             )
+
+        #             # Обновляем переменные для следующей итерации
+        #             current_var = temp_var
+        #             current_type = inner_type
+
+        #     # Если не удалось обработать, используем общий подход
+        #     base_expr = self.generate_expression(base)
+        #     index_expr = self.generate_expression(index)
+        #     return f"{base_expr}[{index_expr}]"
+
+        # # Если не список, используем прямой доступ
+        # index_expr = self.generate_expression(index)
+        # return f"{var_name}[{index_expr}]"
 
     def _generate_complex_attribute_access(self, ast: Dict) -> str:
         """Генерирует доступ к элементу сложного атрибута (self.data[index])"""
