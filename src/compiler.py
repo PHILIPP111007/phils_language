@@ -1733,7 +1733,6 @@ class CCodeGenerator:
             self._generate_generic_c_list_functions(
                 struct_name, element_type, element_py_type
             )
-            return
 
         # 1. Функция создания
         create_func_name = f"create_{struct_name}"
