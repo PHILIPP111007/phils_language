@@ -126,7 +126,7 @@ int main(void) {
     run(P, C)
 
 
-def test_list_assigment():
+def test_list_set_list_int():
     P = r"""
 def main() -> int:
     var a: list[int] = [1, 2, 3]
@@ -141,6 +141,67 @@ int main(void) {
     append_list_int(a, 2);
     append_list_int(a, 3);
     set_list_int(a, 0, 10);
+    return 0;
+}
+"""
+    run(P, C)
+
+
+def test_list_get_list_int():
+    P = r"""
+def main() -> int:
+    var a: list[int] = [1, 2, 3]
+    var a1: int = a[0]
+    return 0
+"""
+
+    C = r"""
+int main(void) {
+    list_int* a = create_list_int(4);
+    append_list_int(a, 1);
+    append_list_int(a, 2);
+    append_list_int(a, 3);
+    int a1 = get_list_int(a, 0);
+    return 0;
+}
+"""
+    run(P, C)
+
+
+def test_list_get_list_str():
+    P = r"""
+def main() -> int:
+    var a: list[str] = ["1", "2"]
+    var a1: str = a[0]
+    return 0
+"""
+
+    C = r"""
+int main(void) {
+    list_str* a = create_list_str(4);
+    append_list_str(a, "1");
+    append_list_str(a, "2");
+    char* a1 = get_list_str(a, 0);
+    return 0;
+}
+"""
+    run(P, C)
+
+
+def test_list_set_list_str():
+    P = r"""
+def main() -> int:
+    var a: list[str] = ["1", "2"]
+    a[0] = "100"
+    return 0
+"""
+
+    C = r"""
+int main(void) {
+    list_str* a = create_list_str(4);
+    append_list_str(a, "1");
+    append_list_str(a, "2");
+    set_list_str(a, 0, "100");
     return 0;
 }
 """
