@@ -245,3 +245,53 @@ int main(void) {
 }
 """
     run(P, C)
+
+
+def test_oop_3():
+    P = r"""
+class Matrix:
+    def __init__(self, data: list[int]):
+        self.data = data
+    
+    def get(self) -> int:
+        var item: int = self.data[10]
+        return item
+"""
+
+    C = r"""
+typedef struct Matrix Matrix;
+
+struct Matrix {
+    void** vtable;
+    // Поля класса Matrix
+    list_int* data;
+};
+
+int Matrix_get(Matrix* self);
+int main(void);
+
+// Конструктор для Matrix
+Matrix* create_Matrix(list_int* data) {
+    Matrix* obj = malloc(sizeof(Matrix));
+    if (!obj) {
+        fprintf(stderr, "Memory allocation failed for Matrix\n");
+        exit(1);
+    }
+
+    // Инициализация полей класса Matrix
+    obj->vtable = malloc(sizeof(void*) * 16);
+    if (!obj->vtable) {
+        fprintf(stderr, "Memory allocation failed for vtable\n");
+        free(obj);
+        exit(1);
+    }
+    obj->data = data;
+    return obj;
+}
+
+int Matrix_get(Matrix* self) {
+    int item = get_list_int(self->data, 10);
+    return item;
+}
+"""
+    run(P, C)
