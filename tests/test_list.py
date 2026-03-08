@@ -206,3 +206,26 @@ int main(void) {
 }
 """
     run(P, C)
+
+
+def test_list_add_number_to_list_item():
+    P = r"""
+def main() -> int:
+    var a: list[int] = [1, 2, 3]
+    a[1] += 1
+    return 0
+"""
+
+    C = r"""
+int main(void) {
+    list_int* a = create_list_int(4);
+    append_list_int(a, 1);
+    append_list_int(a, 2);
+    append_list_int(a, 3);
+    int temp_0 = get_list_int(a, 0);
+    temp_0 += 1;
+    set_list_int(a, 0, temp_0);
+    return 0;
+}
+"""
+    run(P, C)
