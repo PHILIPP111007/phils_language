@@ -24,6 +24,6 @@ def run(P, C):
     with open(c_path, "r") as file:
         output = file.read()
 
-    assert C in output
+    assert C in output, output
 
     os.remove(c_path)
