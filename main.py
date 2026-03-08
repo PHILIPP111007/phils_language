@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import subprocess
 
 from src.parser import Parser
 from src.debug import JSONValidator
@@ -57,15 +58,13 @@ def main(base_path: str, p_path: str, json_path: str, c_path: str):
 
 if __name__ == "__main__":
     p_path = "/Users/phil/GitHub/phils_language/examples/main.p"
-    base_path = "/Users/phil/GitHub/phils_language/examples/"
+    base_path = os.path.dirname(p_path)
     json_path = "/Users/phil/GitHub/phils_language/examples/parsed_code.json"
     c_path = "/Users/phil/GitHub/phils_language/examples/generated_code.c"
     output_path = "/Users/phil/GitHub/phils_language/examples/generated_code"
 
     main(base_path=base_path, p_path=p_path, json_path=json_path, c_path=c_path)
 
-    command = f"gcc {c_path} -o {output_path}"
-
-    os.system(command)
+    subprocess.run(["gcc", c_path, "-o", output_path])
 
     sys.exit(0)
