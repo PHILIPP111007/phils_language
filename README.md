@@ -68,7 +68,7 @@ def func() -> str:
 def main() -> int:
     var a: int = 1 + 10
 
-    del_pointer a
+    del a
 
     var b: str = func()
 
@@ -119,7 +119,6 @@ def main() -> int:
     var l: list[tuple[int]] = []
     l.append(t1)
     return 0
-
 
 
 def main() -> int:
@@ -221,54 +220,6 @@ def main() -> int:
     print(age)
 
     return 0
-```
-
-#### Note
-
-Don't use self.ATTRIBUTE directly in your expressions.
-
-```python
-class Matrix:
-    def __init__(self, data: list[int]):
-        self.data = data
-    
-    def get(self) -> int:
-        var a: list[int] = self.data
-        var item: int = a[10]
-        return item
-```
-
-Converts to
-
-```c
-int Matrix_get(Matrix* self) {
-    list_int* a = self->data;
-    int item = get_list_int(a, 10);
-    return item;
-}
-```
-
-And
-
-```python
-class Matrix:
-    def __init__(self, data: list[int]):
-        self.data = data
-    
-    def get(self) -> int:
-        var item: int = self.data[10]
-        return item
-```
-
-Converts to
-
-```c
-int Matrix_get(Matrix* self) {
-    int item = self->data[10];  // Here is an error
-    return item;
-}
-
-// a value of type "list_int" (aka "struct <unnamed>") cannot be used to initialize an entity of type "int"
 ```
 
 ### Pthread
