@@ -1,7 +1,7 @@
 from tests.base import run
 
 
-def test_list():
+def test_list_append():
     P = r"""
 def main() -> int:
     var a: list[int] = [1, 2, 3]
@@ -40,6 +40,86 @@ int main(void) {
         free_list_list_int(b);
     }
     b = NULL;
+    return 0;
+}
+"""
+    run(P, C)
+
+
+def test_list_pop_1():
+    P = r"""
+def main() -> int:
+    var a: list[int] = [1, 2, 3]
+    
+    a.pop(0)
+    a.pop()
+
+    return 0
+"""
+
+    C = r"""
+int main(void) {
+    list_int* a = create_list_int(4);
+    append_list_int(a, 1);
+    append_list_int(a, 2);
+    append_list_int(a, 3);
+    if (a && 0 >= 0 && 0 < a->size) {
+        int temp_0 = a->data[0];
+        for (int i = 0; i < a->size - 1; i++) {
+            a->data[i] = a->data[i + 1];
+        }
+        a->size--;
+        // Результат pop() используется, но не присвоен
+    } else {
+        fprintf(stderr, "IndexError: pop index out of range\n");
+        exit(1);
+    }
+    if (a && a->size > 0) {
+        int temp_1 = a->data[a->size - 1];
+        a->size--;
+        // Результат pop() используется, но не присвоен
+    } else {
+        fprintf(stderr, "IndexError: pop from empty list\n");
+        exit(1);
+    }
+    return 0;
+}
+"""
+    run(P, C)
+
+
+def test_list_pop_2():
+    P = r"""
+def main() -> int:
+    var a: list[int] = [1, 2, 3]
+    
+    var b: int = 0
+    b = a.pop(0)
+
+    print(b)
+
+    return 0
+"""
+
+    C = r"""
+int main(void) {
+    list_int* a = create_list_int(4);
+    append_list_int(a, 1);
+    append_list_int(a, 2);
+    append_list_int(a, 3);
+    int b = 0;
+    if (a && 0 >= 0 && 0 < a->size) {
+        int temp_0 = a->data[0];
+        for (int i = 0; i < a->size - 1; i++) {
+            a->data[i] = a->data[i + 1];
+        }
+        a->size--;
+        b = temp_0;
+    } else {
+        fprintf(stderr, "IndexError: pop index out of range\n");
+        exit(1);
+    }
+    printf("%d\n", b);
     return 0;
 }
 """

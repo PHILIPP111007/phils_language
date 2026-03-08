@@ -31,7 +31,7 @@ def main() -> int:
     return 0
 """
 
-    C = """
+    C = r"""
 int main(void) {
     char* a = "Hello {}";
     a = string_upper(a);
@@ -45,9 +45,13 @@ int main(void) {
     list_int* d = create_list_int(4);
     append_list_int(d, 1);
     append_list_int(d, 2);
-    if (d->size > 0) {
+    if (d && d->size > 0) {
         int temp_0 = d->data[d->size - 1];
         d->size--;
+        // Результат pop() используется, но не присвоен
+    } else {
+        fprintf(stderr, "IndexError: pop from empty list\n");
+        exit(1);
     }
     list_list_int* d1 = create_list_list_int(4);
     append_list_list_int(d1, d);
