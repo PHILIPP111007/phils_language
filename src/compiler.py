@@ -4692,6 +4692,97 @@ class CCodeGenerator:
         """Генерирует вспомогательные функции для работы со строками"""
         helpers = []
 
+        if "list_str" not in self.generated_structures:
+            # 1. Сначала определим структуру list_str
+            helpers.append("""
+            // Структура для списка строк (list[str])
+            typedef struct {
+                char** data;     // Массив указателей на строки
+                int size;        // Текущее количество элементов
+                int capacity;    // Вместимость массива
+            } list_str;
+            """)
+
+        # 2. Функции для работы с list_str
+        if "create_list_str" not in self.generated_functions:
+            helpers.append("""
+            // Создание списка строк
+            list_str* create_list_str(int initial_capacity) {
+                list_str* list = (list_str*)malloc(sizeof(list_str));
+                if (!list) {
+                    fprintf(stderr, "Memory allocation failed for list_str\\n");
+                    exit(1);
+                }
+                list->data = (char**)malloc(initial_capacity * sizeof(char*));
+                if (!list->data) {
+                    fprintf(stderr, "Memory allocation failed for list_str data\\n");
+                    free(list);
+                    exit(1);
+                }
+                list->size = 0;
+                list->capacity = initial_capacity;
+                return list;
+            }
+            """)
+
+        if "append_list_str" not in self.generated_functions:
+            helpers.append("""
+            // Добавление строки в список (создается копия строки)
+            void append_list_str(list_str* list, const char* value) {
+                if (!list || !value) return;
+                
+                if (list->size >= list->capacity) {
+                    list->capacity = list->capacity == 0 ? 4 : list->capacity * 2;
+                    list->data = (char**)realloc(list->data, list->capacity * sizeof(char*));
+                    if (!list->data) {
+                        fprintf(stderr, "Memory reallocation failed for list_str\\n");
+                        exit(1);
+                    }
+                }
+                
+                // Создаем копию строки
+                char* copy = (char*)malloc(strlen(value) + 1);
+                if (!copy) {
+                    fprintf(stderr, "Memory allocation failed for string copy\\n");
+                    exit(1);
+                }
+                strcpy(copy, value);
+                list->data[list->size] = copy;
+                list->size++;
+            }
+            """)
+
+        if "free_list_str" not in self.generated_functions:
+            helpers.append("""
+            // Освобождение памяти списка строк
+            void free_list_str(list_str* list) {
+                if (list) {
+                    // Освобождаем все строки
+                    for (int i = 0; i < list->size; i++) {
+                        if (list->data[i]) {
+                            free(list->data[i]);
+                        }
+                    }
+                    // Освобождаем массив указателей
+                    free(list->data);
+                    // Освобождаем саму структуру
+                    free(list);
+                }
+            }
+            """)
+
+        if "get_list_str" not in self.generated_functions:
+            helpers.append("""
+            // Получение элемента списка строк по индексу
+            char* get_list_str(list_str* list, int index) {
+                if (!list || index < 0 || index >= list->size) {
+                    fprintf(stderr, "Index out of bounds in list_str\\n");
+                    exit(1);
+                }
+                return list->data[index];
+            }
+            """)
+
         helpers.append("""
         // Функция преобразования int в строку
         char* int_to_string(int value) {
@@ -4711,6 +4802,29 @@ class CCodeGenerator:
             return int_to_string(value);
         }
         """)
+
+        if "set_list_str" not in self.generated_functions:
+            helpers.append("""
+            // Установка элемента списка строк по индексу
+            void set_list_str(list_str* list, int index, const char* value) {
+                if (!list || !value || index < 0 || index >= list->size) {
+                    fprintf(stderr, "Index out of bounds in list_str\\n");
+                    exit(1);
+                }
+                // Освобождаем старую строку
+                if (list->data[index]) {
+                    free(list->data[index]);
+                }
+                // Создаем копию новой строки
+                char* copy = (char*)malloc(strlen(value) + 1);
+                if (!copy) {
+                    fprintf(stderr, "Memory allocation failed for string copy\\n");
+                    exit(1);
+                }
+                strcpy(copy, value);
+                list->data[index] = copy;
+            }
+            """)
 
         # 1. Функция upper
         helpers.append("""
