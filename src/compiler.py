@@ -393,8 +393,6 @@ class CCodeGenerator:
             self.generate_redeclaration(node)
         elif node_type == "delete":
             self.generate_delete(node)
-        elif node_type == "del_pointer":
-            self.generate_del_pointer(node)
         elif node_type == "assignment":
             self.generate_assignment(node)
         elif node_type == "function_call":
@@ -1076,42 +1074,6 @@ class CCodeGenerator:
                     self.add_line(f"{target} = NULL;")
                 else:
                     self.add_line(f"// {target} обнулена")
-
-    def generate_del_pointer(self, node: Dict):
-        """Генерирует код для del_pointer (удаление только указателя)"""
-        symbols = node.get("symbols", [])
-
-        for target in symbols:
-            # Помечаем переменную как удаленную (только указатель)
-            self.mark_variable_deleted(target, "pointer")
-
-            # Получаем информацию о переменной
-            var_info = self.get_variable_info(target)
-
-            if not var_info:
-                self.add_line(
-                    f"// ERROR: Переменная '{target}' не найдена для del_pointer"
-                )
-                continue
-
-            self.add_line(f"// del_pointer {target} (удаление только указателя)")
-
-            if var_info["is_pointer"]:
-                # Только обнуляем указатель, память не освобождаем
-                self.add_line(f"{target} = NULL;")
-                self.add_line(
-                    f"// Внимание: память, на которую указывал {target}, не освобождена!"
-                )
-            else:
-                # Если не указатель, обрабатываем как обычный del
-                self.add_line(
-                    f"// {target} не является указателем, применен как обычный del"
-                )
-                c_type = var_info["c_type"]
-                if c_type in ["int", "float", "double", "long"]:
-                    self.add_line(f"{target} = 0;")
-                elif c_type == "bool":
-                    self.add_line(f"{target} = false;")
 
     def generate_assignment(self, node: Dict):
         """Генерирует присваивание с поддержкой строковых операций"""

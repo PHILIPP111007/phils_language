@@ -488,9 +488,6 @@ class Parser:
                 elif key == "del":
                     parsed = self.parse_delete(line, current_scope)
                     return current_index + 1
-                elif key == "del_pointer":
-                    parsed = self.parse_del_pointer(line, current_scope)
-                    return current_index + 1
                 elif key == "return":
                     parsed = self.parse_return(line, current_scope)
                     return current_index + 1
@@ -2129,7 +2126,7 @@ class Parser:
         deleted = scope["symbol_table"].delete_symbol(name)
 
         if deleted:
-            # Добавляем флаг, что это полное удаление (не del_pointer)
+            # Добавляем флаг, что это полное удаление
             scope["graph"].append(
                 {
                     "node": "delete",
@@ -2146,41 +2143,6 @@ class Parser:
             )
 
         return deleted
-
-    def parse_del_pointer(self, line: str, scope: dict):
-        """Парсит оператор del_pointer"""
-        pattern = r"del_pointer\s+([a-zA-Z_][a-zA-Z0-9_]*)"
-        match = re.match(pattern, line)
-
-        if not match:
-            return False
-
-        name = match.group(1)
-
-        symbol = scope["symbol_table"].get_symbol(name)
-        if not symbol:
-            return False  # Переменная не существует или уже удалена
-
-        # ПОМЕЧАЕМ как удаленный указатель (но данные остаются)
-        scope["symbol_table"].delete_symbol(name)
-
-        # ИСПРАВЛЕНИЕ: Создаем узел del_pointer с правильными операциями
-        scope["graph"].append(
-            {
-                "node": "del_pointer",  # Важно: node должен быть "del_pointer", а не "delete"
-                "content": line,  # Сохраняем оригинальную строку "del_pointer x"
-                "symbols": [name],
-                "operations": [
-                    {
-                        "type": "DELETE_POINTER",
-                        "target": name,
-                    }  # DELETE_POINTER, а не DELETE_FULL
-                ],
-                "is_full_delete": False,  # Не полное удаление
-            }
-        )
-
-        return True
 
     def parse_return(self, line: str, scope: dict):
         """Парсит оператор return"""

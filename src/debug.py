@@ -214,25 +214,6 @@ class JSONValidator:
                     # Переменная помечается как удаленная
                     self.variable_states[key] = "deleted"
 
-            elif node_type == "del_pointer":  # НОВОЕ
-                symbols = node.get("symbols", [])
-                for symbol in symbols:
-                    key = (level, symbol)
-                    if key not in self.variable_history:
-                        self.variable_history[key] = []
-                    self.variable_history[key].append(
-                        {
-                            "action": "delete_pointer",
-                            "node_id": node_id,
-                            "content": node.get("content", ""),
-                            "timestamp": global_timestamp,
-                            "unique_id": f"{node_id}_{symbol}",
-                        }
-                    )
-                    global_timestamp += 1
-                    # При del_pointer помечаем как удаленный указатель, но данные остаются
-                    self.variable_states[key] = "pointer_deleted"
-
             elif node_type == "builtin_function_call":
                 func_name = node.get("function", "")
                 args = node.get("arguments", [])
@@ -634,35 +615,6 @@ class JSONValidator:
 
                 self.validate_delete(node, node_idx, scope_idx, symbol_table, level)
 
-            elif node_type == "del_pointer":
-                symbols = node.get("symbols", [])
-                for symbol in symbols:
-                    if symbol in variable_states:
-                        if variable_states[symbol] in ["deleted", "pointer_deleted"]:
-                            # Уже удалена
-                            self.add_error(
-                                f"указатель '{symbol}' уже был удален",
-                                scope_idx,
-                                node_idx,
-                            )
-                        else:
-                            # Помечаем как удаленный указатель
-                            variable_states[symbol] = "pointer_deleted"
-                            logger.debug(
-                                f"    Указатель '{symbol}' помечен как удаленный (данные сохранены)"
-                            )
-                    else:
-                        # Переменная не была объявлена в этом scope
-                        self.add_error(
-                            f"указатель '{symbol}' не был объявлен перед del_pointer",
-                            scope_idx,
-                            node_idx,
-                        )
-
-                self.validate_del_pointer(
-                    node, node_idx, scope_idx, symbol_table, level
-                )
-
             elif node_type == "builtin_function_call":
                 # Проверяем аргументы
                 func_name = node.get("function", "")
@@ -829,22 +781,12 @@ class JSONValidator:
                                 scope_idx,
                                 node_idx,
                             )
-                        elif variable_states[symbol] == "pointer_deleted":
-                            self.add_warning(
-                                f"чтение в переменную '{symbol}', которая была удалена через del_pointer",
-                                scope_idx,
-                                node_idx,
-                            )
                     else:
                         self.add_warning(
                             f"чтение в необъявленную переменную '{symbol}'",
                             scope_idx,
                             node_idx,
                         )
-
-                self.validate_dereference_read(
-                    node, node_idx, scope_idx, symbol_table, level
-                )
 
             elif node_type == "augmented_assignment":
                 symbols = node.get("symbols", [])
@@ -1444,24 +1386,6 @@ class JSONValidator:
                 # Помечаем как удаленную
                 self.variable_states[key] = "deleted"
                 logger.debug(f"    Переменная '{symbol}' помечена как удаленная")
-
-    def validate_del_pointer(
-        self, node: Dict, node_idx: int, scope_idx: int, symbol_table: Dict, level: int
-    ):
-        """Валидирует оператор del_pointer"""
-        symbols = node.get("symbols", [])
-
-        for symbol in symbols:
-            symbol_info = self.get_symbol_info(symbol, level)
-            if not symbol_info:
-                self.add_error(
-                    f"удаляемый указатель '{symbol}' не объявлен", scope_idx, node_idx
-                )
-            else:
-                if symbol_info.get("key") == "const":
-                    self.add_error(
-                        f"попытка удаления константы '{symbol}'", scope_idx, node_idx
-                    )
 
     def validate_unary_operation(
         self, op: Dict, node_idx: int, scope_idx: int, level: int
@@ -3054,7 +2978,7 @@ class JSONValidator:
                             pointer_declarations[symbols[0]] = node_idx
 
             # Отслеживаем удаление указателей
-            elif node_type in ["delete", "del_pointer"]:
+            elif node_type in ["delete"]:
                 symbols = node.get("symbols", [])
                 for symbol in symbols:
                     pointer_deletes.add(symbol)

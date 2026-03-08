@@ -3,7 +3,6 @@ KEYS = [
     "var",
     "def",
     "del",
-    "del_pointer",
     "return",
     "while",
     "for",
