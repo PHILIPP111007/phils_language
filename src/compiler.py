@@ -3561,6 +3561,8 @@ class CCodeGenerator:
                     compare_func = "compare_float"
                 elif element_type == "double":
                     compare_func = "compare_double"
+                elif element_type == "str":
+                    compare_func = "compare_string"
                 else:
                     # По умолчанию для неизвестных типов
                     compare_func = "compare_int"
@@ -5251,6 +5253,13 @@ class CCodeGenerator:
         if (double_a < double_b) return -1;
         if (double_a > double_b) return 1;
         return 0;
+    }
+    """)
+
+        # Для str
+        helpers.append("""
+    int compare_string(const void* a, const void* b) {
+        return strcmp(*(const char**)a, *(const char**)b);
     }
     """)
 
