@@ -9,6 +9,7 @@ def main() -> int:
     a = a.lower()
     a = a.format("world")
     var a_list: list[str] = a.split(" ")
+    a_list.sort()
 
     var b: int = 100
     var b1: str = str(b)
@@ -19,6 +20,7 @@ def main() -> int:
     var d: list[int] = []
     d.append(1)
     d.append(2)
+    d.sort()
     d.pop()
 
     var d1: list[list[int]] = []
@@ -38,6 +40,7 @@ int main(void) {
     a = string_lower(a);
     a = string_format(a, "world");
     list_str* a_list = string_split(a, " ");
+    qsort(a_list->data, a_list->size, sizeof(int), compare_string);
     int b = 100;
     char* b1 = builtin_str(b);
     char* c = "10";
@@ -45,6 +48,7 @@ int main(void) {
     list_int* d = create_list_int(4);
     append_list_int(d, 1);
     append_list_int(d, 2);
+    qsort(d->data, d->size, sizeof(int), compare_int);
     if (d && d->size > 0) {
         int temp_0 = d->data[d->size - 1];
         d->size--;
