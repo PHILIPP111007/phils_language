@@ -40,7 +40,7 @@ int main(void) {
     a = string_lower(a);
     a = string_format(a, "world");
     list_str* a_list = string_split(a, " ");
-    qsort(a_list->data, a_list->size, sizeof(int), compare_string);
+    qsort(a_list->data, a_list->size, sizeof(char*), compare_string);
     int b = 100;
     char* b1 = builtin_str(b);
     char* c = "10";
