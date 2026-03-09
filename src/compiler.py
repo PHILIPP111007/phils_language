@@ -3553,6 +3553,7 @@ class CCodeGenerator:
                 # Определяем тип элементов списка
                 match = re.match(r"list\[([^\]]+)\]", obj_type)
                 element_type = match.group(1) if match else "int"
+                c_element_type = self.map_type_to_c(element_type)
 
                 # Выбираем соответствующую функцию сравнения
                 if element_type == "int":
@@ -3568,7 +3569,7 @@ class CCodeGenerator:
                     compare_func = "compare_int"
 
                 self.add_line(
-                    f"qsort({object_name}->data, {object_name}->size, sizeof(int), {compare_func});"
+                    f"qsort({object_name}->data, {object_name}->size, sizeof({c_element_type}), {compare_func});"
                 )
 
             elif method_name == "reverse":
