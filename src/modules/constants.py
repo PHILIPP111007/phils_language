@@ -65,3 +65,6 @@ KNOWN_C_TYPES = set(
         "clock_t",
     ]
 )
+
+
+INITIAL_LIST_CAPACITY = 10

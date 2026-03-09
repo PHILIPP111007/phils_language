@@ -1,7 +1,7 @@
 import re
 from typing import Dict, List, Optional
 
-from src.modules.constants import KNOWN_C_TYPES
+from src.modules.constants import KNOWN_C_TYPES, INITIAL_LIST_CAPACITY
 from src.modules.logger import logger
 
 
@@ -806,13 +806,13 @@ class CCodeGenerator:
                 # Для повторного объявления используем присваивание
                 struct_name = self.generate_list_struct_name(var_type)
                 self.add_line(
-                    f"{var_name} = create_{struct_name}({max(len(items), 4)});"
+                    f"{var_name} = create_{struct_name}({max(len(items), INITIAL_LIST_CAPACITY)});"
                 )
             else:
                 # Для первого объявления генерируем объявление с инициализацией
                 struct_name = self.generate_list_struct_name(var_type)
                 self.add_line(
-                    f"{c_type} {var_name} = create_{struct_name}({max(len(items), 4)});"
+                    f"{c_type} {var_name} = create_{struct_name}({max(len(items), INITIAL_LIST_CAPACITY)});"
                 )
 
             # Добавляем элементы
@@ -910,7 +910,7 @@ class CCodeGenerator:
 
                 # Создаем внутренний список
                 self.add_line(
-                    f"{inner_struct_name}* {temp_name} = create_{inner_struct_name}({max(len(inner_items), 4)});"
+                    f"{inner_struct_name}* {temp_name} = create_{inner_struct_name}({max(len(inner_items), INITIAL_LIST_CAPACITY)});"
                 )
 
                 # Рекурсивно обрабатываем элементы внутреннего списка
@@ -1008,7 +1008,7 @@ class CCodeGenerator:
                 inner_c_type = f"{inner_struct_name}*"
 
                 self.add_line(
-                    f"{inner_c_type} {temp_name} = create_{inner_struct_name}({max(len(inner_items), 4)});"
+                    f"{inner_c_type} {temp_name} = create_{inner_struct_name}({max(len(inner_items), INITIAL_LIST_CAPACITY)});"
                 )
 
                 # Рекурсивно обрабатываем элементы внутреннего списка
@@ -1767,7 +1767,7 @@ class CCodeGenerator:
         if append_func_name not in self.generated_functions:
             append_func = f"void {append_func_name}({struct_name}* list, {element_type} value) {{\n"
             append_func += f"    if (list->size >= list->capacity) {{\n"
-            append_func += f"        list->capacity = list->capacity == 0 ? 4 : list->capacity * 2;\n"
+            append_func += f"        list->capacity = list->capacity == 0 ? {INITIAL_LIST_CAPACITY} : list->capacity * 2;\n"
             append_func += f"        list->data = realloc(list->data, list->capacity * sizeof({element_type}));\n"
             append_func += f"        if (!list->data) {{\n"
             append_func += f'            fprintf(stderr, "Memory reallocation failed for list\\n");\n'
@@ -1928,7 +1928,7 @@ class CCodeGenerator:
         if append_func_name not in self.generated_functions:
             append_func = f"void {append_func_name}({struct_name}* list, {element_type} value) {{\n"
             append_func += f"    if (list->size >= list->capacity) {{\n"
-            append_func += f"        list->capacity = list->capacity == 0 ? 4 : list->capacity * 2;\n"
+            append_func += f"        list->capacity = list->capacity == 0 ? {INITIAL_LIST_CAPACITY} : list->capacity * 2;\n"
             append_func += f"        list->data = realloc(list->data, list->capacity * sizeof({element_type}));\n"
             append_func += f"        if (!list->data) {{\n"
             append_func += f'            fprintf(stderr, "Memory reallocation failed for list\\n");\n'
@@ -2042,7 +2042,7 @@ class CCodeGenerator:
         if append_func_name not in self.generated_functions:
             append_func = f"void {append_func_name}({struct_name}* list, {element_type} value) {{\n"
             append_func += f"    if (list->size >= list->capacity) {{\n"
-            append_func += f"        list->capacity = list->capacity == 0 ? 4 : list->capacity * 2;\n"
+            append_func += f"        list->capacity = list->capacity == 0 ? {INITIAL_LIST_CAPACITY} : list->capacity * 2;\n"
             append_func += f"        list->data = realloc(list->data, list->capacity * sizeof({element_type}));\n"
             append_func += f"        if (!list->data) {{\n"
             append_func += f'            fprintf(stderr, "Memory reallocation failed for {struct_name}\\n");\n'
@@ -2156,9 +2156,7 @@ class CCodeGenerator:
             f"void append_{struct_name}({struct_name}* list, {element_type} value) {{\n"
         )
         append_func += f"    if (list->size >= list->capacity) {{\n"
-        append_func += (
-            f"        list->capacity = list->capacity == 0 ? 4 : list->capacity * 2;\n"
-        )
+        append_func += f"        list->capacity = list->capacity == 0 ? {INITIAL_LIST_CAPACITY} : list->capacity * 2;\n"
         append_func += f"        list->data = realloc(list->data, list->capacity * sizeof({element_type}));\n"
         append_func += f"        if (!list->data) {{\n"
         append_func += (
@@ -3693,7 +3691,7 @@ class CCodeGenerator:
                     )
                     self.indent_level += 1
                     self.add_line(
-                        f"{object_name}->capacity = {object_name}->capacity == 0 ? 4 : {object_name}->capacity * 2;"
+                        f"{object_name}->capacity = {object_name}->capacity == 0 ? {INITIAL_LIST_CAPACITY} : {object_name}->capacity * 2;"
                     )
                     self.add_line(
                         f"{object_name}->data = realloc({object_name}->data, {object_name}->capacity * sizeof(int));"
@@ -5911,7 +5909,7 @@ class CCodeGenerator:
 
         # Создаем новый список
         self.add_line(
-            f"{struct_name}* {var_name} = create_{struct_name}({max(len(items), 4)});"
+            f"{struct_name}* {var_name} = create_{struct_name}({max(len(items), INITIAL_LIST_CAPACITY)});"
         )
 
         # Добавляем элементы
