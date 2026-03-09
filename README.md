@@ -14,6 +14,12 @@ I'm creating this language for specialists working primarily with neural network
 pytest  --verbose
 ```
 
+## Benchmarks
+
+### Matmul
+
+<img src="images/matmul.png" alt="alt text" width="1000"/>
+
 ## Examples
 
 ### Imports
