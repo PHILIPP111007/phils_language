@@ -79,6 +79,7 @@ class CCodeGenerator:
         # Для отслеживания уже сгенерированных функций
         self.generated_functions = set()  # Имена уже сгенерированных функций
         self.generated_structures = set()  # Имена уже сгенерированных структур
+        self.global_init_nodes = []
 
     def reset(self):
         """Сброс состояния генератора"""
@@ -369,6 +370,13 @@ class CCodeGenerator:
         # 10. Генерируем все методы классов
         self.generate_all_methods(json_data)
 
+        for scope in json_data:
+            if scope.get("type") == "module":
+                for node in scope.get("graph", []):
+                    if node.get("node") == "declaration":
+                        # Это глобальная переменная
+                        self.generate_global_declaration(node)
+
         # 11. Генерируем код для каждой функции
         for scope in json_data:
             if scope.get("type") == "function" and not scope.get("is_stub", False):
@@ -444,6 +452,41 @@ class CCodeGenerator:
         else:
             logger.warning(f"Неизвестный тип узла: {node_type}")
             self.add_line(f"// Неизвестный узел: {node_type}")
+
+    def generate_global_declaration(self, node: Dict):
+        """Генерирует объявление глобальной переменной"""
+        var_name = node.get("var_name", "")
+        var_type = node.get("var_type", "")
+        expression_ast = node.get("expression_ast")
+
+        logger.debug(f"Генерация глобального объявления для {var_name}: {var_type}")
+
+        # Объявляем переменную в глобальном scope
+        self.declare_variable(var_name, var_type)
+        var_info = self.get_variable_info(var_name)
+
+        if not var_info:
+            return
+
+        c_type = var_info["c_type"]
+
+        # Если есть выражение инициализации
+        if expression_ast:
+            # Для глобальных переменных нужна константная инициализация
+            if expression_ast.get("type") == "literal":
+                expr = self.generate_expression(expression_ast)
+                self.add_line(f"{c_type} {var_name} = {expr};")
+            else:
+                # Для не-литералов оставляем только объявление
+                self.add_line(f"{c_type} {var_name};")
+                # Инициализация будет в main
+                self.global_init_nodes.append(node)
+        else:
+            # Объявление без инициализации
+            if c_type.endswith("*"):
+                self.add_line(f"{c_type} {var_name} = NULL;")
+            else:
+                self.add_line(f"{c_type} {var_name};")
 
     def generate_nested_index_assignment(self, node: Dict):
         """Генерирует код для многомерного индексного присваивания: A_data[0][0] = 10"""
