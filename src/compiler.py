@@ -1734,162 +1734,6 @@ class CCodeGenerator:
                 struct_name, element_type, element_py_type
             )
 
-        # 1. Функция создания
-        create_func_name = f"create_{struct_name}"
-        if create_func_name not in self.generated_functions:
-            create_func = (
-                f"{struct_name}* {create_func_name}(int initial_capacity) {{\n"
-            )
-            create_func += f"    {struct_name}* list = malloc(sizeof({struct_name}));\n"
-            create_func += f"    if (!list) {{\n"
-            create_func += (
-                f'        fprintf(stderr, "Memory allocation failed for list\\n");\n'
-            )
-            create_func += f"        exit(1);\n"
-            create_func += f"    }}\n"
-            create_func += (
-                f"    list->data = malloc(initial_capacity * sizeof({element_type}));\n"
-            )
-            create_func += f"    if (!list->data) {{\n"
-            create_func += f'        fprintf(stderr, "Memory allocation failed for list data\\n");\n'
-            create_func += f"        free(list);\n"
-            create_func += f"        exit(1);\n"
-            create_func += f"    }}\n"
-            create_func += f"    list->size = 0;\n"
-            create_func += f"    list->capacity = initial_capacity;\n"
-            create_func += f"    return list;\n"
-            create_func += f"}}\n\n"
-            self.generated_helpers.append(create_func)
-            self.generated_functions.add(create_func_name)
-
-        # 2. Функция добавления
-        append_func_name = f"append_{struct_name}"
-        if append_func_name not in self.generated_functions:
-            append_func = f"void {append_func_name}({struct_name}* list, {element_type} value) {{\n"
-            append_func += f"    if (list->size >= list->capacity) {{\n"
-            append_func += f"        list->capacity = list->capacity == 0 ? {INITIAL_LIST_CAPACITY} : list->capacity * 2;\n"
-            append_func += f"        list->data = realloc(list->data, list->capacity * sizeof({element_type}));\n"
-            append_func += f"        if (!list->data) {{\n"
-            append_func += f'            fprintf(stderr, "Memory reallocation failed for list\\n");\n'
-            append_func += f"            exit(1);\n"
-            append_func += f"        }}\n"
-            append_func += f"    }}\n"
-            append_func += f"    list->data[list->size] = value;\n"
-            append_func += f"    list->size++;\n"
-            append_func += f"}}\n\n"
-            self.generated_helpers.append(append_func)
-            self.generated_functions.add(append_func_name)
-
-        # 3. Функция len()
-        len_func_name = f"builtin_len_{struct_name}"
-        if len_func_name not in self.generated_functions:
-            len_func = f"int {len_func_name}({struct_name}* list) {{\n"
-            len_func += f"    if (!list) return 0;\n"
-            len_func += f"    return list->size;\n"
-            len_func += f"}}\n\n"
-            self.generated_helpers.append(len_func)
-            self.generated_functions.add(len_func_name)
-
-        # 4. Функция очистки
-        free_func_name = f"free_{struct_name}"
-        if free_func_name not in self.generated_functions:
-            free_func = f"void {free_func_name}({struct_name}* list) {{\n"
-            free_func += f"    if (list) {{\n"
-
-            # Если элементы - указатели на списки, освобождаем их
-            if element_py_type and element_py_type.startswith("list["):
-                inner_struct_name = self.generate_list_struct_name(element_py_type)
-                free_func += f"        for (int i = 0; i < list->size; i++) {{\n"
-                free_func += f"            if (list->data[i]) {{\n"
-                free_func += (
-                    f"                free_{inner_struct_name}(list->data[i]);\n"
-                )
-                free_func += f"            }}\n"
-                free_func += f"        }}\n"
-
-            free_func += f"        free(list->data);\n"
-            free_func += f"        free(list);\n"
-            free_func += f"    }}\n"
-            free_func += f"}}\n\n"
-            self.generated_helpers.append(free_func)
-            self.generated_functions.add(free_func_name)
-
-        # 5. Функция доступа к элементу
-        get_func_name = f"get_{struct_name}"
-        if get_func_name not in self.generated_functions:
-            get_func = (
-                f"{element_type} {get_func_name}({struct_name}* list, int index) {{\n"
-            )
-            get_func += f"    if (!list || index < 0 || index >= list->size) {{\n"
-            get_func += f'        fprintf(stderr, "Index out of bounds in list\\n");\n'
-            get_func += f"        exit(1);\n"
-            get_func += f"    }}\n"
-            get_func += f"    return list->data[index];\n"
-            get_func += f"}}\n\n"
-            self.generated_helpers.append(get_func)
-            self.generated_functions.add(get_func_name)
-
-        # 6. Функция установки элемента
-        set_func_name = f"set_{struct_name}"
-        if set_func_name not in self.generated_functions:
-            set_func = f"void {set_func_name}({struct_name}* list, int index, {element_type} value) {{\n"
-            set_func += f"    if (!list || index < 0 || index >= list->size) {{\n"
-            set_func += f'        fprintf(stderr, "Index out of bounds in list\\n");\n'
-            set_func += f"        exit(1);\n"
-            set_func += f"    }}\n"
-            set_func += f"    list->data[index] = value;\n"
-            set_func += f"}}\n\n"
-            self.generated_helpers.append(set_func)
-            self.generated_functions.add(set_func_name)
-
-        # 7. Функция slice для списка
-        slice_func_name = f"slice_{struct_name}"
-        if slice_func_name not in self.generated_functions:
-            slice_func = f"""{struct_name}* slice_{struct_name}({struct_name}* list, int start, int stop, int step) {{
-        if (!list) return NULL;
-        
-        // Нормализация индексов
-        if (start < 0) start = list->size + start;
-        if (stop < 0) stop = list->size + stop;
-        if (start < 0) start = 0;
-        if (stop > list->size) stop = list->size;
-        
-        // Вычисляем размер результата
-        int new_size;
-        if (step > 0) {{
-            if (start >= stop) new_size = 0;
-            else new_size = (stop - start + step - 1) / step;
-        }} else if (step < 0) {{
-            if (start <= stop) new_size = 0;
-            else new_size = (start - stop - step - 1) / (-step);
-        }} else {{
-            fprintf(stderr, "ValueError: slice step cannot be zero\\n");
-            exit(1);
-        }}
-        
-        // Создаем новый список
-        {struct_name}* result = create_{struct_name}(new_size);
-        
-        // Копируем элементы с учетом шага
-        if (step > 0) {{
-            for (int i = start; i < stop && result->size < new_size; i += step) {{
-                if (i >= 0 && i < list->size) {{
-                    append_{struct_name}(result, list->data[i]);
-                }}
-            }}
-        }} else {{
-            for (int i = start; i > stop && result->size < new_size; i += step) {{
-                if (i >= 0 && i < list->size) {{
-                    append_{struct_name}(result, list->data[i]);
-                }}
-            }}
-        }}
-        
-        return result;
-    }}\n\n"""
-            self.generated_helpers.append(slice_func)
-            self.generated_functions.add(slice_func_name)
-
     def _generate_standard_list_functions(
         self, struct_name: str, element_type: str, element_py_type: str = None
     ):
@@ -1898,46 +1742,58 @@ class CCodeGenerator:
         # 1. Функция создания
         create_func_name = f"create_{struct_name}"
         if create_func_name not in self.generated_functions:
-            create_func = (
-                f"{struct_name}* {create_func_name}(int initial_capacity) {{\n"
-            )
-            create_func += f"    {struct_name}* list = malloc(sizeof({struct_name}));\n"
-            create_func += f"    if (!list) {{\n"
-            create_func += (
-                f'        fprintf(stderr, "Memory allocation failed for list\\n");\n'
-            )
-            create_func += f"        exit(1);\n"
-            create_func += f"    }}\n"
-            create_func += (
-                f"    list->data = malloc(initial_capacity * sizeof({element_type}));\n"
-            )
-            create_func += f"    if (!list->data) {{\n"
-            create_func += f'        fprintf(stderr, "Memory allocation failed for list data\\n");\n'
-            create_func += f"        free(list);\n"
-            create_func += f"        exit(1);\n"
-            create_func += f"    }}\n"
-            create_func += f"    list->size = 0;\n"
-            create_func += f"    list->capacity = initial_capacity;\n"
-            create_func += f"    return list;\n"
-            create_func += f"}}\n\n"
+            create_func = f"""{struct_name}* {create_func_name}(int initial_capacity) {{
+            // Минимальный размер для предотвращения частых реаллокаций
+            if (initial_capacity < 16) initial_capacity = 16;
+            
+            // Выравнивание для SIMD (кратно 8 для AVX2)
+            initial_capacity = (initial_capacity + 7) & ~7;
+            
+            {struct_name}* list = malloc(sizeof({struct_name}));
+            if (!list) {{
+                fprintf(stderr, "Memory allocation failed for list\\n");
+                exit(1);
+            }}
+            
+            // Используем calloc вместо malloc для инициализации нулями
+            list->data = ({element_type}*)calloc(initial_capacity, sizeof({element_type}));
+            if (!list->data) {{
+                fprintf(stderr, "Memory allocation failed for list data\\n");
+                free(list);
+                exit(1);
+            }}
+            
+            list->size = 0;
+            list->capacity = initial_capacity;
+            return list;
+        }}
+            """
             self.generated_helpers.append(create_func)
             self.generated_functions.add(create_func_name)
 
         # 2. Функция добавления
         append_func_name = f"append_{struct_name}"
         if append_func_name not in self.generated_functions:
-            append_func = f"void {append_func_name}({struct_name}* list, {element_type} value) {{\n"
-            append_func += f"    if (list->size >= list->capacity) {{\n"
-            append_func += f"        list->capacity = list->capacity == 0 ? {INITIAL_LIST_CAPACITY} : list->capacity * 2;\n"
-            append_func += f"        list->data = realloc(list->data, list->capacity * sizeof({element_type}));\n"
-            append_func += f"        if (!list->data) {{\n"
-            append_func += f'            fprintf(stderr, "Memory reallocation failed for list\\n");\n'
-            append_func += f"            exit(1);\n"
-            append_func += f"        }}\n"
-            append_func += f"    }}\n"
-            append_func += f"    list->data[list->size] = value;\n"
-            append_func += f"    list->size++;\n"
-            append_func += f"}}\n\n"
+            append_func = f"""void {append_func_name}({struct_name}* list, {element_type} value) {{
+            if (list->size >= list->capacity) {{
+                // Увеличиваем capacity с запасом и выравниванием
+                int new_capacity = list->capacity < 64 ? 64 : list->capacity * 2;
+                new_capacity = (new_capacity + 7) & ~7;  // Выравнивание для SIMD
+                
+                {element_type}* new_data = ({element_type}*)realloc(list->data, new_capacity * sizeof({element_type}));
+                if (!new_data) {{
+                    fprintf(stderr, "Memory reallocation failed for list\\n");
+                    exit(1);
+                }}
+                
+                list->data = new_data;
+                list->capacity = new_capacity;
+            }}
+            
+            list->data[list->size++] = value;
+        }}
+
+            """
             self.generated_helpers.append(append_func)
             self.generated_functions.add(append_func_name)
 
@@ -2003,37 +1859,91 @@ class CCodeGenerator:
             self.generated_helpers.append(set_func)
             self.generated_functions.add(set_func_name)
 
+        # 7. Функция slice для списка
+        slice_func_name = f"slice_{struct_name}"
+        if slice_func_name not in self.generated_functions:
+            slice_func = f"""{struct_name}* slice_{struct_name}({struct_name}* list, int start, int stop, int step) {{
+                if (!list) return NULL;
+                
+                // Нормализация индексов
+                if (start < 0) start = list->size + start;
+                if (stop < 0) stop = list->size + stop;
+                if (start < 0) start = 0;
+                if (stop > list->size) stop = list->size;
+                
+                // Вычисляем размер результата
+                int new_size;
+                if (step > 0) {{
+                    if (start >= stop) new_size = 0;
+                    else new_size = (stop - start + step - 1) / step;
+                }} else if (step < 0) {{
+                    if (start <= stop) new_size = 0;
+                    else new_size = (start - stop - step - 1) / (-step);
+                }} else {{
+                    fprintf(stderr, "ValueError: slice step cannot be zero\\n");
+                    exit(1);
+                }}
+                
+                // Создаем новый список
+                {struct_name}* result = create_{struct_name}(new_size);
+                
+                // Копируем элементы с учетом шага
+                if (step > 0) {{
+                    for (int i = start; i < stop && result->size < new_size; i += step) {{
+                        if (i >= 0 && i < list->size) {{
+                            append_{struct_name}(result, list->data[i]);
+                        }}
+                    }}
+                }} else {{
+                    for (int i = start; i > stop && result->size < new_size; i += step) {{
+                        if (i >= 0 && i < list->size) {{
+                            append_{struct_name}(result, list->data[i]);
+                        }}
+                    }}
+                }}
+                
+                return result;
+            }}\n\n
+            """
+            self.generated_helpers.append(slice_func)
+            self.generated_functions.add(slice_func_name)
+
     def _generate_generic_c_list_functions(
         self, struct_name: str, element_type: str, element_py_type: str
     ):
         """Генерирует универсальные функции для списков C типов (без дублирования)"""
 
         # Проверяем, не генерировали ли уже эти функции
-        base_name = struct_name
 
         # 1. Функция создания
         create_func_name = f"create_{struct_name}"
         if create_func_name not in self.generated_functions:
-            create_func = (
-                f"{struct_name}* {create_func_name}(int initial_capacity) {{\n"
-            )
-            create_func += f"    {struct_name}* list = malloc(sizeof({struct_name}));\n"
-            create_func += f"    if (!list) {{\n"
-            create_func += f'        fprintf(stderr, "Memory allocation failed for {struct_name}\\n");\n'
-            create_func += f"        exit(1);\n"
-            create_func += f"    }}\n"
-            create_func += (
-                f"    list->data = malloc(initial_capacity * sizeof({element_type}));\n"
-            )
-            create_func += f"    if (!list->data) {{\n"
-            create_func += f'        fprintf(stderr, "Memory allocation failed for {struct_name} data\\n");\n'
-            create_func += f"        free(list);\n"
-            create_func += f"        exit(1);\n"
-            create_func += f"    }}\n"
-            create_func += f"    list->size = 0;\n"
-            create_func += f"    list->capacity = initial_capacity;\n"
-            create_func += f"    return list;\n"
-            create_func += f"}}\n\n"
+            create_func = f"""{struct_name}* {create_func_name}(int initial_capacity) {{
+            // Минимальный размер для предотвращения частых реаллокаций
+            if (initial_capacity < 16) initial_capacity = 16;
+            
+            // Выравнивание для SIMD (кратно 8 для AVX2)
+            initial_capacity = (initial_capacity + 7) & ~7;
+            
+            {struct_name}* list = malloc(sizeof({struct_name}));
+            if (!list) {{
+                fprintf(stderr, "Memory allocation failed for list\\n");
+                exit(1);
+            }}
+            
+            // Используем calloc вместо malloc для инициализации нулями
+            list->data = ({element_type}*)calloc(initial_capacity, sizeof({element_type}));
+            if (!list->data) {{
+                fprintf(stderr, "Memory allocation failed for list data\\n");
+                free(list);
+                exit(1);
+            }}
+            
+            list->size = 0;
+            list->capacity = initial_capacity;
+            return list;
+        }}
+            """
             self.generated_helpers.append(create_func)
             self.generated_functions.add(create_func_name)
 
@@ -2117,225 +2027,6 @@ class CCodeGenerator:
             get_func += f"}}\n\n"
             self.generated_helpers.append(get_func)
             self.generated_functions.add(get_func_name)
-
-    def generate_list_functions(
-        self, struct_name: str, element_type: str, element_py_type: str = None
-    ):
-        """Генерирует функции для работы со списком"""
-
-        logger.debug(
-            f"DEBUG generate_list_functions: struct_name={struct_name}, element_type={element_type}"
-        )
-
-        # Функция создания
-        create_func = f"{struct_name}* create_{struct_name}(int initial_capacity) {{\n"
-        create_func += f"    {struct_name}* list = malloc(sizeof({struct_name}));\n"
-        create_func += f"    if (!list) {{\n"
-        create_func += (
-            f'        fprintf(stderr, "Memory allocation failed for list\\n");\n'
-        )
-        create_func += f"        exit(1);\n"
-        create_func += f"    }}\n"
-        create_func += (
-            f"    list->data = malloc(initial_capacity * sizeof({element_type}));\n"
-        )
-        create_func += f"    if (!list->data) {{\n"
-        create_func += (
-            f'        fprintf(stderr, "Memory allocation failed for list data\\n");\n'
-        )
-        create_func += f"        free(list);\n"
-        create_func += f"        exit(1);\n"
-        create_func += f"    }}\n"
-        create_func += f"    list->size = 0;\n"
-        create_func += f"    list->capacity = initial_capacity;\n"
-        create_func += f"    return list;\n"
-        create_func += f"}}\n\n"
-
-        # Функция добавления
-        append_func = (
-            f"void append_{struct_name}({struct_name}* list, {element_type} value) {{\n"
-        )
-        append_func += f"    if (list->size >= list->capacity) {{\n"
-        append_func += f"        list->capacity = list->capacity == 0 ? {INITIAL_LIST_CAPACITY} : list->capacity * 2;\n"
-        append_func += f"        list->data = realloc(list->data, list->capacity * sizeof({element_type}));\n"
-        append_func += f"        if (!list->data) {{\n"
-        append_func += (
-            f'            fprintf(stderr, "Memory reallocation failed for list\\n");\n'
-        )
-        append_func += f"            exit(1);\n"
-        append_func += f"        }}\n"
-        append_func += f"    }}\n"
-        append_func += f"    list->data[list->size] = value;\n"
-        append_func += f"    list->size++;\n"
-        append_func += f"}}\n\n"
-
-        # Функция len()
-        len_func = f"int builtin_len_{struct_name}({struct_name}* list) {{\n"
-        len_func += f"    if (!list) return 0;\n"
-        len_func += f"    return list->size;\n"
-        len_func += f"}}\n\n"
-
-        # Функция очистки
-        free_func = f"void free_{struct_name}({struct_name}* list) {{\n"
-        free_func += f"    if (list) {{\n"
-
-        # Если элементы - указатели на списки, освобождаем их
-        if element_py_type and element_py_type.startswith("list["):
-            inner_struct_name = self.generate_list_struct_name(element_py_type)
-            free_func += f"        for (int i = 0; i < list->size; i++) {{\n"
-            free_func += f"            if (list->data[i]) {{\n"
-            free_func += f"                free_{inner_struct_name}(list->data[i]);\n"
-            free_func += f"            }}\n"
-            free_func += f"        }}\n"
-
-        free_func += f"        free(list->data);\n"
-        free_func += f"        free(list);\n"
-        free_func += f"    }}\n"
-        free_func += f"}}\n\n"
-
-        # Добавляем все функции
-        self.generated_helpers.append(create_func)
-        self.generated_helpers.append(append_func)
-        self.generated_helpers.append(len_func)
-        self.generated_helpers.append(free_func)
-
-        # Добавляем функцию получения по индексу
-        get_func = f"""
-            {element_type} get_{struct_name}({struct_name}* list, int index) {{
-                if (!list || index < 0 || index >= list->size) {{
-                    fprintf(stderr, "IndexError: list index out of range\\n");
-                    exit(1);
-                }}
-                return list->data[index];
-            }}
-        """
-        self.generated_helpers.append(get_func)
-
-        # Добавляем функцию установки по индексу
-        set_func = f"""
-            void set_{struct_name}({struct_name}* list, int index, {element_type} value) {{
-                if (!list || index < 0 || index >= list->size) {{
-                    fprintf(stderr, "IndexError: list index out of range\\n");
-                    exit(1);
-                }}
-                list->data[index] = value;
-            }}
-        """
-        self.generated_helpers.append(set_func)
-
-        # Функция получения элемента
-        get_func = f"""
-    {element_type} get_{struct_name}({struct_name}* list, int index) {{
-        if (!list || index < 0 || index >= list->size) {{
-            fprintf(stderr, "IndexError: list index out of range\\n");
-            exit(1);
-        }}
-        return list->data[index];
-    }}
-"""
-        self.generated_helpers.append(get_func)
-
-        # Функция установки элемента
-        set_func = f"""
-    void set_{struct_name}({struct_name}* list, int index, {element_type} value) {{
-        if (!list || index < 0 || index >= list->size) {{
-            fprintf(stderr, "IndexError: list index out of range\\n");
-            exit(1);
-        }}
-        list->data[index] = value;
-    }}
-"""
-        self.generated_helpers.append(set_func)
-
-        # Функция среза
-        slice_func = f"""
-    {struct_name}* slice_{struct_name}({struct_name}* list, int start, int stop, int step) {{
-        if (!list) return NULL;
-        
-        // Нормализация индексов
-        if (start < 0) start = list->size + start;
-        if (stop < 0) stop = list->size + stop;
-        if (start < 0) start = 0;
-        if (stop > list->size) stop = list->size;
-        
-        // Вычисляем размер результата
-        int new_size;
-        if (step > 0) {{
-            if (start >= stop) new_size = 0;
-            else new_size = (stop - start + step - 1) / step;
-        }} else if (step < 0) {{
-            if (start <= stop) new_size = 0;
-            else new_size = (start - stop - step - 1) / (-step);
-        }} else {{
-            fprintf(stderr, "ValueError: slice step cannot be zero\\n");
-            exit(1);
-        }}
-        
-        {struct_name}* result = create_{struct_name}(new_size);
-        
-        if (step > 0) {{
-            for (int i = start; i < stop; i += step) {{
-                if (i >= 0 && i < list->size) {{
-                    append_{struct_name}(result, list->data[i]);
-                }}
-            }}
-        }} else {{
-            for (int i = start; i > stop; i += step) {{
-                if (i >= 0 && i < list->size) {{
-                    append_{struct_name}(result, list->data[i]);
-                }}
-            }}
-        }}
-        
-        return result;
-    }}
-"""
-        self.generated_helpers.append(slice_func)
-
-        # ДОБАВЬТЕ эту функцию:
-        slice_func = f"""
-    {struct_name}* slice_{struct_name}({struct_name}* list, int start, int stop, int step) {{
-        if (!list) return NULL;
-        
-        // Нормализация индексов
-        if (start < 0) start = list->size + start;
-        if (stop < 0) stop = list->size + stop;
-        if (start < 0) start = 0;
-        if (stop > list->size) stop = list->size;
-        
-        // Вычисляем размер результата
-        int new_size;
-        if (step > 0) {{
-            if (start >= stop) new_size = 0;
-            else new_size = (stop - start + step - 1) / step;
-        }} else if (step < 0) {{
-            if (start <= stop) new_size = 0;
-            else new_size = (start - stop - step - 1) / (-step);
-        }} else {{
-            fprintf(stderr, "ValueError: slice step cannot be zero\\n");
-            exit(1);
-        }}
-        
-        {struct_name}* result = create_{struct_name}(new_size);
-        
-        if (step > 0) {{
-            for (int i = start; i < stop; i += step) {{
-                if (i >= 0 && i < list->size) {{
-                    append_{struct_name}(result, list->data[i]);
-                }}
-            }}
-        }} else {{
-            for (int i = start; i > stop; i += step) {{
-                if (i >= 0 && i < list->size) {{
-                    append_{struct_name}(result, list->data[i]);
-                }}
-            }}
-        }}
-        
-        return result;
-    }}
-"""
-        self.generated_helpers.append(slice_func)
 
     def generate_helpers_section(self):
         """Генерирует секцию с вспомогательными функциями и структурами в правильном порядке"""
