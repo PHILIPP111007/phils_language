@@ -46,7 +46,6 @@ DATA_TYPES = [
 
 METHOD_DECORATORS = ["@staticmethod", "@classmethod"]
 
-
 KNOWN_C_TYPES = set(
     [
         "int",
@@ -66,5 +65,11 @@ KNOWN_C_TYPES = set(
     ]
 )
 
+DEFAULT_C_IMPORTS = [
+    "#include <stdio.h>",
+    "#include <stdlib.h>",
+    "#include <string.h>",
+    "#include <stdbool.h>",
+]
 
 INITIAL_LIST_CAPACITY = 4

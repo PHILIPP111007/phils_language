@@ -1,7 +1,11 @@
 import re
 from typing import Dict, List, Optional
 
-from src.modules.constants import KNOWN_C_TYPES, INITIAL_LIST_CAPACITY
+from src.modules.constants import (
+    KNOWN_C_TYPES,
+    INITIAL_LIST_CAPACITY,
+    DEFAULT_C_IMPORTS,
+)
 from src.modules.logger import logger
 
 
@@ -1457,6 +1461,9 @@ class CCodeGenerator:
 
     def generate_c_imports(self):
         """Генерирует #include директивы"""
+        for lib in DEFAULT_C_IMPORTS:
+            self.add_line(lib)
+
         seen = set()
         for c_import in self.c_imports:
             header = c_import.get("header", "")
