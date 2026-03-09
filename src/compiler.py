@@ -2291,8 +2291,12 @@ class CCodeGenerator:
             left_is_string = self._is_string_expression(left_ast)
             right_is_string = self._is_string_expression(right_ast)
 
+            if operator == "==" and (left_is_string or right_is_string):
+                return f"(strcmp({left}, {right}) == 0)"
+            elif operator == "!=" and (left_is_string or right_is_string):
+                return f"(strcmp({left}, {right}) != 0)"
             # Для сложения строк используем временную переменную
-            if operator == "+" and (left_is_string or right_is_string):
+            elif operator == "+" and (left_is_string or right_is_string):
                 # Создаем временную переменную для результата
                 temp_var = self.generate_temporary_var("str")
 
