@@ -437,12 +437,13 @@ class CCodeGenerator:
             self.generate_method_call(node)
         elif node_type == "static_method_call":  # ДОБАВЬТЕ ЭТО!
             self.generate_object_method_call(node)
-        elif node_type == "index_assignment":  # НОВОЕ: присваивание по индексу
+        elif node_type in [
+            "index_assignment",
+            "nested_index_assignment",
+        ]:  # НОВОЕ: присваивание по индексу
             self.generate_index_assignment(node)
         elif node_type == "slice_assignment":  # НОВОЕ: присваивание среза
             self.generate_slice_assignment(node)
-        elif node_type == "nested_index_assignment":
-            self.generate_nested_index_assignment(node)
         elif (
             node_type == "augmented_index_assignment"
         ):  # НОВОЕ: составное присваивание по индексу
@@ -2558,36 +2559,66 @@ class CCodeGenerator:
             return f"{var_expr}[{index_expr}]"
 
     def _generate_nested_index_access(self, ast: Dict) -> str:
-        """Генерирует код для вложенной индексации любой глубины"""
-        logger.debug(f"_generate_nested_index_access: {ast}")
+        """Генерирует выражение для вложенной индексации (для использования в выражениях)"""
+        logger.debug(f"_generate_nested_index_access_expr: {ast}")
 
-        # Собираем все индексы рекурсивно
+        # Собираем все индексы
         indices = []
         current = ast
         var_name = None
 
         while True:
             if current.get("type") == "nested_index_access":
-                index_expr = self.generate_expression(current.get("index", {}))
-                indices.append(index_expr)
+                # Добавляем текущий индекс
+                indices.append(self.generate_expression(current.get("index", {})))
+                # Переходим к base
                 current = current.get("base", {})
             elif current.get("type") == "index_access":
-                index_expr = self.generate_expression(current.get("index", {}))
-                indices.append(index_expr)
-                current = current.get("variable", {})
+                # Добавляем индекс
+                indices.append(self.generate_expression(current.get("index", {})))
+                # Получаем переменную
+                var_node = current.get("variable", {})
+
+                # Извлекаем имя переменной из вложенной структуры
+                if isinstance(var_node, dict):
+                    if var_node.get("type") == "index_access":
+                        # Это вложенный index_access, продолжаем
+                        current = var_node
+                        continue
+                    elif var_node.get("type") == "variable":
+                        # Это конечная переменная
+                        var_name = var_node.get("value", "")
+                        if not var_name:
+                            var_name = var_node.get("name", "")
+                        break
+                    else:
+                        # Пробуем другие поля
+                        var_name = (
+                            var_node.get("value", "")
+                            or var_node.get("name", "")
+                            or str(var_node)
+                        )
+                        break
+                else:
+                    var_name = str(var_node)
+                    break
             elif current.get("type") == "variable":
-                var_name = current.get("value", "")
+                # Прямой узел переменной
+                var_name = (
+                    current.get("value", "") or current.get("name", "") or str(current)
+                )
                 break
             else:
-                # Если дошли до чего-то другого
+                # Если ничего не подошло
                 var_name = str(current)
                 break
 
-        # Индексы собраны в обратном порядке (от последнего к первому)
+        # Индексы собраны в обратном порядке
         indices.reverse()
-        logger.debug(f"  var_name={var_name}, indices={indices}")
+        logger.debug(f"var_name={var_name}, indices={indices}")
 
-        if not var_name:
+        if not var_name or not isinstance(var_name, str):
+            logger.error(f"Invalid var_name: {var_name}")
             return "0"
 
         var_info = self.get_variable_info(var_name)
@@ -2603,25 +2634,16 @@ class CCodeGenerator:
         result = var_name
         current_type = py_type
 
-        for i, idx in enumerate(indices):
+        for idx in indices:
             if current_type.startswith("list["):
-                # Определяем имя структуры для текущего уровня
                 struct_name = self.generate_list_struct_name(current_type)
-
-                if i == 0:
-                    result = f"get_{struct_name}({result}, {idx})"
-                else:
-                    result = f"get_{struct_name}({result}, {idx})"
+                result = f"get_{struct_name}({result}, {idx})"
 
                 # Обновляем текущий тип для следующего уровня
-                # Убираем внешний list[]
-                inner = current_type[5:-1]  # list[X] -> X
-                current_type = inner
+                current_type = current_type[5:-1]  # list[X] -> X
             else:
-                # Достигли не-списка
                 result += f"[{idx}]"
 
-        logger.debug(f"  результат: {result}")
         return result
 
     def _generate_complex_attribute_access(self, ast: Dict) -> str:
@@ -5446,6 +5468,30 @@ class CCodeGenerator:
         variable = node.get("variable", "")
         index_ast = node.get("index", {})
         value_ast = node.get("value", {})
+        node_type = node.get("node")
+
+        # Проверяем по node_type
+        if node_type == "nested_index_assignment":
+            print(
+                "  -> это nested_index_assignment, вызываем _generate_nested_index_assignment"
+            )
+            self._generate_nested_index_assignment(node)
+            return
+
+        # Проверяем, не является ли переменная словарем с индексами
+        if isinstance(variable, dict):
+            var_type = variable.get("type", "")
+            print(f"variable is dict with type: {var_type}")
+            if var_type in [
+                "nested_index_access",
+                "nested_index_assignment",
+                "index_access",
+            ]:
+                print(
+                    "  -> это вложенная индексация, вызываем _generate_nested_index_assignment"
+                )
+                self._generate_nested_index_assignment(node)
+                return
 
         index_expr = self.generate_expression(index_ast)
         value_expr = self.generate_expression(value_ast)
@@ -5461,13 +5507,104 @@ class CCodeGenerator:
                     f"set_{struct_name}({variable}, {index_expr}, {value_expr});"
                 )
             elif py_type.startswith("tuple["):
-                # Кортежи неизменяемы, но все равно генерируем код
                 struct_name = self.generate_tuple_struct_name(py_type)
                 self.add_line(
                     f"{variable}.data[{index_expr}] = {value_expr}; // Note: tuples are immutable in Python"
                 )
             else:
                 self.add_line(f"{variable}[{index_expr}] = {value_expr};")
+
+    def _generate_nested_index_assignment(self, node: Dict):
+        """Генерирует присваивание для вложенной индексации любой глубины"""
+        logger.debug(f"_generate_nested_index_assignment: {node}")
+
+        print("\n--- _generate_nested_index_assignment ---")
+        print(f"node: {node}")
+
+        # Получаем данные из узла
+        var_name = node.get("variable", "")
+        indices_ast = node.get("indices", [])
+        value_ast = node.get("value", {})
+
+        print(f"var_name: {var_name}")
+        print(f"indices_ast: {indices_ast}")
+        print(f"value_ast: {value_ast}")
+
+        if not var_name or not indices_ast:
+            print("  ERROR: no var_name or indices")
+            return
+
+        # Генерируем выражения для всех индексов
+        indices = []
+        for idx_ast in indices_ast:
+            indices.append(self.generate_expression(idx_ast))
+
+        print(f"  indices expressions: {indices}")
+
+        var_info = self.get_variable_info(var_name)
+        if not var_info:
+            print(f"  ERROR: no var_info for {var_name}")
+            return
+
+        py_type = var_info.get("py_type", "")
+        value_expr = self.generate_expression(value_ast)
+
+        print(f"  py_type: {py_type}")
+        print(f"  value_expr: {value_expr}")
+
+        # Если глубина = 1, используем простую set_функцию
+        if len(indices) == 1:
+            if py_type.startswith("list["):
+                struct_name = self.generate_list_struct_name(py_type)
+                self.add_line(
+                    f"set_{struct_name}({var_name}, {indices[0]}, {value_expr});"
+                )
+            else:
+                self.add_line(f"{var_name}[{indices[0]}] = {value_expr};")
+            return
+
+        # Для глубины > 1 нужно дойти до последнего уровня и там установить значение
+        current_var = var_name
+        current_type = py_type
+
+        # Проходим все уровни КРОМЕ ПОСЛЕДНЕГО, чтобы получить список последнего уровня
+        for i, idx in enumerate(indices[:-1]):  # Все кроме последнего индекса
+            if current_type.startswith("list["):
+                struct_name = self.generate_list_struct_name(current_type)
+
+                # Определяем тип следующего уровня
+                inner_type = current_type[5:-1]  # list[X] -> X
+
+                # Создаем временную переменную для следующего уровня
+                temp_var = self.generate_temporary_var(f"level_{i}")
+
+                # Определяем C тип для временной переменной
+                inner_struct_name = self.generate_list_struct_name(inner_type)
+                c_type = f"{inner_struct_name}*"
+
+                # Получаем вложенный список
+                self.add_line(
+                    f"{c_type} {temp_var} = get_{struct_name}({current_var}, {idx});"
+                )
+
+                # Обновляем текущие переменные для следующей итерации
+                current_var = temp_var
+                current_type = inner_type
+            else:
+                self.add_line(f"// ERROR: Too many indices for type {py_type}")
+                return
+
+        # Теперь current_var указывает на список последнего уровня
+        # Устанавливаем значение на последнем уровне
+        last_idx = indices[-1]
+
+        if current_type.startswith("list["):
+            struct_name = self.generate_list_struct_name(current_type)
+            self.add_line(
+                f"set_{struct_name}({current_var}, {last_idx}, {value_expr});"
+            )
+        else:
+            self.add_line(f"{current_var}[{last_idx}] = {value_expr};")
 
     def generate_slice_assignment(self, node: Dict):
         """Генерирует присваивание среза: list[start:stop] = values"""

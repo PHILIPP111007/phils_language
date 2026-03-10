@@ -229,3 +229,56 @@ int main(void) {
 }
 """
     run(P, C)
+
+
+def test_list_indexes():
+    P = r"""
+def main() -> int:
+    var A: list[list[list[int]]] = []
+    var a: list[list[int]] = []
+    var a1: list[int] = [1, 2, 3, 4, 5]
+
+    a.append(a1)
+    A.append(a)
+
+    a1[0] = 100
+    a[0][0] = 100
+    A[0][0][0] = 100 + 1
+
+    var b: int = A[0][0][0]
+    print(b)
+
+    b = A[0][0][0] + A[0][0][1]
+    A[0][0][2] = A[0][0][0] + A[0][0][1]
+
+    return 0
+"""
+
+    C = r"""
+int main(void) {
+    list_list_list_int* A = create_list_list_list_int(4);
+    list_list_int* a = create_list_list_int(4);
+    list_int* a1 = create_list_int(5);
+    append_list_int(a1, 1);
+    append_list_int(a1, 2);
+    append_list_int(a1, 3);
+    append_list_int(a1, 4);
+    append_list_int(a1, 5);
+    append_list_list_int(a, a1);
+    append_list_list_list_int(A, a);
+    set_list_int(a1, 0, 100);
+    list_int* temp_0 = get_list_list_int(a, 0);
+    set_list_int(temp_0, 0, 100);
+    list_list_int* temp_1 = get_list_list_list_int(A, 0);
+    list_int* temp_2 = get_list_list_int(temp_1, 0);
+    set_list_int(temp_2, 0, (100 + 1));
+    int b = get_list_int(get_list_list_int(get_list_list_list_int(A, 0), 0), 0);
+    printf("%d\n", b);
+    b = (get_list_int(get_list_list_int(get_list_list_list_int(A, 0), 0), 0) + get_list_int(get_list_list_int(get_list_list_list_int(A, 0), 0), 1));
+    list_list_int* temp_3 = get_list_list_list_int(A, 0);
+    list_int* temp_4 = get_list_list_int(temp_3, 0);
+    set_list_int(temp_4, 2, (get_list_int(get_list_list_int(get_list_list_list_int(A, 0), 0), 0) + get_list_int(get_list_list_int(get_list_list_list_int(A, 0), 0), 1)));
+    return 0;
+}
+"""
+    run(P, C)
