@@ -169,9 +169,7 @@ class Matrix:
         return self.data[i * self.cols + j]
 
     def set(self, i: int, j: int, value: int) -> None:
-        var data: list[int] = self.data
-        data[i * self.cols + j] = value
-        self.data = data
+        self.data[i * self.cols + j] = value
 
 
 def matmul(A: Matrix, B: Matrix, C: Matrix) -> None:
@@ -189,11 +187,7 @@ def matmul(A: Matrix, B: Matrix, C: Matrix) -> None:
     for i in range(rows_A):
         for k in range(cols_A):
             var A_ik: int = A.get(i, k)
-            
-            # Если элемент равен 0, пропускаем для оптимизации
-            if A_ik == 0:
-                continue
-                
+
             for j in range(cols_B):
                 var current: int = C.get(i, j)
                 var B_kj: int = B.get(k, j)
@@ -214,10 +208,11 @@ def main() -> int:
 
     print("Matrix created")
 
+    var C: Matrix = Matrix(rows, cols)
+    C.init_matrix()
+
     # Основной цикл
     for _ in range(1000):
-        var C: Matrix = Matrix(rows, cols)
-        C.init_matrix()
         matmul(A, B, C)
 
     return 0
@@ -276,9 +271,7 @@ int Matrix_get(Matrix* self, int i, int j) {
 }
 
 void* Matrix_set(Matrix* self, int i, int j, int value) {
-    list_int* data = self->data;
-    set_list_int(data, ((i * self->cols) + j), value);
-    self->data = data;
+    set_list_int(self->data, ((i * self->cols) + j), value);
 }
 
 void* matmul(Matrix* A, Matrix* B, Matrix* C) {
@@ -292,10 +285,6 @@ void* matmul(Matrix* A, Matrix* B, Matrix* C) {
     for (int i = 0; i < rows_A; i += 1) {
         for (int k = 0; k < cols_A; k += 1) {
             int A_ik = Matrix_get(A, i, k);
-            if ((A_ik == 0)) {
-                continue;
-                // continue statement
-            }
             for (int j = 0; j < cols_B; j += 1) {
                 int current = Matrix_get(C, i, j);
                 int B_kj = Matrix_get(B, k, j);
@@ -314,9 +303,9 @@ int main(void) {
     Matrix_init_matrix(A);
     Matrix_init_matrix(B);
     printf("%s\n", "Matrix created");
+    Matrix* C = create_Matrix(rows, cols);
+    Matrix_init_matrix(C);
     for (int _ = 0; _ < 1000; _ += 1) {
-        Matrix* C = create_Matrix(rows, cols);
-        Matrix_init_matrix(C);
         matmul(A, B, C);
     }
     return 0;
