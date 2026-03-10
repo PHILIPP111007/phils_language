@@ -324,6 +324,51 @@ class Parser:
             )
             return current_index + 1
 
+        # ========== ДОБАВЛЯЕМ ОБРАБОТКУ self.data[index] = value ==========
+        # Паттерн: self.attr[index] = value
+        self_index_pattern = r"^self\.([a-zA-Z_][a-zA-Z0-9_]*)\[([^\]]+)\]\s*=\s*(.+)$"
+        self_index_match = re.match(self_index_pattern, line_content)
+
+        if self_index_match:
+            attr_name, index_expr, value = self_index_match.groups()
+            logger.debug(
+                f"Найдено присваивание self.{attr_name}[{index_expr}] = {value}"
+            )
+
+            # Парсим индекс и значение
+            index_ast = self.parse_expression_to_ast(index_expr)
+            value_ast = self.parse_expression_to_ast(value)
+
+            # Создаем узел для присваивания
+            operations = [
+                {
+                    "type": "INDEX_ASSIGN",
+                    "variable": f"self.{attr_name}",
+                    "index": index_ast,
+                    "value": value_ast,
+                }
+            ]
+
+            dependencies = []
+            deps = self.extract_dependencies_from_ast(index_ast)
+            dependencies.extend(deps)
+            deps = self.extract_dependencies_from_ast(value_ast)
+            dependencies.extend(deps)
+
+            scope["graph"].append(
+                {
+                    "node": "index_assignment",
+                    "content": line,
+                    "variable": f"self.{attr_name}",
+                    "index": index_ast,
+                    "value": value_ast,
+                    "operations": operations,
+                    "dependencies": list(set(dependencies)),
+                }
+            )
+
+            return current_index + 1
+
         # ========== ВТОРОЕ: обычное индексное присваивание ==========
         # Паттерн: var_name[0] = value (один индекс)
         simple_index_pattern = r"^([a-zA-Z_][a-zA-Z0-9_]*)\[([^\]]+)\]\s*=\s*(.+)$"
