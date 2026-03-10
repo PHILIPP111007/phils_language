@@ -175,23 +175,30 @@ class Matrix:
 def matmul(A: Matrix, B: Matrix, C: Matrix) -> None:
     var rows_A: int = A.rows
     var cols_A: int = A.cols
-    var rows_B: int = B.rows
     var cols_B: int = B.cols
-    
-    # Проверка размерностей
-    if cols_A != rows_B:
-        print("Error: Matrix dimensions incompatible for multiplication")
-        return
-    
-    # Оптимизированное умножение с кешированием
-    for i in range(rows_A):
-        for k in range(cols_A):
-            var A_ik: int = A.get(i, k)
 
-            for j in range(cols_B):
-                var current: int = C.get(i, j)
-                var B_kj: int = B.get(k, j)
-                C.set(i, j, current + A_ik * B_kj)
+    # Оптимизация 1: кешируем указатели на data для быстрого доступа
+    var A_data: list[int] = A.data
+    var B_data: list[int] = B.data
+    var C_data: list[int] = C.data
+
+    var cols_A_local: int = cols_A
+    var cols_B_local: int = cols_B
+
+    # Оптимизация 3: изменение порядка циклов для лучшей локальности кеша
+    # Вместо i-k-j используем i-j-k с разверткой
+    for i in range(rows_A):
+        var row_offset_A: int = i * cols_A_local
+        var row_offset_C: int = i * cols_B_local
+
+        for j in range(cols_B_local):
+            var sum_val: int = 0
+            var offset_C: int = row_offset_C + j
+
+            for k in range(cols_A_local):
+                sum_val = sum_val + A_data[row_offset_A + k] * B_data[k * cols_B_local + j]
+
+            C_data[offset_C] = sum_val
 
 
 def main() -> int:
@@ -277,19 +284,22 @@ void* Matrix_set(Matrix* self, int i, int j, int value) {
 void* matmul(Matrix* A, Matrix* B, Matrix* C) {
     int rows_A = A->rows;
     int cols_A = A->cols;
-    int rows_B = B->rows;
     int cols_B = B->cols;
-    if ((cols_A != rows_B)) {
-        printf("%s\n", "Error: Matrix dimensions incompatible for multiplication");
-    }
+    list_int* A_data = A->data;
+    list_int* B_data = B->data;
+    list_int* C_data = C->data;
+    int cols_A_local = cols_A;
+    int cols_B_local = cols_B;
     for (int i = 0; i < rows_A; i += 1) {
-        for (int k = 0; k < cols_A; k += 1) {
-            int A_ik = Matrix_get(A, i, k);
-            for (int j = 0; j < cols_B; j += 1) {
-                int current = Matrix_get(C, i, j);
-                int B_kj = Matrix_get(B, k, j);
-                Matrix_set(C, i, j, (current + (A_ik * B_kj)));
+        int row_offset_A = (i * cols_A_local);
+        int row_offset_C = (i * cols_B_local);
+        for (int j = 0; j < cols_B_local; j += 1) {
+            int sum_val = 0;
+            int offset_C = (row_offset_C + j);
+            for (int k = 0; k < cols_A_local; k += 1) {
+                sum_val = (sum_val + (get_list_int(A_data, (row_offset_A + k)) * get_list_int(B_data, ((k * cols_B_local) + j))));
             }
+            set_list_int(C_data, offset_C, sum_val);
         }
     }
 }
