@@ -760,26 +760,32 @@ class CCodeGenerator:
 
     def _generate_input_read_code_direct(self, target_var: str):
         """Генерирует код для чтения ввода с клавиатуры прямо в целевую переменную"""
-        # Создаем буфер для ввода
         buffer_var = f"{target_var}_buffer"
 
-        # Выделяем память для буфера (стековая переменная)
+        # Выделяем память для буфера
         self.add_line(f"char {buffer_var}[256];")
 
         # Читаем строку с stdin
-        self.add_line(f"fgets({buffer_var}, sizeof({buffer_var}), stdin);")
-
-        # Убираем символ новой строки
+        self.add_line(
+            f"if (fgets({buffer_var}, sizeof({buffer_var}), stdin) == NULL) {{"
+        )
+        self.indent_level += 1
+        self.add_line(f"// Достигнут конец файла (EOF)")
+        self.add_line(f"{target_var} = NULL;")
+        self.indent_level -= 1
+        self.add_line(f"}} else {{")
+        self.indent_level += 1
+        self.add_line(f"// Успешно прочитали строку")
         self.add_line(f'{buffer_var}[strcspn({buffer_var}, "\\n")] = 0;')
 
-        # Освобождаем предыдущую память, если переменная уже инициализирована
+        # Освобождаем предыдущую память
         self.add_line(f"if ({target_var} != NULL) {{")
         self.indent_level += 1
         self.add_line(f"free({target_var});")
         self.indent_level -= 1
         self.add_line(f"}}")
 
-        # Выделяем память для результата и копируем
+        # Выделяем память для результата
         self.add_line(f"{target_var} = malloc(strlen({buffer_var}) + 1);")
         self.add_line(f"if (!{target_var}) {{")
         self.indent_level += 1
@@ -790,6 +796,8 @@ class CCodeGenerator:
         self.indent_level -= 1
         self.add_line(f"}}")
         self.add_line(f"strcpy({target_var}, {buffer_var});")
+        self.indent_level -= 1
+        self.add_line(f"}}")
 
     def generate_break(self, node: Dict):
         """Генерирует оператор break"""
@@ -2297,6 +2305,17 @@ class CCodeGenerator:
             # Проверяем, являются ли операнды строками
             left_is_string = self._is_string_expression(left_ast)
             right_is_string = self._is_string_expression(right_ast)
+
+            right_is_none = self._is_none_expression(right_ast)
+            left_is_none = self._is_none_expression(left_ast)
+
+            if operator == "==" and (right_is_none or left_is_none):
+                # Сравнение с NULL
+                non_none_expr = left if right_is_none else right
+                return f"({non_none_expr} == NULL)"
+            elif operator == "!=" and (right_is_none or left_is_none):
+                non_none_expr = left if right_is_none else right
+                return f"({non_none_expr} != NULL)"
 
             if operator == "==" and (left_is_string or right_is_string):
                 return f"(strcmp({left}, {right}) == 0)"
@@ -6282,3 +6301,19 @@ class CCodeGenerator:
                 return self.class_fields[obj_type].get(attr_name)
 
         return None
+
+    def _is_none_expression(self, ast: Dict) -> bool:
+        """Проверяет, является ли выражение None"""
+        if not ast:
+            return False
+
+        if ast.get("type") == "literal":
+            return ast.get("data_type") == "None" or ast.get("value") == "None"
+
+        if ast.get("type") == "variable":
+            var_name = ast.get("value", "")
+            var_info = self.get_variable_info(var_name)
+            if var_info:
+                return var_info.get("py_type") == "None"
+
+        return False
