@@ -5513,6 +5513,32 @@ class CCodeGenerator:
         index_expr = self.generate_expression(index_ast)
         value_expr = self.generate_expression(value_ast)
 
+        # Обработка для self.attr
+        if isinstance(variable, str) and variable.startswith("self."):
+            attr_name = variable[5:]
+            print(f"  -> обработка self.{attr_name}")
+
+            # Для атрибутов, которые могут быть списками
+            if attr_name == "data":
+                self.add_line(f"set_list_int(self->data, {index_expr}, {value_expr});")
+            else:
+                # Пробуем определить тип атрибута
+                current_class = self._get_current_class()
+                if current_class and current_class in self.class_fields:
+                    attr_type = self.class_fields[current_class].get(attr_name)
+                    if attr_type and attr_type.startswith("list["):
+                        struct_name = self.generate_list_struct_name(attr_type)
+                        self.add_line(
+                            f"set_{struct_name}(self->{attr_name}, {index_expr}, {value_expr});"
+                        )
+                    else:
+                        self.add_line(
+                            f"self->{attr_name}[{index_expr}] = {value_expr};"
+                        )
+                else:
+                    self.add_line(f"self->{attr_name}[{index_expr}] = {value_expr};")
+            return
+
         var_info = self.get_variable_info(variable)
 
         if var_info:
