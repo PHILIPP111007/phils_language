@@ -3991,24 +3991,41 @@ class CCodeGenerator:
         self.add_empty_line()
 
     def generate_attribute_assignment(self, node: Dict):
-        """Генерирует присваивание атрибуту объекта"""
+        """Генерирует присваивание атрибуту объекта (self.attr = value)"""
         object_name = node.get("object", "")
         attribute = node.get("attribute", "")
         value_ast = node.get("value", {})
 
-        # Проверяем, находимся ли мы в конструкторе
-        # Если это конструктор, метод уже обрабатывается в _process_attribute_assignment_in_init
-        # Так что пропускаем здесь
-        if object_name == "self":
-            logger.debug(
-                f"DEBUG generate_attribute_assignment: Skipping self.{attribute} assignment in constructor"
-            )
-            return
+        logger.debug(
+            f"generate_attribute_assignment: {object_name}.{attribute} = {value_ast}"
+        )
 
-        # Генерируем выражение для значения
-        if value_ast:
-            value_expr = self.generate_expression(value_ast)
-            self.add_line(f"{object_name}->{attribute} = {value_expr};")
+        # Если это self внутри метода класса
+        if object_name == "self":
+            # Находим текущий класс
+            current_class = self._get_current_class()
+
+            if current_class:
+                # Генерируем выражение для значения
+                value_expr = self.generate_expression(value_ast)
+
+                # Добавляем присваивание
+                self.add_line(f"self->{attribute} = {value_expr};")
+                return
+
+        # Если это другой объект
+        var_info = self.get_variable_info(object_name)
+        if var_info:
+            obj_type = var_info.get("py_type", "")
+            if self._is_class_type(obj_type):
+                # Это объект класса
+                value_expr = self.generate_expression(value_ast)
+                self.add_line(f"{object_name}->{attribute} = {value_expr};")
+                return
+
+        # Fallback
+        value_expr = self.generate_expression(value_ast)
+        self.add_line(f"{object_name}.{attribute} = {value_expr};")
 
     def _process_attribute_assignment_in_init(self, node: Dict, param_names: List[str]):
         """Обрабатывает присваивание атрибуту в конструкторе"""
