@@ -322,3 +322,114 @@ int main(void) {
 }
 """
     run(P, C)
+
+
+def test_matmul_3():
+    P = r"""
+def matmul(A: list[int], B: list[int], C: list[int], rows_A: int, cols_A: int, cols_B: int) -> None:
+    # Оптимизация 1: Изменение порядка циклов (i-j-k) для лучшей локальности кеша
+    for i in range(rows_A):
+        var offset_A: int = i * cols_A
+        var offset_C: int = i * cols_B
+
+        for j in range(cols_B):
+            var sum_val: int = 0
+            var offset_B: int = j  # Начальное смещение для j-го столбца B
+
+            # Оптимизация 2: Ручная развертка цикла k (по 4 элемента)
+            var k: int = 0
+            var cols_A_local: int = cols_A
+            
+            while k + 3 < cols_A_local:
+                sum_val = sum_val + A[offset_A + k] * B[k * cols_B + j]
+                sum_val = sum_val + A[offset_A + k + 1] * B[(k + 1) * cols_B + j]
+                sum_val = sum_val + A[offset_A + k + 2] * B[(k + 2) * cols_B + j]
+                sum_val = sum_val + A[offset_A + k + 3] * B[(k + 3) * cols_B + j]
+                k = k + 4
+
+            # Обработка остатка
+            while k < cols_A_local:
+                sum_val = sum_val + A[offset_A + k] * B[k * cols_B + j]
+                k = k + 1
+
+            C[offset_C + j] = sum_val
+
+
+def main() -> int:
+    var size: int = 100
+    var rows: int = size
+    var cols: int = size
+    var total_size: int = rows * cols
+
+    # Создаем одномерные массивы для матриц A и B
+    var A: list[int] = []
+    var B: list[int] = []
+
+    # Инициализация матриц
+    for idx in range(total_size):
+        A.append(0)
+        B.append(0)
+
+    print("Matrix created")
+
+    # Создаем массив для результата C
+    var C: list[int] = []
+    for _ in range(rows * cols):
+        C.append(0)
+
+    # Основной цикл
+    for _ in range(1000):
+        matmul(A, B, C, rows, cols, cols)
+
+    return 0
+"""
+
+    C = r"""
+void* matmul(list_int* A, list_int* B, list_int* C, int rows_A, int cols_A, int cols_B) {
+    for (int i = 0; i < rows_A; i += 1) {
+        int offset_A = (i * cols_A);
+        int offset_C = (i * cols_B);
+        for (int j = 0; j < cols_B; j += 1) {
+            int sum_val = 0;
+            int offset_B = j;
+            int k = 0;
+            int cols_A_local = cols_A;
+            while (((k + 3) < cols_A_local)) {
+                sum_val = (sum_val + (get_list_int(A, (offset_A + k)) * get_list_int(B, ((k * cols_B) + j))));
+                sum_val = (sum_val + (get_list_int(A, (offset_A + (k + 1))) * get_list_int(B, (((k + 1) * cols_B) + j))));
+                sum_val = (sum_val + (get_list_int(A, (offset_A + (k + 2))) * get_list_int(B, (((k + 2) * cols_B) + j))));
+                sum_val = (sum_val + (get_list_int(A, (offset_A + (k + 3))) * get_list_int(B, (((k + 3) * cols_B) + j))));
+                k = (k + 4);
+            }
+            while ((k < cols_A_local)) {
+                sum_val = (sum_val + (get_list_int(A, (offset_A + k)) * get_list_int(B, ((k * cols_B) + j))));
+                k = (k + 1);
+            }
+            set_list_int(C, (offset_C + j), sum_val);
+        }
+    }
+}
+
+int main(void) {
+    int size = 100;
+    int rows = size;
+    int cols = size;
+    int total_size = (rows * cols);
+    list_int* A = create_list_int(4);
+    list_int* B = create_list_int(4);
+    for (int idx = 0; idx < total_size; idx += 1) {
+        append_list_int(A, 0);
+        append_list_int(B, 0);
+    }
+    printf("%s\n", "Matrix created");
+    list_int* C = create_list_int(4);
+    for (int _ = 0; _ < rows * cols; _ += 1) {
+        append_list_int(C, 0);
+    }
+    for (int _ = 0; _ < 1000; _ += 1) {
+        matmul(A, B, C, rows, cols, cols);
+    }
+    return 0;
+}
+"""
+    run(P, C)
