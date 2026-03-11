@@ -295,3 +295,154 @@ int Matrix_get(Matrix* self) {
 }
 """
     run(P, C)
+
+
+def test_oop_4():
+    P = r"""
+class A:
+    def __init__(self) -> None:
+        self.value: int = 100
+
+    def get_value(self) -> int:
+        return self.value
+
+
+class B:
+    def __init__(self) -> None:
+        pass
+
+    def get_A_value(self) -> int:
+        var a: A = A()
+        var value: int = a.value
+        value = a.get_value()
+        return value
+
+    def set_A_value(self, new_value: int) -> None:
+        var a: A = A()
+        a.value = new_value
+
+
+class C(A):
+    def __init__(self) -> None:
+        pass        
+
+
+def main() -> int:
+    var c: C = C()
+    print(c.get_value())
+    return 0
+"""
+
+    C = r"""
+typedef struct A A;
+
+struct A {
+    void** vtable;
+    // Поля класса A
+    int value;
+};
+
+typedef struct B B;
+
+struct B {
+    void** vtable;
+    // Поля не найдены для B
+};
+
+typedef struct C C;
+
+struct C {
+    // Наследование от A
+    A base;
+    // Поля не найдены для C
+};
+
+int A_get_value(A* self);
+int B_get_A_value(B* self);
+void* B_set_A_value(B* self, int new_value);
+int main(void);
+
+// Конструктор для A
+A* create_A(void) {
+    A* obj = malloc(sizeof(A));
+    if (!obj) {
+        fprintf(stderr, "Memory allocation failed for A\n");
+        exit(1);
+    }
+
+    // Инициализация полей класса A
+    obj->vtable = malloc(sizeof(void*) * 16);
+    if (!obj->vtable) {
+        fprintf(stderr, "Memory allocation failed for vtable\n");
+        free(obj);
+        exit(1);
+    }
+    obj->value = 100;
+    return obj;
+}
+
+// Конструктор для B
+B* create_B(void) {
+    B* obj = malloc(sizeof(B));
+    if (!obj) {
+        fprintf(stderr, "Memory allocation failed for B\n");
+        exit(1);
+    }
+
+    // Инициализация полей класса B
+    obj->vtable = malloc(sizeof(void*) * 16);
+    if (!obj->vtable) {
+        fprintf(stderr, "Memory allocation failed for vtable\n");
+        free(obj);
+        exit(1);
+    }
+    return obj;
+}
+
+// Конструктор для C
+C* create_C(void) {
+    C* obj = malloc(sizeof(C));
+    if (!obj) {
+        fprintf(stderr, "Memory allocation failed for C\n");
+        exit(1);
+    }
+
+    // Инициализация полей класса C
+    obj->base.vtable = malloc(sizeof(void*) * 16);
+    if (!obj->base.vtable) {
+        fprintf(stderr, "Memory allocation failed for vtable\n");
+        free(obj);
+        exit(1);
+    }
+    return obj;
+}
+
+int C_get_value(C* self) {
+    // Вызов унаследованного метода из A
+    A* base_obj = (A*)self;
+    return A_get_value(base_obj);
+}
+
+int A_get_value(A* self) {
+    return self->value;
+}
+
+int B_get_A_value(B* self) {
+    A* a = create_A();
+    int value = a->value;
+    value = A_get_value(a);
+    return value;
+}
+
+void* B_set_A_value(B* self, int new_value) {
+    A* a = create_A();
+    a->value = new_value;
+}
+
+int main(void) {
+    C* c = create_C();
+    printf("%d\n", C_get_value(c));
+    return 0;
+}
+"""
+    run(P, C)
