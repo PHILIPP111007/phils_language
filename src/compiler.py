@@ -1718,92 +1718,169 @@ class CCodeGenerator:
         create_func_name = f"create_{struct_name}"
         if create_func_name not in self.generated_functions:
             create_func = f"""{struct_name}* {create_func_name}(int initial_capacity) {{
-    // Минимальный размер для предотвращения частых реаллокаций
-    if (initial_capacity < {LIST_MIN_CAPACITY}) initial_capacity = {LIST_MIN_CAPACITY};
+            // Минимальный размер для предотвращения частых реаллокаций
+            if (initial_capacity < {LIST_MIN_CAPACITY}) initial_capacity = {LIST_MIN_CAPACITY};
+            
+            // Динамическое выравнивание в зависимости от архитектуры
+            #if defined(__AVX512F__)  // Intel/AMD AVX-512
+                initial_capacity = (initial_capacity + 31) & ~31;
+            #elif defined(__AVX2__)    // Intel/AMD AVX2
+                initial_capacity = (initial_capacity + 7) & ~7;
+            #elif defined(__ARM_NEON) || defined(__ARM_NEON__)  // Apple M1/M2/M3 (ARM NEON)
+                // NEON работает лучше с выравниванием по 16 байт
+                initial_capacity = (initial_capacity + 15) & ~15;
+            #else  // Базовое выравнивание
+                initial_capacity = (initial_capacity + 3) & ~3;
+            #endif
 
-    // Динамическое выравнивание в зависимости от архитектуры
-    #ifdef __AVX512F__
-        initial_capacity = (initial_capacity + 31) & ~31;
-    #elif defined(__AVX2__)
-        initial_capacity = (initial_capacity + 7) & ~7;
-    #else
-        initial_capacity = (initial_capacity + 3) & ~3;
-    #endif
+            // Используем posix_memalign для лучшей совместимости
+            {struct_name}* list = NULL;
+            
+            #if defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200112L
+                // posix_memalign доступен на большинстве Unix систем (включая macOS)
+                if (posix_memalign((void**)&list, 64, sizeof({struct_name})) != 0) {{
+                    list = NULL;
+                }}
+            #else
+                // Fallback на aligned_alloc (C11)
+                list = ({struct_name}*)aligned_alloc(64, sizeof({struct_name}));
+            #endif
+            
+            // Если выровненное выделение не сработало, используем malloc
+            if (!list) {{
+                list = ({struct_name}*)malloc(sizeof({struct_name}));
+                if (!list) {{
+                    fprintf(stderr, "Memory allocation failed for list\\n");
+                    exit(1);
+                }}
+            }}
 
-    // Используем выровненное выделение памяти если доступно
-    {struct_name}* list = ({struct_name}*)aligned_alloc(64, sizeof({struct_name}));
-    if (!list) {{
-        list = ({struct_name}*)malloc(sizeof({struct_name}));
-        if (!list) {{
-            fprintf(stderr, "Memory allocation failed for list\\n");
-            exit(1);
+            // Выровненное выделение для данных
+            {element_type}* data = NULL;
+            size_t data_size = initial_capacity * sizeof({element_type});
+            
+            #if defined(__AVX512F__)
+                // AVX-512 требует выравнивания по 64 байта
+                if (posix_memalign((void**)&data, 64, data_size) != 0) {{
+                    data = NULL;
+                }}
+            #elif defined(__AVX2__)
+                // AVX2 требует выравнивания по 32 байта
+                if (posix_memalign((void**)&data, 32, data_size) != 0) {{
+                    data = NULL;
+                }}
+            #elif defined(__ARM_NEON) || defined(__ARM_NEON__)
+                // ARM NEON (Apple M1/M2/M3) работает лучше с выравниванием по 16 байт
+                if (posix_memalign((void**)&data, 16, data_size) != 0) {{
+                    data = NULL;
+                }}
+            #else
+                // Базовое выравнивание
+                if (posix_memalign((void**)&data, 16, data_size) != 0) {{
+                    data = NULL;
+                }}
+            #endif
+            
+            // Если выровненное выделение не сработало, используем calloc
+            if (!data) {{
+                data = ({element_type}*)calloc(initial_capacity, sizeof({element_type}));
+                if (!data) {{
+                    fprintf(stderr, "Memory allocation failed for list data\\n");
+                    free(list);
+                    exit(1);
+                }}
+            }} else {{
+                // Обнуляем память (для aligned_alloc/posix_memalign)
+                memset(data, 0, data_size);
+            }}
+            
+            list->data = data;
+            list->size = 0;
+            list->capacity = initial_capacity;
+            
+            return list;
         }}
-    }}
 
-    // Выровненное выделение для данных
-    #ifdef __AVX512F__
-        list->data = ({element_type}*)aligned_alloc(64, initial_capacity * sizeof({element_type}));
-    #elif defined(__AVX2__)
-        list->data = ({element_type}*)aligned_alloc(32, initial_capacity * sizeof({element_type}));
-    #else
-        list->data = ({element_type}*)aligned_alloc(16, initial_capacity * sizeof({element_type}));
-    #endif
-
-    if (!list->data) {{
-        // Fallback на обычный calloc
-        list->data = ({element_type}*)calloc(initial_capacity, sizeof({element_type}));
-        if (!list->data) {{
-            fprintf(stderr, "Memory allocation failed for list data\\n");
-            free(list);
-            exit(1);
-        }}
-    }} else {{
-        // Если использовали aligned_alloc, обнуляем вручную
-        memset(list->data, 0, initial_capacity * sizeof({element_type}));
-    }}
-
-    list->size = 0;
-    list->capacity = initial_capacity;
-    return list;
-}}
-
-"""
+        """
             self.generated_helpers.append(create_func)
             self.generated_functions.add(create_func_name)
 
-        # 2. Функция добавления (оптимизированная с предсказанием ветвлений)
+        # 2. Функция добавления (оптимизированная с предсказанием ветвлений и поддержкой архитектур)
         append_func_name = f"append_{struct_name}"
         if append_func_name not in self.generated_functions:
             append_func = f"""void {append_func_name}({struct_name}* list, {element_type} value) {{
-    // Быстрая проверка с предсказанием ветвлений
-    if (__builtin_expect(list->size >= list->capacity, 0)) {{
-        // Медленный путь - реаллокация
-        int new_capacity = (int)(list->capacity * {LIST_GROWTH_FACTOR});
-        if (new_capacity < 64) new_capacity = 64;
+            // Быстрая проверка с предсказанием ветвлений
+            if (__builtin_expect(list->size >= list->capacity, 0)) {{
+                // Медленный путь - реаллокация
+                int new_capacity = (int)(list->capacity * {LIST_GROWTH_FACTOR});
+                if (new_capacity < 64) new_capacity = 64;
 
-        // Выравнивание
-        #ifdef __AVX512F__
-            new_capacity = (new_capacity + 31) & ~31;
-        #elif defined(__AVX2__)
-            new_capacity = (new_capacity + 7) & ~7;
-        #else
-            new_capacity = (new_capacity + 3) & ~3;
-        #endif
+                // Динамическое выравнивание в зависимости от архитектуры
+                #if defined(__AVX512F__)  // Intel/AMD AVX-512
+                    new_capacity = (new_capacity + 31) & ~31;
+                #elif defined(__AVX2__)    // Intel/AMD AVX2
+                    new_capacity = (new_capacity + 7) & ~7;
+                #elif defined(__ARM_NEON) || defined(__ARM_NEON__)  // Apple M1/M2/M3 (ARM NEON)
+                    // NEON работает лучше с выравниванием по 16 байт
+                    new_capacity = (new_capacity + 15) & ~15;
+                #else  // Базовое выравнивание
+                    new_capacity = (new_capacity + 3) & ~3;
+                #endif
 
-        {element_type}* new_data = ({element_type}*)realloc(list->data, new_capacity * sizeof({element_type}));
-        if (!new_data) {{
-            fprintf(stderr, "Memory reallocation failed for list\\n");
-            exit(1);
+                // Сохраняем старый указатель для возможного восстановления
+                {element_type}* old_data = list->data;
+                size_t old_size = list->size;
+                
+                // Используем выделение с учетом архитектуры
+                {element_type}* new_data = NULL;
+                size_t new_size_bytes = new_capacity * sizeof({element_type});
+                
+                #if defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200112L
+                    // Определяем выравнивание для нового блока
+                    size_t alignment = 16;  // По умолчанию
+                    
+                    #if defined(__AVX512F__)
+                        alignment = 64;
+                    #elif defined(__AVX2__)
+                        alignment = 32;
+                    #elif defined(__ARM_NEON) || defined(__ARM_NEON__)
+                        alignment = 16;
+                    #endif
+                    
+                    // Пробуем выделить выровненную память
+                    if (posix_memalign((void**)&new_data, alignment, new_size_bytes) == 0) {{
+                        // Копируем старые данные
+                        memcpy(new_data, old_data, old_size * sizeof({element_type}));
+                        // Освобождаем старую память
+                        free(old_data);
+                        list->data = new_data;
+                        list->capacity = new_capacity;
+                    }} else {{
+                        // Если не получилось, используем realloc как fallback
+                        new_data = ({element_type}*)realloc(old_data, new_size_bytes);
+                        if (!new_data) {{
+                            fprintf(stderr, "Memory reallocation failed for list\\n");
+                            exit(1);
+                        }}
+                        list->data = new_data;
+                        list->capacity = new_capacity;
+                    }}
+                #else
+                    // Если posix_memalign недоступен, используем обычный realloc
+                    new_data = ({element_type}*)realloc(old_data, new_size_bytes);
+                    if (!new_data) {{
+                        fprintf(stderr, "Memory reallocation failed for list\\n");
+                        exit(1);
+                    }}
+                    list->data = new_data;
+                    list->capacity = new_capacity;
+                #endif
+            }}
+
+            list->data[list->size++] = value;
         }}
 
-        list->data = new_data;
-        list->capacity = new_capacity;
-    }}
-
-    list->data[list->size++] = value;
-}}
-
-"""
+        """
             self.generated_helpers.append(append_func)
             self.generated_functions.add(append_func_name)
 
