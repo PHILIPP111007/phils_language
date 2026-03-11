@@ -415,8 +415,6 @@ class CCodeGenerator:
             self.generate_builtin_function_call_assignment(node)
         elif node_type == "return":
             self.generate_return(node)
-        elif node_type == "print":
-            self.generate_print(node)
         elif node_type == "while_loop":
             self.generate_while_loop(node)
         elif node_type == "if_statement":
@@ -573,6 +571,7 @@ class CCodeGenerator:
         """Генерирует вызов встроенной функции"""
         func_name = node.get("function", "")
         args = node.get("arguments", [])
+        kwargs: dict = node.get("kwargs", {})  # Получаем опции
 
         if func_name == "print":
             # Генерируем printf для print
@@ -627,8 +626,14 @@ class CCodeGenerator:
                     format_parts.append("%d")
                     value_parts.append(str(arg))
 
+            sep_node = kwargs.get("sep", {})
+            end_node = kwargs.get("end", {})
+
+            sep = sep_node.get("value", " ")
+            end = end_node.get("value", "\\n")
+
             # Собираем форматную строку
-            format_str = '"' + " ".join(format_parts) + '\\n"'
+            format_str = '"' + sep.join(format_parts) + f'{end}"'
             args_str = ", ".join(value_parts)
 
             self.add_line(f"printf({format_str}, {args_str});")
@@ -1208,12 +1213,6 @@ class CCodeGenerator:
         func_name = node.get("function", "")
         args = node.get("arguments", [])
 
-        # Проверяем, является ли это print
-        if func_name == "print":
-            # Вызываем метод для генерации print
-            self.generate_print(node)
-            return
-
         # Удаляем @ из имени функции для C кода
         if func_name.startswith("@"):
             func_name = func_name[1:]
@@ -1265,86 +1264,6 @@ class CCodeGenerator:
 
         # Если ничего не нашли
         self.add_line("return;")
-
-    def generate_print(self, node: Dict):
-        """Генерирует print с поддержкой разных типов в одной строке"""
-        args = node.get("arguments", [])
-
-        if not args:
-            self.add_line('printf("\\n");')
-            return
-
-        # Собираем форматную строку и аргументы
-        format_parts = []
-        value_parts = []
-
-        for arg in args:
-            if isinstance(arg, dict):
-                if arg.get("type") == "attribute_access":
-                    # Доступ к атрибуту
-                    expr = self.generate_attribute_access(arg)
-                    format_parts.append("%d")
-                    value_parts.append(expr)
-                elif arg.get("type") == "variable":
-                    var_name = arg.get("value", "")
-                    var_info = self.get_variable_info(var_name)
-                    if var_info:
-                        var_type = var_info.get("py_type", "")
-                        if var_type == "int":
-                            format_parts.append("%d")
-                            value_parts.append(var_name)
-                        elif var_type == "float" or var_type == "double":
-                            format_parts.append("%f")
-                            value_parts.append(var_name)
-                        elif var_type == "str":
-                            format_parts.append("%s")
-                            value_parts.append(var_name)
-                        elif var_type == "bool":
-                            format_parts.append("%s")
-                            # В C нет встроенного типа bool для printf, преобразуем
-                            value_parts.append(f'({var_name} ? "true" : "false")')
-                        else:
-                            format_parts.append("%d")
-                            value_parts.append(var_name)
-                    else:
-                        format_parts.append("%d")
-                        value_parts.append(var_name)
-                elif arg.get("type") == "literal":
-                    value = arg.get("value", "")
-                    data_type = arg.get("data_type", "")
-                    if data_type == "str":
-                        format_parts.append("%s")
-                        value_parts.append(f'"{value}"')
-                    elif data_type == "bool":
-                        format_parts.append("%s")
-                        value_parts.append(f'"{str(value).lower()}"')
-                    else:
-                        format_parts.append("%d")
-                        value_parts.append(str(value))
-                else:
-                    # Для других выражений (бинарные операции и т.д.)
-                    expr = self.generate_expression(arg)
-                    # По умолчанию считаем, что это int
-                    format_parts.append("%d")
-                    value_parts.append(expr)
-            else:
-                # Простое значение (не должно встречаться в нормальном AST)
-                format_parts.append("%d")
-                value_parts.append(str(arg))
-
-        # Собираем форматную строку
-        # Между элементами добавляем пробел, как в Python
-        format_str = '"'
-        for i, fmt in enumerate(format_parts):
-            format_str += fmt
-            if i < len(format_parts) - 1:
-                format_str += " "
-        format_str += '\\n"'
-
-        # Аргументы для printf
-        args_str = ", ".join(value_parts)
-
-        self.add_line(f"printf({format_str}, {args_str});")
 
     def generate_while_loop(self, node: Dict):
         """Генерирует while loop с правильной обработкой структуры JSON"""

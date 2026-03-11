@@ -3262,41 +3262,246 @@ class Parser:
         _parse_subexpression(left, "left")
         _parse_subexpression(right, "right")
 
-    def parse_function_call(self, line: str, scope: dict):
-        """Парсит вызов функции"""
-        pattern = r"([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)"
+    def parse_function_call(self, line: str, scope: dict) -> bool:
+        """Универсальный парсер любого вызова функции с поддержкой опций"""
+        # Паттерн: func_name(arg1, arg2, key=value)
+        pattern = r"^([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*)\)$"
         match = re.match(pattern, line)
 
         if not match:
             return False
 
         func_name, args_str = match.groups()
-        args = []
-        if args_str.strip():
-            # Парсим аргументы в AST, а не оставляем строкой
-            args = self.parse_function_arguments_to_ast(args_str)
 
+        # Универсальный парсинг аргументов
+        positional_args, keyword_options, all_args_ast = (
+            self.parse_arguments_with_options(args_str)
+        )
+
+        # Определяем тип функции
+        if func_name in self.builtin_functions:
+            node_type = "builtin_function_call"
+            return_type = self.get_builtin_return_type(func_name, positional_args)
+        elif func_name[0].isupper():  # Конструктор класса
+            node_type = "constructor_call"
+            return_type = func_name
+        else:
+            node_type = "function_call"
+            return_type = "any"
+
+        # Создаем операции
         operations = [
-            {"type": "FUNCTION_CALL", "function": func_name, "arguments": args}
+            {
+                "type": node_type.upper().replace("_CALL", "_CALL"),
+                "function": func_name,
+                "arguments": positional_args,
+                "kwargs": keyword_options,  # Именованные аргументы
+                "return_type": return_type,
+            }
         ]
 
+        # Собираем зависимости
         dependencies = []
-        for arg in args:
-            deps = self.extract_dependencies_from_ast(arg)
-            dependencies.extend(deps)
+        for arg in all_args_ast:
+            if isinstance(arg, dict):
+                if arg.get("type") == "keyword_argument":
+                    deps = self.extract_dependencies_from_ast(arg.get("value", {}))
+                else:
+                    deps = self.extract_dependencies_from_ast(arg)
+                dependencies.extend(deps)
 
+        # Создаем узел
         scope["graph"].append(
             {
-                "node": "function_call",
+                "node": node_type,
                 "content": line,
                 "function": func_name,
-                "arguments": args,
+                "arguments": positional_args,  # Позиционные аргументы
+                "kwargs": keyword_options,  # Именованные аргументы/опции
+                "all_arguments": all_args_ast,  # Все аргументы вместе
+                "return_type": return_type,
                 "operations": operations,
-                "dependencies": dependencies,
+                "dependencies": list(set(dependencies)),
             }
         )
 
         return True
+
+    def parse_arguments_with_options(self, args_str: str) -> tuple:
+        """
+        Универсальный парсер аргументов функции.
+        Возвращает (positional_args, keyword_options, all_args_ast)
+        """
+        positional_args = []
+        keyword_options = {}
+        all_args_ast = []  # Все аргументы в виде AST для обратной совместимости
+
+        if not args_str.strip():
+            return positional_args, keyword_options, all_args_ast
+
+        # Разделяем по запятым с учетом вложенности
+        parts = []
+        current = ""
+        depth = 0
+        bracket_depth = 0
+        brace_depth = 0
+        in_string = False
+        string_char = None
+
+        for char in (
+            args_str + ","
+        ):  # Добавляем запятую в конце для обработки последнего элемента
+            if not in_string and char in ['"', "'"]:
+                in_string = True
+                string_char = char
+                current += char
+            elif in_string and char == string_char:
+                if current and current[-1] != "\\":
+                    in_string = False
+                current += char
+            elif not in_string:
+                # Отслеживаем все виды скобок
+                if char == "(":
+                    depth += 1
+                    current += char
+                elif char == ")":
+                    depth -= 1
+                    current += char
+                elif char == "[":
+                    bracket_depth += 1
+                    current += char
+                elif char == "]":
+                    bracket_depth -= 1
+                    current += char
+                elif char == "{":
+                    brace_depth += 1
+                    current += char
+                elif char == "}":
+                    brace_depth -= 1
+                    current += char
+                elif (
+                    char == ","
+                    and depth == 0
+                    and bracket_depth == 0
+                    and brace_depth == 0
+                ):
+                    if current.strip():
+                        parts.append(current.strip())
+                    current = ""
+                else:
+                    current += char
+            else:
+                current += char
+
+        # Парсим каждую часть
+        for part in parts:
+            # Проверяем, является ли часть опцией (содержит "=")
+            if "=" in part and not self._is_inside_brackets(part):
+                # Это опция
+                key, value = part.split("=", 1)
+                key = key.strip()
+                value = value.strip()
+
+                # Парсим значение опции
+                value_info = self._parse_option_value(value)
+                keyword_options[key] = value_info
+
+                # Добавляем в all_args_ast для обратной совместимости
+                all_args_ast.append(
+                    {"type": "keyword_argument", "key": key, "value": value_info}
+                )
+            else:
+                # Это позиционный аргумент
+                arg_ast = self.parse_expression_to_ast(part)
+                positional_args.append(arg_ast)
+                all_args_ast.append(arg_ast)
+
+        return positional_args, keyword_options, all_args_ast
+
+    def _is_inside_brackets(self, text: str) -> bool:
+        """Проверяет, находится ли "=" внутри скобок (например, в словаре или списке)"""
+        depth = 0
+        bracket_depth = 0
+        brace_depth = 0
+        in_string = False
+        string_char = None
+
+        for i, char in enumerate(text):
+            if not in_string and char in ['"', "'"]:
+                in_string = True
+                string_char = char
+            elif in_string and char == string_char:
+                if i > 0 and text[i - 1] != "\\":
+                    in_string = False
+            elif not in_string:
+                if char == "(":
+                    depth += 1
+                elif char == ")":
+                    depth -= 1
+                elif char == "[":
+                    bracket_depth += 1
+                elif char == "]":
+                    bracket_depth -= 1
+                elif char == "{":
+                    brace_depth += 1
+                elif char == "}":
+                    brace_depth -= 1
+                elif char == "=" and (
+                    depth > 0 or bracket_depth > 0 or brace_depth > 0
+                ):
+                    return True
+
+        return False
+
+    def _parse_option_value(self, value: str) -> dict:
+        """Парсит значение опции и определяет его тип"""
+        value = value.strip()
+
+        # Проверяем булевы значения
+        if value.lower() == "true":
+            return {"type": "bool", "value": True}
+        elif value.lower() == "false":
+            return {"type": "bool", "value": False}
+
+        # Проверяем None
+        if value.lower() == "none" or value == "null":
+            return {"type": "null", "value": None}
+
+        # Проверяем числа
+        if value.isdigit():
+            return {"type": "int", "value": int(value)}
+
+        if value.replace(".", "").isdigit() and value.count(".") == 1:
+            return {"type": "float", "value": float(value)}
+
+        # Проверяем строки
+        if (value.startswith('"') and value.endswith('"')) or (
+            value.startswith("'") and value.endswith("'")
+        ):
+            str_value = value[1:-1].replace('\\"', '"').replace("\\'", "'")
+            return {"type": "str", "value": str_value}
+
+        # Проверяем списки
+        if value.startswith("[") and value.endswith("]"):
+            return {"type": "list", "value": self.parse_list_literal(value)}
+
+        # Проверяем словари
+        if value.startswith("{") and value.endswith("}"):
+            if ":" in value:
+                return {"type": "dict", "value": self.parse_dict_literal(value)}
+            else:
+                return {"type": "set", "value": self.parse_set_literal(value)}
+
+        # Проверяем кортежи
+        if value.startswith("(") and value.endswith(")"):
+            return {"type": "tuple", "value": self.parse_tuple_literal(value)}
+
+        # Если это переменная или выражение
+        if re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", value):
+            return {"type": "variable", "value": value}
+
+        # Иначе парсим как выражение
+        return {"type": "expression", "value": self.parse_expression_to_ast(value)}
 
     def parse_function_call_assignment(self, line: str, scope: dict) -> bool:
         """Парсит присваивание результата вызова функции: var x: type = func(args)"""
