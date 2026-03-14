@@ -22,7 +22,6 @@ class CCodeGenerator:
         self.current_scope_level = 0
 
         # Структуры для типов
-        self.generated_structs = set()
         self.generated_helpers = []
         self.helper_declarations = []  # Декларации helper-функций
 
@@ -95,7 +94,7 @@ class CCodeGenerator:
         self.temp_var_counter = 0
         self.variable_scopes = [{}]  # Глобальный scope
         self.current_scope_level = 0
-        self.generated_structs.clear()
+        # self.generated_structures.clear()
         self.generated_helpers.clear()
         self.generic_type_map.clear()
         self.class_fields.clear()  # Очищаем поля классов
@@ -234,6 +233,15 @@ class CCodeGenerator:
             if is_pointer:
                 return f"{c_type}*"
             return c_type
+        elif py_type.startswith("dict["):
+            # Генерируем структуру для словаря
+            key_type, value_type = self._extract_dict_types(py_type)
+            struct_name = self.generate_dict_struct(key_type, value_type)
+            logger.debug(f"map_type_to_c: dict {py_type} -> {struct_name}*")
+
+            if is_pointer:
+                return f"{struct_name}**"
+            return f"{struct_name}*"
         else:
             c_type = self.type_map.get(py_type, "int")
             if is_pointer:
@@ -336,36 +344,51 @@ class CCodeGenerator:
     def generate_from_json(self, json_data: List[Dict]) -> str:
         """Генерирует C код из JSON AST"""
         self.reset()
+        logger.debug(f"Starting code generation with {len(json_data)} scopes")
 
-        # 1. Собираем все типы
-        self.collect_types_from_ast(json_data)
+        # 1. Извлекаем ВСЕ типы из AST
+        all_types = self.extract_all_types_from_ast(json_data)
+        logger.debug(f"Extracted types: {all_types}")
 
-        # 4. Собираем импорты и объявления
+        # 2. Генерируем структуры для всех типов
+        # Сортируем по глубине вложенности (сначала простые, потом сложные)
+        sorted_types = sorted(all_types, key=lambda x: (x.count("["), x))
+
+        # Сначала генерируем все list[...] структуры
+        for py_type in sorted_types:
+            if py_type.startswith("list["):
+                logger.debug(f"Generating list structure for {py_type}")
+                self.generate_list_struct(py_type)
+
+        # Потом генерируем все dict[...] структуры (они могут зависеть от list)
+        for py_type in sorted_types:
+            if py_type.startswith("dict["):
+                key_type, value_type = self._extract_dict_types(py_type)
+                logger.debug(f"Generating dict structure for {py_type}")
+                self.generate_dict_struct(key_type, value_type)
+
+        # 3. Собираем импорты и объявления
         self.collect_imports_and_declarations(json_data)
 
-        # 5. Генерируем заголовок с импортами
+        # 4. Генерируем заголовок с импортами
         self.generate_c_imports()
 
-        # 8. Генерируем вспомогательные структуры и функции
+        # 5. Генерируем вспомогательные структуры и функции
         self.generate_helpers_section()
 
-        # self.collect_class_fields_from_json(json_data)  # Новый метод
+        # 6. Остальная генерация
         self.collect_class_fields_from_init_parameters(json_data)
-
-        # 2. Анализируем наследование классов
         self.analyze_class_inheritance(json_data)
-
-        # 3. Анализируем классы и их поля
         self.analyze_classes(json_data)
 
-        # 6. Генерируем структуры классов (ПЕРЕД forward declarations!)
+        # 7. Генерируем структуры классов
         for scope in json_data:
             if scope.get("type") == "module":
                 for node in scope.get("graph", []):
                     if node.get("node") == "class_declaration":
                         self.generate_class_declaration_with_fields(node)
 
-        # 7. Генерируем forward declarations
+        # 8. Генерируем forward declarations
         self.generate_forward_declarations()
 
         # 9. Генерируем конструкторы классов
@@ -374,14 +397,14 @@ class CCodeGenerator:
         # 10. Генерируем все методы классов
         self.generate_all_methods(json_data)
 
+        # 11. Генерируем глобальные переменные
         for scope in json_data:
             if scope.get("type") == "module":
                 for node in scope.get("graph", []):
                     if node.get("node") == "declaration":
-                        # Это глобальная переменная
                         self.generate_global_declaration(node)
 
-        # 11. Генерируем код для каждой функции
+        # 12. Генерируем код для каждой функции
         for scope in json_data:
             if scope.get("type") == "function" and not scope.get("is_stub", False):
                 self.generate_function_scope(scope)
@@ -822,6 +845,10 @@ class CCodeGenerator:
         expression_ast = node.get("expression_ast", {})
 
         logger.debug(f"Генерация объявления для {var_name}: {var_type}")
+
+        if var_type.startswith("dict["):
+            self._generate_dict_declaration(var_name, var_type, expression_ast, node)
+            return
 
         # Проверяем, объявлена ли уже переменная
         var_info = self.get_variable_info(var_name)
@@ -1469,10 +1496,10 @@ class CCodeGenerator:
 
     def generate_tuple_struct(self, py_type: str):
         """Генерирует структуру C для tuple типа"""
-        if py_type in self.generated_structs:
+        if py_type in self.generated_structures:
             return
 
-        self.generated_structs.add(py_type)
+        self.generated_structures.add(py_type)
 
         match = re.match(r"tuple\[([^\]]+)\]", py_type)
         if not match:
@@ -2104,39 +2131,327 @@ class CCodeGenerator:
             self.generated_helpers.append(copy_func)
             self.generated_functions.add(copy_func_name)
 
+    def generate_dict_struct(self, key_type: str, value_type: str) -> str:
+        """Генерирует структуру C для словаря с заданными типами ключа и значения"""
+        key_c_type = self.map_type_to_c(key_type)
+        value_c_type = self.map_type_to_c(value_type)
+
+        # Очищаем имена для использования в идентификаторах
+        key_name = self.clean_type_name_for_c(key_type)
+        value_name = self.clean_type_name_for_c(value_type)
+        struct_name = f"dict_{key_name}_{value_name}"
+
+        logger.debug(
+            f"generate_dict_struct: {struct_name} for {key_type} -> {value_type}"
+        )
+
+        # Проверяем, не генерировали ли уже
+        if struct_name in self.generated_structures:
+            logger.debug(f"  already generated")
+            return struct_name
+
+        self.generated_structures.add(struct_name)
+
+        # Для ключей-строк нужно особое сравнение
+        is_key_string = key_type == "str" or key_c_type == "char*"
+
+        # Структура для пары ключ-значение
+        pair_struct = f"""typedef struct {{
+        {key_c_type} key;
+        {value_c_type} value;
+    }} {struct_name}_pair;
+    """
+        self.generated_helpers.append(pair_struct)
+        logger.debug(f"  added pair struct")
+
+        # Структура для словаря
+        dict_struct = f"""typedef struct {{
+        {struct_name}_pair* data;
+        int size;
+        int capacity;
+    }} {struct_name};
+    """
+        self.generated_helpers.append(dict_struct)
+        logger.debug(f"  added dict struct")
+
+        # Функция создания словаря
+        create_func = f"""
+    {struct_name}* create_{struct_name}(int initial_capacity) {{
+        if (initial_capacity < 16) initial_capacity = 16;
+        {struct_name}* dict = malloc(sizeof({struct_name}));
+        if (!dict) {{
+            fprintf(stderr, "Memory allocation failed for dict\\n");
+            exit(1);
+        }}
+        dict->data = malloc(initial_capacity * sizeof({struct_name}_pair));
+        if (!dict->data) {{
+            fprintf(stderr, "Memory allocation failed for dict data\\n");
+            free(dict);
+            exit(1);
+        }}
+        dict->size = 0;
+        dict->capacity = initial_capacity;
+        return dict;
+    }}
+    """
+        self.generated_helpers.append(create_func)
+        logger.debug(f"  added create function")
+
+        # Функция установки значения
+        if is_key_string:
+            set_func = f"""
+    void set_{struct_name}({struct_name}* dict, {key_c_type} key, {value_c_type} value) {{
+        // Ищем существующий ключ
+        for (int i = 0; i < dict->size; i++) {{
+            if (strcmp(dict->data[i].key, key) == 0) {{
+                dict->data[i].value = value;
+                return;
+            }}
+        }}
+        
+        // Если ключ не найден, добавляем новый
+        if (dict->size >= dict->capacity) {{
+            dict->capacity = dict->capacity == 0 ? 16 : dict->capacity * 2;
+            dict->data = realloc(dict->data, dict->capacity * sizeof({struct_name}_pair));
+            if (!dict->data) {{
+                fprintf(stderr, "Memory reallocation failed for dict\\n");
+                exit(1);
+            }}
+        }}
+        
+        // Для строковых ключей нужно копировать строку
+        dict->data[dict->size].key = malloc(strlen(key) + 1);
+        strcpy(dict->data[dict->size].key, key);
+        dict->data[dict->size].value = value;
+        dict->size++;
+    }}
+    """
+        else:
+            set_func = f"""
+    void set_{struct_name}({struct_name}* dict, {key_c_type} key, {value_c_type} value) {{
+        // Ищем существующий ключ
+        for (int i = 0; i < dict->size; i++) {{
+            if (dict->data[i].key == key) {{
+                dict->data[i].value = value;
+                return;
+            }}
+        }}
+        
+        // Если ключ не найден, добавляем новый
+        if (dict->size >= dict->capacity) {{
+            dict->capacity = dict->capacity == 0 ? 16 : dict->capacity * 2;
+            dict->data = realloc(dict->data, dict->capacity * sizeof({struct_name}_pair));
+            if (!dict->data) {{
+                fprintf(stderr, "Memory reallocation failed for dict\\n");
+                exit(1);
+            }}
+        }}
+        dict->data[dict->size].key = key;
+        dict->data[dict->size].value = value;
+        dict->size++;
+    }}
+    """
+        self.generated_helpers.append(set_func)
+        logger.debug(f"  added set function")
+
+        # Функция получения значения
+        if is_key_string:
+            get_func = f"""
+    {value_c_type} get_{struct_name}({struct_name}* dict, {key_c_type} key) {{
+        for (int i = 0; i < dict->size; i++) {{
+            if (strcmp(dict->data[i].key, key) == 0) {{
+                return dict->data[i].value;
+            }}
+        }}
+        fprintf(stderr, "KeyError: key not found in dict\\n");
+        exit(1);
+    }}
+    """
+        else:
+            get_func = f"""
+    {value_c_type} get_{struct_name}({struct_name}* dict, {key_c_type} key) {{
+        for (int i = 0; i < dict->size; i++) {{
+            if (dict->data[i].key == key) {{
+                return dict->data[i].value;
+            }}
+        }}
+        fprintf(stderr, "KeyError: key not found in dict\\n");
+        exit(1);
+    }}
+    """
+        self.generated_helpers.append(get_func)
+        logger.debug(f"  added get function")
+
+        # Функция размера
+        len_func = f"""
+    int len_{struct_name}({struct_name}* dict) {{
+        return dict ? dict->size : 0;
+    }}
+    """
+        self.generated_helpers.append(len_func)
+        logger.debug(f"  added len function")
+
+        # Функция освобождения памяти
+        if is_key_string:
+            free_func = f"""
+    void free_{struct_name}({struct_name}* dict) {{
+        if (dict) {{
+            for (int i = 0; i < dict->size; i++) {{
+                free(dict->data[i].key);
+            }}
+            free(dict->data);
+            free(dict);
+        }}
+    }}
+    """
+        else:
+            free_func = f"""
+    void free_{struct_name}({struct_name}* dict) {{
+        if (dict) {{
+            free(dict->data);
+            free(dict);
+        }}
+    }}
+    """
+        self.generated_helpers.append(free_func)
+        logger.debug(f"  added free function")
+
+        logger.debug(f"  total helpers now: {len(self.generated_helpers)}")
+
+        # Функция получения всех ключей
+        list_struct_name = f"list_{key_name}"
+        keys_func = f"""
+    {list_struct_name}* keys_{struct_name}({struct_name}* dict) {{
+        {list_struct_name}* result = create_{list_struct_name}(dict->size);
+        for (int i = 0; i < dict->size; i++) {{
+            append_{list_struct_name}(result, dict->data[i].key);
+        }}
+        return result;
+    }}
+    """
+        self.generated_helpers.append(keys_func)
+        logger.debug(f"  added keys function")
+        self.generated_functions.add(f"keys_{struct_name}")
+
+        # Функция получения всех значений
+        list_value_struct = f"list_{value_name}"
+        values_func = f"""
+    {list_value_struct}* values_{struct_name}({struct_name}* dict) {{
+        {list_value_struct}* result = create_{list_value_struct}(dict->size);
+        for (int i = 0; i < dict->size; i++) {{
+            append_{list_value_struct}(result, dict->data[i].value);
+        }}
+        return result;
+    }}
+    """
+        self.generated_helpers.append(values_func)
+        logger.debug(f"  added values function")
+        self.generated_functions.add(f"values_{struct_name}")
+
+        return struct_name
+
+    def _generate_dict_declaration(
+        self, var_name: str, var_type: str, value_ast: Dict, node: Dict
+    ):
+        """Генерирует объявление словаря"""
+        # Извлекаем типы ключа и значения
+        key_type, value_type = self._extract_dict_types(var_type)
+
+        # Генерируем структуру для словаря (ВАЖНО: вызываем ДО объявления переменной)
+        struct_name = self.generate_dict_struct(key_type, value_type)
+
+        # Объявляем переменную
+        self.declare_variable(var_name, var_type)
+
+        # Получаем C тип для переменной
+        c_type = f"{struct_name}*"
+
+        if value_ast and value_ast.get("type") == "dict_literal":
+            pairs = value_ast.get("pairs", {})
+
+            # Создаем словарь
+            self.add_line(
+                f"{c_type} {var_name} = create_{struct_name}({max(len(pairs), 16)});"
+            )
+
+            # Добавляем элементы
+            for key_str, value_node in pairs.items():
+                # Обработка ключа
+                if key_type == "str":
+                    key_expr = f'"{key_str}"'
+                elif key_type == "int":
+                    key_expr = key_str
+                else:
+                    key_expr = key_str
+
+                # Генерация значения
+                if value_node.get("type") == "list_literal":
+                    # Для списков нужно создать временную переменную
+                    items = value_node.get("items", [])
+                    list_struct = self.generate_list_struct_name(f"list[{value_type}]")
+                    temp_var = self.generate_temporary_var("list")
+                    self.add_line(
+                        f"{list_struct}* {temp_var} = create_{list_struct}({len(items)});"
+                    )
+
+                    for item in items:
+                        item_expr = self.generate_expression(item)
+                        self.add_line(f"append_{list_struct}({temp_var}, {item_expr});")
+
+                    value_expr = temp_var
+                else:
+                    value_expr = self.generate_expression(value_node)
+
+                self.add_line(
+                    f"set_{struct_name}({var_name}, {key_expr}, {value_expr});"
+                )
+        else:
+            # Пустой словарь
+            self.add_line(f"{c_type} {var_name} = create_{struct_name}(16);")
+
     def generate_helpers_section(self):
         """Генерирует секцию с вспомогательными функциями и структурами в правильном порядке"""
 
+        # Сначала генерируем вспомогательные функции (они добавляются в self.generated_helpers)
         self.generate_sort_helpers()
         self.generate_string_helpers()
         self.generate_builtin_int_helpers()
 
+        # Проверяем, есть ли что генерировать
         if not self.generated_helpers:
+            logger.debug("No helpers to generate")
             return
 
-        # Сначала генерируем структуры от простых к сложным
-        # Собираем все структуры и сортируем по вложенности
+        logger.debug(
+            f"Generating helpers section with {len(self.generated_helpers)} helpers"
+        )
+
+        # Разделяем структуры и функции
         structures = []
         functions = []
 
         for helper in self.generated_helpers:
             if "typedef struct" in helper:
                 structures.append(helper)
+                logger.debug(f"Found structure: {helper[:50]}...")
             else:
                 functions.append(helper)
+                logger.debug(f"Found function: {helper[:50]}...")
 
-        # Сортируем структуры: сначала простые (list_int), потом сложные (list_list_int, list_list_list_int)
+        logger.debug(f"Structures: {len(structures)}, Functions: {len(functions)}")
+
+        # Сортируем структуры по глубине вложенности
         def get_structure_depth(struct_code):
-            # Определяем имя структуры
             lines = struct_code.split("\n")
             for line in lines:
                 if "} " in line and ";" in line:
-                    # Находим имя структуры
                     parts = line.split()
                     for part in parts:
                         if part.endswith(";"):
                             name = part[:-1]
-                            # Считаем количество 'list_' в имени
+                            # Для словарей тоже учитываем
+                            if name.startswith("dict_"):
+                                return 1
                             return name.count("list_")
             return 0
 
@@ -2148,24 +2463,23 @@ class CCodeGenerator:
         self.add_line("// =========================================")
         self.add_empty_line()
 
-        self.generate_sort_helpers()  # TODO
-        self.generate_string_helpers()
-
-        # Добавляем структуры
+        # Добавляем все структуры
         for struct in structures:
-            lines = struct.split("\n")
-            for line in lines:
+            logger.debug(f"Adding structure to output")
+            for line in struct.split("\n"):
                 if line.strip():
-                    self.output.append(line)
-            self.output.append("")  # Пустая строка между определениями
+                    self.add_line(line)
+            self.add_empty_line()
 
-        # Добавляем функции
+        # Добавляем все функции
         for func in functions:
-            lines = func.split("\n")
-            for line in lines:
+            logger.debug(f"Adding function to output")
+            for line in func.split("\n"):
                 if line.strip():
-                    self.output.append(line)
-            self.output.append("")  # Пустая строка между определениями
+                    self.add_line(line)
+            self.add_empty_line()
+
+        logger.debug(f"Total helpers generated: {len(self.generated_helpers)}")
 
     def generate_list_struct_name(self, py_type: str) -> str:
         """Генерирует имя структуры для списка любой вложенности"""
@@ -2567,6 +2881,17 @@ class CCodeGenerator:
                     return f"get_{struct_name}({variable}, {index_expr})"
                 elif py_type.startswith("tuple["):
                     struct_name = self.generate_tuple_struct_name(py_type)
+                    return f"get_{struct_name}({variable}, {index_expr})"
+                elif py_type.startswith("dict["):
+                    # Это словарь
+                    key_type, value_type = self._extract_dict_types(py_type)
+                    key_name = self.clean_type_name_for_c(key_type)
+                    value_name = self.clean_type_name_for_c(value_type)
+                    struct_name = f"dict_{key_name}_{value_name}"
+
+                    # Убеждаемся, что структура сгенерирована
+                    self.generate_dict_struct(key_type, value_type)
+
                     return f"get_{struct_name}({variable}, {index_expr})"
 
             return f"{variable}[{index_expr}]"
@@ -3460,6 +3785,36 @@ class CCodeGenerator:
                     # Для split() внутри выражения - возвращаем результат
                     return f"string_split({object_name}, {delimiter})"
 
+            elif method_name == "replace":
+                # replace(old, new) - заменяет все вхождения подстроки
+                if len(arg_strings) >= 2:
+                    old = arg_strings[0]
+                    new = arg_strings[1]
+
+                    if is_standalone:
+                        self.add_line("// replace")
+                        temp_var = self.generate_temporary_var("str")
+                        self.add_line(
+                            f"char* {temp_var} = string_replace({object_name}, {old}, {new});"
+                        )
+                        # Освобождаем старую строку
+                        self.add_line(f"if ({object_name}) {{")
+                        self.indent_level += 1
+                        self.add_line(f"free({object_name});")
+                        self.indent_level -= 1
+                        self.add_line(f"}}")
+                        # Присваиваем новую строку
+                        self.add_line(f"{object_name} = {temp_var};")
+                    else:
+                        if target_var:
+                            self.add_line(
+                                f"{target_var} = string_replace({object_name}, {old}, {new});"
+                            )
+                        else:
+                            return f"string_replace({object_name}, {old}, {new})"
+                else:
+                    self.add_line(f"// replace() requires 2 arguments")
+
         elif obj_type.startswith("list["):
             if method_name == "append":
                 if args_str:
@@ -3742,6 +4097,69 @@ class CCodeGenerator:
 
             else:
                 self.add_line(f"// Метод '{method_name}' для кортежа не реализован")
+
+        # Обработка методов для словарей
+        elif obj_type.startswith("dict["):
+            # Извлекаем типы ключа и значения
+            key_type, value_type = self._extract_dict_types(obj_type)
+            key_name = self.clean_type_name_for_c(key_type)
+            value_name = self.clean_type_name_for_c(value_type)
+            struct_name = f"dict_{key_name}_{value_name}"
+
+            if method_name == "keys":
+                # keys() - возвращает список ключей
+                list_struct = f"list_{key_name}"
+
+                if target_var:
+                    self.add_line(
+                        f"{list_struct}* {target_var} = keys_{struct_name}({object_name});"
+                    )
+                elif is_standalone:
+                    # Если вызов без присваивания, создаем временную переменную и освобождаем
+                    temp_var = self.generate_temporary_var(list_struct)
+                    self.add_line(
+                        f"{list_struct}* {temp_var} = keys_{struct_name}({object_name});"
+                    )
+                    self.add_line(f"free_{list_struct}({temp_var});")
+                else:
+                    # Если используется в выражении, возвращаем вызов функции
+                    return f"keys_{struct_name}({object_name})"
+
+            elif method_name == "values":
+                # values() - возвращает список значений
+                list_struct = f"list_{value_name}"
+
+                if target_var:
+                    self.add_line(
+                        f"{list_struct}* {target_var} = values_{struct_name}({object_name});"
+                    )
+                elif is_standalone:
+                    temp_var = self.generate_temporary_var(list_struct)
+                    self.add_line(
+                        f"{list_struct}* {temp_var} = values_{struct_name}({object_name});"
+                    )
+                    self.add_line(f"free_{list_struct}({temp_var});")
+                else:
+                    return f"values_{struct_name}({object_name})"
+
+            elif method_name == "items":
+                # items() - возвращает список пар (ключ, значение)
+                # Для этого нужно создать структуру для пары
+                pair_struct = f"{struct_name}_pair"
+                list_pair_struct = f"list_{key_name}_{value_name}_pair"
+
+                # Создаем структуру для списка пар, если еще не создана
+                if list_pair_struct not in self.generated_structures:
+                    # Здесь нужно сгенерировать структуру для списка пар
+                    pass
+
+                # TODO: реализовать items()
+                self.add_line(f"// items() method not fully implemented yet")
+
+            else:
+                self.add_line(f"// Метод словаря '{method_name}' не реализован")
+
+            return
 
     def generate_class_constructors(self, json_data: List[Dict]):
         """Генерирует конструкторы для всех классов"""
@@ -5498,7 +5916,7 @@ class CCodeGenerator:
         self.add_empty_line()
 
     def generate_index_assignment(self, node: Dict):
-        """Генерирует присваивание по индексу: list[index] = value"""
+        """Генерирует присваивание по индексу: list[index] = value или dict[key] = value"""
         variable = node.get("variable", "")
         index_ast = node.get("index", {})
         value_ast = node.get("value", {})
@@ -5548,6 +5966,13 @@ class CCodeGenerator:
                         self.add_line(
                             f"set_{struct_name}(self->{attr_name}, {index_expr}, {value_expr});"
                         )
+                    elif attr_type and attr_type.startswith("dict["):
+                        # Обработка словаря как атрибута
+                        key_type, value_type = self._extract_dict_types(attr_type)
+                        dict_struct = f"dict_{self.clean_type_name_for_c(key_type)}_{self.clean_type_name_for_c(value_type)}"
+                        self.add_line(
+                            f"set_{dict_struct}(self->{attr_name}, {index_expr}, {value_expr});"
+                        )
                     else:
                         self.add_line(
                             f"self->{attr_name}[{index_expr}] = {value_expr};"
@@ -5556,23 +5981,50 @@ class CCodeGenerator:
                     self.add_line(f"self->{attr_name}[{index_expr}] = {value_expr};")
             return
 
+        # Получаем информацию о переменной
         var_info = self.get_variable_info(variable)
 
         if var_info:
             py_type = var_info.get("py_type", "")
+            print(f"  -> тип переменной: {py_type}")
 
-            if py_type.startswith("list["):
+            # Обработка для словарей
+            if py_type.startswith("dict["):
+                # Извлекаем типы ключа и значения
+                key_type, value_type = self._extract_dict_types(py_type)
+
+                # Генерируем имя структуры для словаря
+                key_name = self.clean_type_name_for_c(key_type)
+                value_name = self.clean_type_name_for_c(value_type)
+                dict_struct = f"dict_{key_name}_{value_name}"
+
+                # Добавляем присваивание для словаря
+                self.add_line(
+                    f"set_{dict_struct}({variable}, {index_expr}, {value_expr});"
+                )
+
+            # Обработка для списков
+            elif py_type.startswith("list["):
                 struct_name = self.generate_list_struct_name(py_type)
                 self.add_line(
                     f"set_{struct_name}({variable}, {index_expr}, {value_expr});"
                 )
+
+            # Обработка для кортежей (неизменяемые)
             elif py_type.startswith("tuple["):
                 struct_name = self.generate_tuple_struct_name(py_type)
                 self.add_line(
                     f"{variable}.data[{index_expr}] = {value_expr}; // Note: tuples are immutable in Python"
                 )
+
+            # Обычный массив или другой тип
             else:
                 self.add_line(f"{variable}[{index_expr}] = {value_expr};")
+
+        else:
+            # Если информация о переменной не найдена, пробуем прямую генерацию
+            print(f"  -> переменная не найдена, прямая генерация")
+            self.add_line(f"{variable}[{index_expr}] = {value_expr};")
 
     def _generate_nested_index_assignment(self, node: Dict):
         """Генерирует присваивание для вложенной индексации любой глубины"""
@@ -6079,6 +6531,23 @@ class CCodeGenerator:
                         self._collect_all_nested_list_types(var_type, all_types)
                     elif var_type.startswith("tuple["):
                         all_types.add(var_type)
+                    elif var_type.startswith("dict["):
+                        all_types.add(var_type)  # Добавляем словари
+                        # Также добавляем типы ключа и значения
+                        key_type, value_type = self._extract_dict_types(var_type)
+                        if key_type.startswith("list["):
+                            all_types.add(key_type)
+                        if value_type.startswith("list["):
+                            all_types.add(value_type)
+
+            # Обрабатываем временные переменные (temp_0, temp_1 и т.д.)
+            if node.get("node") == "declaration" and node.get(
+                "var_name", ""
+            ).startswith("temp_"):
+                var_type = node.get("var_type", "")
+                if var_type and var_type.startswith("list["):
+                    all_types.add(var_type)
+                    self._collect_all_nested_list_types(var_type, all_types)
 
         # Проходим по всем scope и узлам
         for scope in json_data:
@@ -6100,6 +6569,13 @@ class CCodeGenerator:
                 self.generate_list_struct(py_type)
             elif py_type.startswith("tuple["):
                 self.generate_tuple_struct(py_type)
+            elif py_type.startswith("dict["):
+                # Для словарей нужно вызвать generate_dict_struct
+                key_type, value_type = self._extract_dict_types(py_type)
+                logger.debug(
+                    f"collect_types_from_ast: Генерация структуры для {py_type}"
+                )
+                self.generate_dict_struct(key_type, value_type)
 
         # Затем генерируем ВСЕ функции для ВСЕХ структур
         self._generate_all_list_functions()
@@ -6514,3 +6990,426 @@ class CCodeGenerator:
                 return var_info.get("py_type") == "None"
 
         return False
+
+    def _extract_dict_types(self, dict_type: str) -> tuple:
+        """Извлекает типы ключа и значения из dict[K, V]"""
+        if not dict_type.startswith("dict[") or not dict_type.endswith("]"):
+            return "int", "int"  # По умолчанию
+
+        # Извлекаем содержимое между скобками
+        inner = dict_type[5:-1].strip()
+
+        # Ищем запятую, которая не находится внутри вложенных скобок
+        depth = 0
+        comma_pos = -1
+
+        for i, char in enumerate(inner):
+            if char == "[":
+                depth += 1
+            elif char == "]":
+                depth -= 1
+            elif char == "," and depth == 0:
+                comma_pos = i
+                break
+
+        if comma_pos == -1:
+            return "int", "int"
+
+        key_type = inner[:comma_pos].strip()
+        value_type = inner[comma_pos + 1 :].strip()
+
+        return key_type, value_type
+
+    def extract_all_types_from_ast(self, json_data: List[Dict]) -> set:
+        """Извлекает все типы из AST для генерации структур"""
+        all_types = set()
+
+        def process_value(value):
+            """Рекурсивно обрабатывает значение для извлечения типов"""
+            if isinstance(value, dict):
+                # Обрабатываем литералы списков
+                if value.get("type") == "list_literal":
+                    items = value.get("items", [])
+                    if items:
+                        # Определяем тип элементов
+                        first_item = items[0]
+                        if first_item.get("type") == "list_literal":
+                            element_type = "list"
+                        elif first_item.get("type") == "literal":
+                            element_type = first_item.get("data_type", "int")
+                        else:
+                            element_type = "int"
+
+                        list_type = f"list[{element_type}]"
+                        all_types.add(list_type)
+
+                        # Рекурсивно обрабатываем вложенные списки
+                        for item in items:
+                            process_value(item)
+
+                # Обрабатываем литералы словарей
+                elif value.get("type") == "dict_literal":
+                    pairs = value.get("pairs", {})
+                    if pairs:
+                        # Определяем типы ключа и значения
+                        first_key = next(iter(pairs))
+                        first_val = pairs[first_key]
+
+                        key_type = "str" if isinstance(first_key, str) else "int"
+                        val_type = self._infer_type_from_value(first_val)
+
+                        dict_type = f"dict[{key_type}, {val_type}]"
+                        all_types.add(dict_type)
+
+                        # Рекурсивно обрабатываем значения
+                        for val in pairs.values():
+                            process_value(val)
+
+        def process_node(node):
+            """Рекурсивно обрабатывает узел AST"""
+            if not isinstance(node, dict):
+                return
+
+            node_type = node.get("node", "")
+
+            # Обрабатываем объявления переменных
+            if node_type == "declaration":
+                var_type = node.get("var_type", "")
+                if var_type:
+                    all_types.add(var_type)
+                    # Если это сложный тип, добавляем все вложенные типы
+                    self._add_nested_types(var_type, all_types)
+
+                # Обрабатываем выражение инициализации
+                expr_ast = node.get("expression_ast", {})
+                process_value(expr_ast)
+
+            # Обрабатываем присваивания
+            elif node_type == "assignment":
+                expr_ast = node.get("expression_ast", {})
+                process_value(expr_ast)
+
+            # Обрабатываем вызовы функций
+            elif node_type == "function_call":
+                for arg in node.get("arguments", []):
+                    if isinstance(arg, dict):
+                        process_value(arg)
+
+            # Обрабатываем вызовы методов
+            elif node_type == "method_call":
+                for arg in node.get("arguments", []):
+                    if isinstance(arg, dict):
+                        process_value(arg)
+
+            # Обрабатываем циклы
+            elif node_type == "for_loop":
+                for body_node in node.get("body", []):
+                    process_node(body_node)
+
+            # Обрабатываем условия
+            elif node_type == "if_statement":
+                for body_node in node.get("body", []):
+                    process_node(body_node)
+                for elif_block in node.get("elif_blocks", []):
+                    for body_node in elif_block.get("body", []):
+                        process_node(body_node)
+                if node.get("else_block"):
+                    for body_node in node.get("else_block").get("body", []):
+                        process_node(body_node)
+
+            # Обрабатываем все поля узла на предмет типов
+            for key, value in node.items():
+                if key.endswith("_type") and isinstance(value, str):
+                    if value and value not in ["int", "float", "str", "bool", "None"]:
+                        all_types.add(value)
+                        self._add_nested_types(value, all_types)
+
+        # Проходим по всем scope
+        for scope in json_data:
+            if scope.get("type") in [
+                "module",
+                "function",
+                "class_method",
+                "constructor",
+            ]:
+                for node in scope.get("graph", []):
+                    process_node(node)
+
+                # Также проверяем локальные переменные
+                for var_name in scope.get("local_variables", []):
+                    var_info = scope.get("symbol_table", {}).get(var_name, {})
+                    var_type = var_info.get("type", "")
+                    if var_type:
+                        all_types.add(var_type)
+                        self._add_nested_types(var_type, all_types)
+
+        return all_types
+
+    def _add_nested_types(self, type_str: str, types_set: set):
+        """Рекурсивно добавляет все вложенные типы"""
+        if not isinstance(type_str, str):
+            return
+
+        # Обработка list[T]
+        if type_str.startswith("list["):
+            inner = type_str[5:-1].strip()
+            types_set.add(type_str)
+            self._add_nested_types(inner, types_set)
+
+        # Обработка dict[K, V]
+        elif type_str.startswith("dict["):
+            inner = type_str[5:-1].strip()
+            # Ищем запятую вне скобок
+            depth = 0
+            comma_pos = -1
+            for i, char in enumerate(inner):
+                if char == "[":
+                    depth += 1
+                elif char == "]":
+                    depth -= 1
+                elif char == "," and depth == 0:
+                    comma_pos = i
+                    break
+
+            if comma_pos != -1:
+                key_type = inner[:comma_pos].strip()
+                val_type = inner[comma_pos + 1 :].strip()
+                types_set.add(type_str)
+                self._add_nested_types(key_type, types_set)
+                self._add_nested_types(val_type, types_set)
+
+        # Обработка tuple[T1, T2, ...]
+        elif type_str.startswith("tuple["):
+            inner = type_str[6:-1].strip()
+            if "," in inner:
+                # Разделяем по запятым вне скобок
+                elements = []
+                current = ""
+                depth = 0
+                for char in inner:
+                    if char == "[":
+                        depth += 1
+                        current += char
+                    elif char == "]":
+                        depth -= 1
+                        current += char
+                    elif char == "," and depth == 0:
+                        elements.append(current.strip())
+                        current = ""
+                    else:
+                        current += char
+                if current:
+                    elements.append(current.strip())
+
+                types_set.add(type_str)
+                for elem_type in elements:
+                    self._add_nested_types(elem_type, types_set)
+            else:
+                types_set.add(type_str)
+                self._add_nested_types(inner, types_set)
+
+    def _infer_type_from_value(self, value) -> str:
+        """Определяет тип Python из значения (AST узла или примитива)"""
+
+        # Если значение - словарь (AST узел)
+        if isinstance(value, dict):
+            node_type = value.get("type", "")
+
+            # Литералы
+            if node_type == "literal":
+                return value.get("data_type", "int")
+
+            # Литералы списков
+            elif node_type == "list_literal":
+                items = value.get("items", [])
+                if items:
+                    # Определяем тип первого элемента
+                    first_item_type = self._infer_type_from_value(items[0])
+                    return f"list[{first_item_type}]"
+                return "list[int]"  # Пустой список по умолчанию
+
+            # Литералы словарей
+            elif node_type == "dict_literal":
+                pairs = value.get("pairs", {})
+                if pairs:
+                    # Берем первую пару для определения типов
+                    first_key = next(iter(pairs))
+                    first_val = pairs[first_key]
+
+                    # Определяем тип ключа
+                    if isinstance(first_key, str):
+                        key_type = "str"
+                    elif isinstance(first_key, int):
+                        key_type = "int"
+                    else:
+                        key_type = self._infer_type_from_value(first_key)
+
+                    # Определяем тип значения
+                    val_type = self._infer_type_from_value(first_val)
+
+                    return f"dict[{key_type}, {val_type}]"
+                return "dict[str, int]"  # Пустой словарь по умолчанию
+
+            # Литералы кортежей
+            elif node_type == "tuple_literal":
+                items = value.get("items", [])
+                if items:
+                    # Определяем типы всех элементов
+                    item_types = []
+                    for item in items:
+                        item_types.append(self._infer_type_from_value(item))
+
+                    # Если все элементы одного типа
+                    if len(set(item_types)) == 1:
+                        return f"tuple[{item_types[0]}]"
+                    else:
+                        return f"tuple[{', '.join(item_types)}]"
+                return "tuple[int]"  # Пустой кортеж по умолчанию
+
+            # Переменные - пытаемся найти их тип
+            elif node_type == "variable":
+                var_name = value.get("value", "") or value.get("name", "")
+                var_info = self.get_variable_info(var_name)
+                if var_info:
+                    return var_info.get("py_type", "int")
+                return "int"
+
+            # Вызовы функций - определяем по имени функции
+            elif node_type == "function_call":
+                func_name = value.get("function", "")
+                builtin_returns = {
+                    "len": "int",
+                    "str": "str",
+                    "int": "int",
+                    "float": "float",
+                    "bool": "bool",
+                    "range": "range",
+                    "input": "str",
+                    "print": "None",
+                }
+                return builtin_returns.get(func_name, "int")
+
+            # Вызовы методов
+            elif node_type == "method_call":
+                obj_name = value.get("object", "")
+                method_name = value.get("method", "")
+
+                # Пытаемся определить тип объекта
+                obj_info = self.get_variable_info(obj_name)
+                if obj_info:
+                    obj_type = obj_info.get("py_type", "")
+
+                    # Маппинг методов к возвращаемым типам
+                    if obj_type.startswith("list["):
+                        if method_name == "pop":
+                            # Извлекаем тип элемента из list[T]
+                            match = re.match(r"list\[([^\]]+)\]", obj_type)
+                            if match:
+                                return match.group(1)
+                        elif method_name == "copy":
+                            return obj_type
+                    elif obj_type == "str":
+                        if method_name in ["upper", "lower", "strip", "replace"]:
+                            return "str"
+                        elif method_name == "split":
+                            return "list[str]"
+
+                return "int"
+
+            # Бинарные операции
+            elif node_type == "binary_operation":
+                left = value.get("left", {})
+                right = value.get("right", {})
+                operator = value.get("operator_symbol", "")
+
+                left_type = self._infer_type_from_value(left)
+                right_type = self._infer_type_from_value(right)
+
+                # Для арифметических операций
+                if operator in ["+", "-", "*", "/", "//", "%", "**"]:
+                    if "float" in left_type or "float" in right_type:
+                        return "float"
+                    return "int"
+
+                # Для сравнений
+                elif operator in ["<", ">", "<=", ">=", "==", "!="]:
+                    return "bool"
+
+                # Для логических операций
+                elif operator in ["and", "or"]:
+                    return "bool"
+
+            # Унарные операции
+            elif node_type == "unary_operation":
+                operator = value.get("operator_symbol", "")
+                if operator == "not":
+                    return "bool"
+                elif operator in ["+", "-"]:
+                    operand = value.get("operand", {})
+                    return self._infer_type_from_value(operand)
+
+            # Доступ по индексу
+            elif node_type == "index_access":
+                var_name = value.get("variable", "")
+                var_info = self.get_variable_info(var_name)
+                if var_info:
+                    var_type = var_info.get("py_type", "")
+                    if var_type.startswith("list["):
+                        # Извлекаем тип элемента из list[T]
+                        match = re.match(r"list\[([^\]]+)\]", var_type)
+                        if match:
+                            return match.group(1)
+                    elif var_type.startswith("dict["):
+                        # Извлекаем тип значения из dict[K, V]
+                        match = re.match(r"dict\[[^,]+,\s*([^\]]+)\]", var_type)
+                        if match:
+                            return match.group(1)
+                return "int"
+
+            # Доступ к атрибуту
+            elif node_type == "attribute_access":
+                obj_name = value.get("object", "")
+                attr_name = value.get("attribute", "")
+
+                obj_info = self.get_variable_info(obj_name)
+                if obj_info:
+                    obj_type = obj_info.get("py_type", "")
+
+                    # Если это класс, ищем тип атрибута
+                    if self._is_class_type(obj_type):
+                        if obj_type in self.class_fields:
+                            attr_type = self.class_fields[obj_type].get(attr_name)
+                            if attr_type:
+                                return attr_type
+
+                return "int"
+
+        # Если значение - примитив
+        elif isinstance(value, str):
+            if value.startswith('"') or value.startswith("'"):
+                return "str"
+            elif value.isdigit():
+                return "int"
+            elif value.replace(".", "").isdigit() and "." in value:
+                return "float"
+            elif value in ["True", "False"]:
+                return "bool"
+            elif value in ["None", "null"]:
+                return "None"
+            else:
+                # Возможно это переменная
+                var_info = self.get_variable_info(value)
+                if var_info:
+                    return var_info.get("py_type", "int")
+                return "int"
+
+        elif isinstance(value, int):
+            return "int"
+        elif isinstance(value, float):
+            return "float"
+        elif isinstance(value, bool):
+            return "bool"
+        elif value is None:
+            return "None"
+
+        return "int"

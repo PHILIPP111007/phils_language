@@ -6525,3 +6525,49 @@ class Parser:
                 break  # Выходим после проверки глобальной области
 
         return result
+
+    def is_dict_literal(self, content: str) -> bool:
+        """Определяет, является ли содержимое фигурных скобок словарем (а не множеством)"""
+        if not content.strip():
+            return False  # Пустые {} - это словарь, но для нашего случая вернем False
+
+        # Проходим по содержимому, отслеживая контекст
+        in_string = False
+        string_char = None
+        depth = 0  # глубина вложенных скобок
+        has_colon = False
+        has_comma = False
+
+        i = 0
+        while i < len(content):
+            char = content[i]
+
+            # Обработка строк
+            if not in_string and char in ['"', "'"]:
+                in_string = True
+                string_char = char
+            elif in_string and char == string_char:
+                # Проверяем, не экранирован ли символ
+                if i > 0 and content[i - 1] == "\\":
+                    pass  # экранированная кавычка, продолжаем
+                else:
+                    in_string = False
+                    string_char = None
+
+            # Обработка скобок (только вне строк)
+            elif not in_string:
+                if char in ["[", "{", "("]:
+                    depth += 1
+                elif char in ["]", "}", ")"]:
+                    depth -= 1
+                # Ищем двоеточие на верхнем уровне
+                elif char == ":" and depth == 0:
+                    has_colon = True
+                elif char == "," and depth == 0:
+                    has_comma = True
+
+            i += 1
+
+        # Если есть двоеточие на верхнем уровне - это словарь
+        # Если нет двоеточия, но есть запятые и все элементы - не пары ключ:значение - это множество
+        return has_colon
