@@ -22,29 +22,14 @@ pytest  --verbose
 
 ## Examples
 
+For more information about language syntax fell free to see `./tests` folder
+
 ### Imports
 
 ```python
 cimport "my_header.h" # your module in C
 cimport <my_header.h> # system import
 import "./module.p" # your module
-```
-
-```python
-def main() -> None:
-    var x: int = 0
-    x = x + 1
-
-def main() -> None:
-    def func() -> int:
-        return 1
-    var x: int = 10
-    if x < 10:
-        if 1 < 10:
-            func()
-        else:
-            func()
-    return
 ```
 
 ### Input
@@ -65,25 +50,6 @@ def main() -> int:
     return 0
 ```
 
-### del
-
-```python
-def func() -> str:
-    return "qepfko"
-
-def main() -> int:
-    var a: int = 1 + 10
-
-    del a
-
-    var b: str = func()
-
-    del b
-    var b: str = "1"
-
-    return 0
-```
-
 ### C code -> function should starts with @
 
 ```python
@@ -92,87 +58,6 @@ cimport <math.h>
 def main() -> float:
     var a: float = @sqrt(16)   # C code -> function should starts with @
     return a
-```
-
-### Tuples and lists
-
-```python
-def main() -> int:
-
-    var a: tuple[int] = (1, 2)
-    var b: int = len(a)
-
-    var c: list[int] = [1, 2, 3,]
-    var x: int = len(c)
-
-    return 0
-
-def main() -> int:
-    var A: list[list[list[int]]] = [[[1], [2]], [[1], [2]]]
-
-    del A
-
-    var A: list[list[int]] = [[1, 2], [1, 2]]
-
-    var a: list[int] = [1, 2]
-    var b: tuple[int] = (1, 2)
-    var c: list[tuple[int]] = [ (1, 2), (1, 2) ]
-
-    return 0
-
-def main() -> int:
-    var t1: tuple[int] = (1, 2, 3)
-    var l: list[tuple[int]] = []
-    l.append(t1)
-    return 0
-
-
-def main() -> int:
-    var my_list: list[int] = [1, 2, 3, 4, 5]
-    var my_tuple: tuple[int] = (1, 2, 3, 4, 5)
-
-    var xxxx: list[int] = my_list[2:]
-
-    # 1. Обращение по индексу (чтение)
-    var x: int = my_list[0]
-    var x1: int = my_tuple[1]
-
-    # 2. Присваивание по индексу
-    my_list[0] = 10
-    my_list[1:3] = [20, 30]
-
-    # 3. Составные операции с индексами
-    my_list[0] += 5
-    my_list[1] *= 2
-
-    # 4. Срезы
-    var sub_list: list[int] = my_list[1:4]
-    var sub_tuple: tuple[int] = my_tuple[2:]
-
-    return 0
-```
-
-### Methods
-
-```python
-def main() -> int:
-    var a: str = "Hello world"
-    a = a.upper()
-    a = a.lower()
-    var a_list: list[str] = a.split(" ")
-
-    var c: int = 100
-    var c1: str = str(c)
-
-    var d: str = "10"
-    var d1: int = int(d)
-
-    return 0
-
-def main() -> int:
-    var a: str = "Hello "
-    a = a.format("world")
-    return 0
 ```
 
 ### OOP
@@ -228,7 +113,7 @@ def main() -> int:
     return 0
 ```
 
-### Pthread
+### Pthread (Multiprocessing)
 
 ```python
 cimport <stdio.h>
