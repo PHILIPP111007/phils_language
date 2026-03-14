@@ -3649,21 +3649,24 @@ class JSONValidator:
 
         elif node_type == "index_assignment":
             # Присваивание по индексу
-            variable = node.get("variable", "")
-            index = node.get("index", {})
+            try:
+                variable = node.get("variable", "")
+                index = node.get("index", {})
 
-            if variable and index:
-                var_info = self.get_symbol_info(variable, level)
-                if var_info:
-                    var_type = var_info.get("type", "")
-                    if "list" in var_type or "array" in var_type:
-                        index_value = self._get_static_value_from_ast(index, level)
-                        if index_value is not None and index_value < 0:
-                            self.add_warning(
-                                f"присваивание по отрицательному индексу {index_value} для '{variable}'",
-                                scope_idx,
-                                node_idx,
-                            )
+                if variable and index:
+                    var_info = self.get_symbol_info(variable, level)
+                    if var_info:
+                        var_type = var_info.get("type", "")
+                        if "list" in var_type or "array" in var_type:
+                            index_value = self._get_static_value_from_ast(index, level)
+                            if index_value is not None and index_value < 0:
+                                self.add_warning(
+                                    f"присваивание по отрицательному индексу {index_value} для '{variable}'",
+                                    scope_idx,
+                                    node_idx,
+                                )
+            except Exception as e:
+                logger.error(e)
 
         elif node_type == "slice_access" or node_type == "slice_assignment":
             # Работа со срезами

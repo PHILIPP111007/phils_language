@@ -23,6 +23,11 @@ def main() -> int:
         var key: str = keys[i]
         print(a[key])
 
+    del a
+    del a1
+    del a2
+    del a3
+
     return 0
 """
 
@@ -45,6 +50,26 @@ int main(void) {
         char* key = get_list_str(keys, i);
         printf("%d\n", get_dict_str_int(a, key));
     }
+    // del a
+    if (a) {
+        free_dict_str_int(a);
+    }
+    a = NULL;
+    // del a1
+    if (a1) {
+        free_dict_int_str(a1);
+    }
+    a1 = NULL;
+    // del a2
+    if (a2) {
+        free_dict_str_str(a2);
+    }
+    a2 = NULL;
+    // del a3
+    if (a3) {
+        free_list_dict_str_int(a3);
+    }
+    a3 = NULL;
     return 0;
 }
 """

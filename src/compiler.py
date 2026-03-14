@@ -1131,7 +1131,21 @@ class CCodeGenerator:
             py_type = var_info.get("py_type", "")
             c_type = var_info.get("c_type", "")
 
-            if py_type.startswith("list["):
+            if py_type.startswith("dict["):
+                # Для словаря вызываем функцию очистки
+                # Извлекаем типы ключа и значения для имени структуры
+                key_type, value_type = self._extract_dict_types(py_type)
+                key_name = self.clean_type_name_for_c(key_type)
+                value_name = self.clean_type_name_for_c(value_type)
+                struct_name = f"dict_{key_name}_{value_name}"
+
+                self.add_line(f"if ({target}) {{")
+                self.indent_level += 1
+                self.add_line(f"free_{struct_name}({target});")
+                self.indent_level -= 1
+                self.add_line("}")
+                self.add_line(f"{target} = NULL;")
+            elif py_type.startswith("list["):
                 # Для list вызываем функцию очистки
                 struct_name = self.generate_list_struct_name(py_type)
                 self.add_line(f"if ({target}) {{")
@@ -1999,45 +2013,54 @@ class CCodeGenerator:
         free_func_name = f"free_{struct_name}"
         if free_func_name not in self.generated_functions:
             free_func = f"""void {free_func_name}({struct_name}* list) {{
-    if (list) {{
-"""
+            if (list) {{
+        """
 
-            # Если элементы - указатели на списки, освобождаем их
-            if element_py_type and element_py_type.startswith("list["):
-                inner_struct_name = self.generate_list_struct_name(element_py_type)
-                free_func += f"""        // SIMD-оптимизированное освобождение вложенных списков
-        for (int i = 0; i < list->size; i++) {{
-            if (list->data[i]) {{
-                free_{inner_struct_name}(list->data[i]);
-            }}
-        }}
-"""
+            # Если элементы - указатели на другие структуры, освобождаем их
+            if element_py_type and (
+                element_py_type.startswith("dict[")
+                or element_py_type.startswith("list[")
+                or element_py_type.startswith("tuple[")
+            ):
+                # Определяем функцию для освобождения элементов
+                if element_py_type.startswith("dict["):
+                    key_type, value_type = self._extract_dict_types(element_py_type)
+                    key_name = self.clean_type_name_for_c(key_type)
+                    value_name = self.clean_type_name_for_c(value_type)
+                    inner_free_func = f"free_dict_{key_name}_{value_name}"
+                elif element_py_type.startswith("list["):
+                    inner_struct = self.generate_list_struct_name(element_py_type)
+                    inner_free_func = f"free_{inner_struct}"
+                else:
+                    inner_free_func = (
+                        f"free_{self.clean_type_name_for_c(element_py_type)}"
+                    )
+
+                free_func += f"""        // Освобождаем каждый элемент списка
+                for (int i = 0; i < list->size; i++) {{
+                    if (list->data[i]) {{
+                        {inner_free_func}(list->data[i]);
+                    }}
+                }}
+        """
+            # Если элементы - простые указатели (char*), освобождаем их
+            elif element_py_type == "str" or element_type == "char*":
+                free_func += f"""        // Освобождаем каждую строку
+                for (int i = 0; i < list->size; i++) {{
+                    if (list->data[i]) {{
+                        free(list->data[i]);
+                    }}
+                }}
+        """
 
             free_func += f"""        free(list->data);
-        free(list);
-    }}
-}}
+                free(list);
+            }}
+        }}
 
-"""
+        """
             self.generated_helpers.append(free_func)
             self.generated_functions.add(free_func_name)
-
-        # 6. Функция доступа к элементу (get) - инлайн для производительности
-        get_func_name = f"get_{struct_name}"
-        if get_func_name not in self.generated_functions:
-            get_func = f"""static inline {element_type} {get_func_name}(const {struct_name}* list, int index) {{
-    #ifndef NDEBUG
-    if (!list || index < 0 || index >= list->size) {{
-        fprintf(stderr, "Index out of bounds in list\\n");
-        exit(1);
-    }}
-    #endif
-    return list->data[index];
-}}
-
-"""
-            self.generated_helpers.append(get_func)
-            self.generated_functions.add(get_func_name)
 
         # 7. Функция установки элемента (set) - инлайн для производительности
         set_func_name = f"set_{struct_name}"
